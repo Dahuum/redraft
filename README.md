@@ -1,4 +1,4 @@
-# BFG – Générateur de Factures PDF
+# GFP – Générateur de Factures PDF
 
 Génère automatiquement des factures PDF au format SWAM à partir de données saisies manuellement ou lues depuis un fichier Excel.
 
