@@ -1,14 +1,16 @@
 """
-generate_invoice.py
--------------------
-Reads an Excel database file and generates a PDF invoice
-that exactly replicates the F_RUN_WANA template layout.
+main.py — PDF generation module for SWAM invoices.
+
+This module only knows how to DRAW a PDF invoice from a Python dict.
+Read / batch-generation logic lives in `generate_bills.py`.
 
 Usage:
-    python generate_invoice.py --db database.xlsx --row 1 --out invoice.pdf
-    python generate_invoice.py --out invoice.pdf          # uses built-in demo data
+    from main import InvoicePDF
 
-Fillable fields (Excel columns or demo data dict keys):
+    data = { ... invoice fields ... }
+    InvoicePDF(data, "facture.pdf").build()
+
+Fillable fields (dict keys expected by InvoicePDF):
     invoice_number      Numéro de facture       e.g.  W/2026/03/042
     invoice_date        Date de la facture      e.g.  31/03/2026
     client_name         Nom du client           e.g.  Wana Corporate
@@ -25,11 +27,9 @@ Fillable fields (Excel columns or demo data dict keys):
     compte              Numéro de compte        e.g.  007 780 0003409000001312 34
 """
 
-import argparse
 import os
 from decimal import Decimal, ROUND_HALF_UP
 
-import pandas as pd
 from num2words import num2words
 from reportlab.lib import colors
 from reportlab.platypus import Paragraph
@@ -74,13 +74,6 @@ def amount_in_words_fr(value: float) -> str:
     return words
 
 
-def load_data_from_db(db_path: str, row_index: int = 0) -> dict:
-    """Load one row from the Excel database."""
-    df = pd.read_excel(db_path)
-    row = df.iloc[row_index]
-    return row.to_dict()
-
-
 # ── PDF builder ───────────────────────────────────────────────────────────────
 
 class InvoicePDF:
@@ -93,7 +86,7 @@ class InvoicePDF:
         self.ht      = float(data["montant_ht"])
         _tva_raw     = self.ht * 0.20
         self.tva     = round(_tva_raw, 2)
-        self.ttc     = round(self.ht + _tva_raw + 0.01, 2)
+        self.ttc     = round(self.ht + _tva_raw, 2)
 
     def _ry(self, bot):
         return self.PAGE_H - bot
@@ -218,41 +211,3 @@ class InvoicePDF:
 
         c.save()
         print(f"\u2714  Invoice written to: {self.out}")
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser(description="Generate invoice PDF from Excel DB")
-    parser.add_argument("--db",  default=None, help="Path to Excel database file")
-    parser.add_argument("--row", type=int, default=0, help="Row index (0-based) to use")
-    parser.add_argument("--out", default="invoice_output.pdf", help="Output PDF path")
-    args = parser.parse_args()
-
-    if args.db:
-        data = load_data_from_db(args.db, args.row)
-    else:
-        # ── Demo data (mirrors the values in your template) ──────────────────
-        data = {
-            "invoice_number":  "W/2026/03/042",
-            "invoice_date":    "31/03/2026",
-            "client_name":     "Wana Corporate",
-            "client_address":  "Lottissement LA COLLINE 2 Sidi Maarouf Casablanca.",
-            "client_ref":      "",
-            "client_ice":      "001957412000035",
-            "description":     (
-                "Run relatif au monitoring de la fraude transactionnelle "
-                "du 01/03/2026 au 31/03/2026"
-            ),
-            "bon_commande":    "R\u00e9f: Bon de commande N\u00b04500044831 sign\u00e9 le 31/07/2023",
-            "montant_ht":      100073.99,
-            "banque":          "ATTIJARIWAFABANK.",
-            "agence":          "C.A. MANDARONA LOT. ATTAWFIQ SIDI MAAROUF",
-            "compte":          "007 780 0003409000001312 34",
-        }
-
-    InvoicePDF(data, args.out).build()
-
-
-if __name__ == "__main__":
-    main()
