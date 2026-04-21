@@ -1,0 +1,1866 @@
+<!DOCTYPE html>
+
+
+
+<html class="light" lang="en"><head>
+
+<meta charset="utf-8"/>
+
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+
+<title>SRA - System Reconciliation Automatisé</title>
+
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+
+<script id="tailwind-config">
+
+        tailwind.config = {
+
+            darkMode: "class",
+
+            theme: {
+
+                extend: {
+
+                    colors: {
+
+                        "primary-container": "#0070eb",
+
+                        "on-primary": "#ffffff",
+
+                        "on-secondary-fixed-variant": "#3631b4",
+
+                        "surface-tint": "#005bc1",
+
+                        "on-primary-fixed-variant": "#004493",
+
+                        "tertiary": "#006b27",
+
+                        "outline": "#717786",
+
+                        "secondary-fixed": "#e2dfff",
+
+                        "surface-container-highest": "#e2e2e7",
+
+                        "on-secondary-container": "#fffbff",
+
+                        "on-error": "#ffffff",
+
+                        "inverse-on-surface": "#f0f0f5",
+
+                        "surface-container-high": "#e8e8ed",
+
+                        "on-surface-variant": "#414755",
+
+                        "background": "#f9f9fe",
+
+                        "on-error-container": "#93000a",
+
+                        "on-tertiary-fixed": "#002107",
+
+                        "tertiary-fixed": "#72fe88",
+
+                        "on-primary-fixed": "#001a41",
+
+                        "inverse-primary": "#adc6ff",
+
+                        "surface-dim": "#d9dade",
+
+                        "on-surface": "#1a1c1f",
+
+                        "on-secondary": "#ffffff",
+
+                        "on-background": "#1a1c1f",
+
+                        "surface-container-low": "#f3f3f8",
+
+                        "error-container": "#ffdad6",
+
+                        "on-tertiary": "#ffffff",
+
+                        "surface-container-lowest": "#ffffff",
+
+                        "tertiary-fixed-dim": "#53e16f",
+
+                        "surface-bright": "#f9f9fe",
+
+                        "tertiary-container": "#008733",
+
+                        "outline-variant": "#c1c6d7",
+
+                        "secondary-fixed-dim": "#c2c1ff",
+
+                        "secondary-container": "#6664e4",
+
+                        "surface-container": "#ededf2",
+
+                        "secondary": "#4c4aca",
+
+                        "error": "#ba1a1a",
+
+                        "on-tertiary-fixed-variant": "#00531c",
+
+                        "primary-fixed-dim": "#adc6ff",
+
+                        "on-primary-container": "#fefcff",
+
+                        "on-secondary-fixed": "#0c006a",
+
+                        "primary-fixed": "#d8e2ff",
+
+                        "primary": "#0058bc",
+
+                        "surface": "#f9f9fe",
+
+                        "on-tertiary-container": "#f7fff2",
+
+                        "surface-variant": "#e2e2e7",
+
+                        "inverse-surface": "#2e3034"
+
+                    },
+
+                    fontFamily: {
+
+                        "headline": ["Inter"],
+
+                        "body": ["Inter"],
+
+                        "label": ["Inter"],
+
+                        "mono": ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"]
+
+                    },
+
+                    borderRadius: { "DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px" },
+
+                },
+
+            },
+
+        }
+
+    </script>
+
+<style>
+
+        body {
+
+            font-family: "Inter", sans-serif;
+
+            -webkit-font-smoothing: antialiased;
+
+        }
+
+        .glass {
+
+            backdrop-filter: blur(20px);
+
+            -webkit-backdrop-filter: blur(20px);
+
+        }
+
+        .grain {
+
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+
+            opacity: 0.03;
+
+        }
+
+        .status-pulse {
+            animation: pulse 1.4s ease-in-out infinite;
+            will-change: opacity;
+            transform: translateZ(0);
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
+
+        .pipeline-card {
+            transition: border-color 0.4s ease, background-color 0.4s ease, box-shadow 0.4s ease;
+        }
+
+        /* Custom scrollbar for log terminal */
+
+        .scrollbar-hide::-webkit-scrollbar {
+
+            display: none;
+
+        }
+
+        .scrollbar-hide {
+
+            -ms-overflow-style: none;
+
+            scrollbar-width: none;
+
+        }
+
+        /* Thin Material Symbols for SF Symbols Look */
+
+        .material-symbols-thin {
+
+            font-variation-settings: 'WHT' 300, 'opsz' 20, 'GRAD' 0, 'fill' 0;
+
+        }
+
+        .material-symbols-thin-fill {
+
+            font-variation-settings: 'WHT' 300, 'opsz' 20, 'GRAD' 0, 'fill' 1;
+
+        }
+
+        @media (min-width: 1024px) {
+            #main-sidebar.-translate-x-full {
+                width: 0;
+                padding: 0;
+                opacity: 0;
+                pointer-events: none;
+                border: 0;
+            }
+        }
+
+        .dark body { background-color: #111318; color: #e2e2e9; }
+        .dark .bg-background { background-color: #111318; }
+        .dark .bg-surface-container-lowest { background-color: #1a1c22; }
+        .dark .bg-surface-container-low { background-color: #1e2026; }
+        .dark .bg-surface-container { background-color: #222428; }
+        .dark .bg-surface-container-high { background-color: #282a30; }
+        .dark .bg-white\/40 { background-color: rgba(30,32,38,0.7); }
+        .dark .bg-white\/80 { background-color: rgba(20,22,28,0.85); }
+        .dark .text-on-surface { color: #e2e2e9; }
+        .dark .text-on-surface-variant { color: #c3c6d4; }
+        .dark .border-outline-variant\/20 { border-color: rgba(255,255,255,0.08); }
+        .dark .text-on-background { color: #e2e2e9; }
+
+    </style>
+
+</head>
+
+<body class="bg-background text-on-surface min-h-screen selection:bg-primary/20 overflow-x-hidden">
+
+<div class="grain fixed inset-0 pointer-events-none z-[100]"></div>
+
+<!-- Overlay for mobile sidebar -->
+
+<div class="fixed inset-0 bg-black/20 backdrop-blur-sm z-[55] hidden lg:hidden" id="sidebar-overlay"></div>
+
+<div class="flex w-full h-screen overflow-hidden">
+<!-- Left Side Navigation (macOS Tahoe-style) -->
+<aside class="fixed lg:sticky lg:top-0 top-0 left-0 bottom-0 lg:h-screen w-64 lg:w-20 xl:w-64 bg-white/40 dark:bg-black/40 backdrop-blur-xl border-r border-white/20 dark:border-white/10 z-[60] flex flex-col items-stretch lg:items-center xl:items-stretch py-6 px-3 shadow-2xl transition-all duration-300 -translate-x-full" id="main-sidebar">
+
+<div class="mb-10 px-4 flex items-center gap-3">
+
+<div class="w-10 h-10 bg-primary rounded-xl flex items-center justify-center text-white text-lg font-bold shadow-lg shadow-primary/20 shrink-0">S</div>
+
+<span class="block lg:hidden xl:block text-xl font-extrabold tracking-tighter text-on-surface">SRA Engine</span>
+
+</div>
+
+<div class="flex flex-col gap-2 flex-grow">
+
+<a class="group flex items-center gap-3 px-4 py-3 rounded-2xl bg-primary text-on-primary shadow-md transition-all duration-300 active:scale-95" href="javascript:void(0)" data-page="overview">
+
+<span class="material-symbols-outlined material-symbols-thin-fill text-[24px]">dashboard</span>
+
+<span class="block lg:hidden xl:block text-sm font-semibold">Overview</span>
+
+</a>
+
+<a class="group flex items-center gap-3 px-4 py-3 rounded-2xl text-on-surface-variant hover:bg-white/50 dark:hover:bg-white/10 hover:text-primary transition-all duration-300 active:scale-95" href="javascript:void(0)" data-page="config">
+
+<span class="material-symbols-outlined material-symbols-thin text-[24px]">tune</span>
+
+<span class="block lg:hidden xl:block text-sm font-medium">Config Edit</span>
+
+</a>
+
+</div>
+
+<div class="mt-auto flex flex-col gap-2 pt-6 border-t border-white/20 dark:border-white/10">
+
+<div class="mt-4 px-4 flex items-center gap-3">
+
+<div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden shrink-0">
+
+<span class="material-symbols-outlined text-[20px] text-slate-600">person</span>
+
+</div>
+
+<div class="block lg:hidden xl:block overflow-hidden">
+
+<p class="text-xs font-bold truncate">Admin User</p>
+
+<p class="text-[10px] text-on-surface-variant opacity-60">System Operator</p>
+
+</div>
+
+</div>
+
+</div>
+
+</aside>
+
+<div class="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto">
+<!-- Top Navigation Bar -->
+<nav class="sticky top-0 z-40 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl shadow-sm border-b border-outline-variant/10 transition-all duration-300 w-full" id="top-nav">
+
+<div class="flex justify-between items-center w-full px-6 lg:px-8 2xl:px-12 py-3">
+
+<div class="flex items-center gap-4 lg:gap-8">
+
+<!-- Burger Menu Button (Mobile Only) -->
+<button class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container transition-all duration-200 active:scale-90" id="mobile-menu-btn" title="Menu">
+<span class="material-symbols-outlined text-[24px]">menu</span>
+</button>
+
+</div>
+
+<div class="flex items-center gap-4">
+
+<span class="bg-tertiary/10 text-tertiary px-3 py-1 rounded-full text-[10px] font-bold tracking-widest border border-tertiary/20">PROD</span>
+
+<div class="hidden sm:block h-4 w-[1px] bg-outline-variant/30 mx-2"></div>
+
+<div class="hidden sm:flex items-center gap-2 text-on-surface-variant text-xs font-medium" id="last-run-display">
+
+<span class="material-symbols-outlined text-[18px]">schedule</span>
+
+                Last run: 14:32:01
+
+            </div>
+
+<div class="flex items-center gap-1 ml-4">
+
+<button class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container transition-all duration-200 active:scale-90" title="Toggle Theme" id="theme-toggle">
+
+<span class="material-symbols-outlined text-[20px]">settings_brightness</span>
+
+</button>
+
+<button class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container transition-all duration-200 active:scale-90 relative" title="Notifications">
+
+<span class="material-symbols-outlined text-[20px]">notifications</span>
+
+<span class="absolute top-2 right-2 w-2 h-2 bg-error rounded-full ring-2 ring-white"></span>
+
+</button>
+
+</div>
+
+</div>
+
+</div>
+
+</nav>
+
+<main class="flex-1 pt-10 pb-12 px-6 lg:px-8 2xl:px-12 w-full max-w-[1800px] mx-auto min-w-0 transition-all duration-300" id="main-content">
+
+<section id="overview-page">
+<!-- Dashboard Header -->
+<header class="mb-10">
+<h1 class="text-4xl font-extrabold tracking-tight text-on-surface mb-2">System Reconciliation</h1>
+<p class="text-on-surface-variant max-w-2xl leading-relaxed text-sm"></p>
+</header>
+
+<!-- Bento Grid Layout -->
+<div class="grid grid-cols-12 gap-6 items-stretch">
+<!-- Intake Card -->
+<section class="col-span-12 lg:col-span-6 flex flex-col">
+<div class="bg-surface-container-lowest p-6 lg:p-8 rounded-lg shadow-sm border border-outline-variant/20 flex flex-col group transition-all duration-300 hover:shadow-md justify-start h-full">
+<div class="flex items-center justify-between gap-2 mb-6">
+<div class="flex items-center gap-2">
+<div class="flex gap-1 p-0.5 bg-surface-container-low rounded-full w-fit overflow-hidden">
+<button class="px-2 py-0.5 sm:px-3 sm:py-1 rounded-full bg-primary text-on-primary font-bold text-[9px] transition-all" id="mode-single">SINGLE</button>
+<button class="px-2 py-0.5 sm:px-3 sm:py-1 rounded-full text-on-surface-variant font-bold text-[9px] hover:bg-white/50 transition-all" id="mode-multi">MULTI</button>
+</div>
+</div>
+<div id="multi-day-controls" class="hidden items-center justify-start gap-2 bg-surface-container-low rounded-full px-2 py-0.5 sm:px-3 sm:py-1 animate-in slide-in-from-right-2 duration-300 w-fit h-fit ml-auto">
+<span class="text-[9px] font-black text-on-surface-variant uppercase tracking-widest opacity-60">Days</span>
+<div class="flex items-center gap-2">
+<button class="w-4 h-4 sm:w-5 sm:h-5 rounded-full bg-white dark:bg-black/20 flex items-center justify-center hover:shadow-sm active:scale-90 transition-all" id="day-minus">
+<span class="material-symbols-outlined text-[10px] sm:text-[12px]">remove</span>
+</button>
+<span class="font-bold text-[10px] sm:text-xs w-4 text-center" id="day-display">2</span>
+<button class="w-4 h-4 sm:w-5 sm:h-5 rounded-full bg-white dark:bg-black/20 flex items-center justify-center hover:shadow-sm active:scale-90 transition-all" id="day-plus">
+<span class="material-symbols-outlined text-[10px] sm:text-[12px]">add</span>
+</button>
+</div>
+<span class="w-px h-3 bg-outline-variant/40 mx-0.5"></span>
+<span class="text-[9px] font-black text-on-surface-variant uppercase tracking-widest opacity-60">Merge</span>
+<div class="flex items-center gap-1">
+<button id="merge-hpsswitch-toggle" data-on="true" class="px-2 py-0.5 rounded-full bg-primary text-on-primary font-bold text-[9px] cursor-pointer select-none" style="transition:opacity .15s" title="Toggle HPSSWITCH merge" onclick="mergeFlagToggle('hpsswitch', this)">HPS</button>
+<button id="merge-mobile-toggle" data-on="true" class="px-2 py-0.5 rounded-full bg-primary text-on-primary font-bold text-[9px] cursor-pointer select-none" style="transition:opacity .15s" title="Toggle MOBILE merge" onclick="mergeFlagToggle('mobile', this)">MOB</button>
+</div>
+</div>
+
+</div>
+
+<div id="intake-zones-container" class="flex flex-col gap-4 overflow-y-auto scrollbar-hide flex-1">
+<div class="border-2 border-dashed border-outline-variant/40 rounded-2xl flex flex-col items-center justify-center gap-2 p-3 text-center hover:bg-primary/5 hover:border-primary/40 transition-all cursor-pointer group/drop flex-1" id="upload-zone">
+<div class="w-8 h-8 bg-primary-fixed rounded-full flex items-center justify-center mb-1 group-hover/drop:scale-110 transition-transform shadow-sm">
+<span class="material-symbols-outlined text-primary-container text-lg" data-icon="upload_file">upload_file</span>
+</div>
+<p class="font-bold text-on-surface text-xs leading-tight">Drop RAR état files here</p>
+<p class="text-[9px] text-on-surface-variant mt-0.5 font-medium">Required: ETATS_GAB.rar, ETATS_ACHAT_GAB.rar, ETATS_PAIEMENT.rar, report_mobile.rar</p>
+<button class="mt-2 px-4 py-1.5 text-[9px] font-bold text-primary border border-primary/20 rounded-full hover:bg-primary hover:text-white transition-colors">Select RARs</button>
+</div>
+</div>
+
+</div>
+</section>
+
+<!-- Pipeline Operations Card -->
+<section class="col-span-12 lg:col-span-6 flex flex-col">
+<div class="bg-surface-container-lowest p-6 lg:p-8 rounded-lg shadow-sm border border-outline-variant/20 flex flex-col transition-all duration-300 hover:shadow-md justify-between h-full">
+<div class="flex items-center justify-between mb-4">
+<div>
+<h2 class="text-lg font-bold tracking-tight">Pipeline Operations</h2>
+<p class="text-[10px] text-on-surface-variant font-bold uppercase tracking-wider mt-1 opacity-60">SRA v0.0.1</p>
+</div>
+<div id="pipeline-status-badge" class="flex items-center gap-2 px-3 py-1.5 bg-tertiary/10 text-tertiary rounded-full text-[10px] font-bold border border-tertiary/20">
+<span id="pipeline-status-dot" class="w-2 h-2 bg-tertiary rounded-full status-pulse"></span>
+                        <span>READY</span>
+                    </div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-2 flex-grow">
+<!-- Pipeline Steps -->
+<button class="pipeline-card p-3 2xl:p-4 rounded-2xl bg-surface-container-low hover:bg-surface-container flex flex-col items-start gap-4 transition-all group active:scale-[0.98] border-2 border-transparent" id="btn-gen-mobile" data-action="generate-mobile">
+<div class="flex justify-between w-full items-center">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors" data-icon="smartphone">smartphone</span>
+<span class="w-2.5 h-2.5 bg-outline rounded-full opacity-30"></span>
+</div>
+<span class="font-bold text-left leading-tight text-[13px]">Generate Mobile</span>
+</button>
+<button class="pipeline-card p-3 2xl:p-4 rounded-2xl bg-surface-container-low hover:bg-surface-container flex flex-col items-start gap-4 transition-all group active:scale-[0.98] border-2 border-transparent" id="btn-gen-hpsswitch" data-action="generate-hpsswitch">
+<div class="flex justify-between w-full items-center">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors" data-icon="hub">hub</span>
+<span class="w-2.5 h-2.5 bg-outline rounded-full opacity-30"></span>
+</div>
+<span class="font-bold text-left leading-tight text-[13px]">Generate Hpsswitch</span>
+</button>
+<button class="pipeline-card p-3 2xl:p-4 rounded-2xl bg-surface-container-low hover:bg-surface-container flex flex-col items-start gap-4 transition-all group active:scale-[0.98] border-2 border-transparent" id="btn-parse-combine" data-action="parse-combine">
+<div class="flex justify-between w-full items-center">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors" data-icon="merge_type">merge_type</span>
+<span class="w-2.5 h-2.5 bg-outline rounded-full opacity-30"></span>
+</div>
+<span class="font-bold text-left leading-tight text-[13px]">Parse + Combine</span>
+</button>
+<button class="pipeline-card p-3 2xl:p-4 rounded-2xl bg-surface-container-low hover:bg-surface-container flex flex-col items-start gap-4 transition-all group active:scale-[0.98] border-2 border-transparent" id="btn-validate" data-action="validate">
+<div class="flex justify-between w-full items-center">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors" data-icon="fact_check">fact_check</span>
+<span class="w-2.5 h-2.5 bg-outline rounded-full opacity-30"></span>
+</div>
+<span class="font-bold text-left leading-tight text-[13px]">Validate Data</span>
+</button>
+<button class="pipeline-card p-3 2xl:p-4 rounded-2xl bg-surface-container-low hover:bg-surface-container flex flex-col items-start gap-4 transition-all group active:scale-[0.98] border-2 border-transparent" id="btn-fill-excel" data-action="fill-excel">
+<div class="flex justify-between w-full items-center">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors" data-icon="table_chart">table_chart</span>
+<span class="w-2.5 h-2.5 bg-outline rounded-full opacity-30"></span>
+</div>
+<span class="font-bold text-left leading-tight text-[13px]">Fill Excel Reports</span>
+</button>
+<button class="p-3 2xl:p-4 rounded-2xl bg-primary text-on-primary flex flex-col items-start gap-4 transition-all shadow-lg hover:shadow-xl hover:bg-primary-container active:scale-95 group" id="btn-run-pipeline">
+<div class="flex justify-between w-full items-center">
+<span class="material-symbols-outlined group-hover:rotate-12 transition-transform" data-icon="rocket_launch">rocket_launch</span>
+<span class="bg-white/20 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-widest">Batch</span>
+</div>
+<span class="font-bold text-left leading-tight text-[13px]">Run Full Pipeline</span>
+</button>
+</div>
+</div>
+</section>
+
+<!-- Pipeline Log Terminal -->
+<section class="col-span-12">
+<div class="bg-[#0d1117] rounded-lg shadow-sm border border-outline-variant/20 overflow-hidden">
+<div class="flex items-center justify-between px-5 py-2.5 bg-white/5 border-b border-white/10">
+<div class="flex items-center gap-3">
+<div class="flex gap-1.5">
+<div class="w-3 h-3 rounded-full bg-[#ff5f57]"></div>
+<div class="w-3 h-3 rounded-full bg-[#febc2e]"></div>
+<div class="w-3 h-3 rounded-full bg-[#28c840]"></div>
+</div>
+<span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Pipeline Log</span>
+</div>
+<button id="btn-clear-terminal" class="text-[9px] text-slate-600 hover:text-slate-400 transition-colors font-bold uppercase tracking-widest">Clear</button>
+</div>
+<div class="p-4 font-mono text-[11px] h-48 overflow-y-auto scrollbar-hide space-y-0.5 leading-relaxed" id="terminal-log">
+<p class="text-slate-600 italic">Waiting for pipeline activity...</p>
+</div>
+</div>
+</section>
+
+<!-- Latest Produced Files -->
+<section class="col-span-12">
+<div class="bg-surface-container-lowest rounded-lg shadow-sm border border-outline-variant/20 overflow-hidden transition-all duration-300 hover:shadow-md">
+<div class="p-6 lg:p-8 pb-4 flex justify-between items-center">
+<h2 class="text-lg font-bold tracking-tight">Latest Produced Files</h2>
+<button class="text-primary text-sm font-bold flex items-center gap-1 hover:underline transition-all">
+                        View All <span class="material-symbols-outlined text-sm">chevron_right</span>
+</button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead class="bg-surface-container-low/50 text-on-surface-variant text-[11px] font-bold uppercase tracking-widest">
+<tr>
+<th class="px-6 lg:px-8 py-4">File Name</th>
+<th class="px-4 lg:px-6 py-4">Type</th>
+<th class="px-4 lg:px-6 py-4">Count</th>
+<th class="px-6 lg:px-8 py-4 text-right">Action</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant/10" id="files-table-body">
+</tbody>
+</table>
+</div>
+</div>
+</section>
+</div>
+</section>
+
+<!-- Config Editor Page -->
+<section id="config-page" hidden>
+<header class="mb-10">
+<h1 class="text-4xl font-extrabold tracking-tight text-on-surface mb-2">Configuration Editor</h1>
+<p class="text-on-surface-variant max-w-2xl leading-relaxed text-sm">Manage bank mappings and PDF recognition rules for the reconciliation engine.</p>
+</header>
+
+<div class="space-y-6">
+<!-- Controls Card -->
+<div class="bg-surface-container-lowest p-6 sm:p-8 rounded-lg shadow-sm border border-outline-variant/20">
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 items-end">
+<div class="space-y-3">
+<label class="block text-[10px] font-black text-on-surface-variant uppercase tracking-widest opacity-60">System Type</label>
+<div class="flex gap-2 p-1 bg-surface-container-low rounded-2xl w-full">
+<button class="flex-1 px-4 py-2 rounded-xl bg-primary text-on-primary font-bold text-xs shadow-sm transition-all" data-type="mobile">Mobile</button>
+<button class="flex-1 px-4 py-2 rounded-xl text-on-surface-variant font-bold text-xs hover:bg-white/50 transition-all" data-type="monetique">Monetique</button>
+</div>
+</div>
+<div class="space-y-3">
+<label class="block text-[10px] font-black text-on-surface-variant uppercase tracking-widest opacity-60">Configuration File</label>
+<div class="flex gap-2 p-1 bg-surface-container-low rounded-2xl w-full">
+<button class="flex-1 px-4 py-2 rounded-xl bg-primary text-on-primary font-bold text-xs shadow-sm transition-all" data-file="bank">BANK.csv</button>
+<button class="flex-1 px-4 py-2 rounded-xl text-on-surface-variant font-bold text-xs hover:bg-white/50 transition-all" data-file="bank_pdf">BANK_PDF.csv</button>
+</div>
+</div>
+<div class="xl:col-span-2 flex flex-col sm:flex-row gap-3 md:justify-end">
+<button class="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 rounded-2xl bg-primary/10 text-primary font-bold text-xs hover:bg-primary/20 transition-all" id="btn-add-member">
+<span class="material-symbols-outlined text-sm">person_add</span>
+                        Add Member
+                    </button>
+<button class="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3 rounded-2xl bg-primary text-on-primary font-bold text-xs shadow-lg hover:shadow-xl active:scale-95 transition-all" id="btn-save-config">
+<span class="material-symbols-outlined text-sm">save</span>
+                        Save Changes
+                    </button>
+</div>
+</div>
+</div>
+
+<!-- Editor Table Card -->
+<div class="bg-surface-container-lowest rounded-lg shadow-sm border border-outline-variant/20 overflow-hidden">
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead class="bg-surface-container-low/50 text-on-surface-variant text-[11px] font-bold uppercase tracking-widest" id="config-table-head">
+<tr>
+<th class="px-6 lg:px-8 py-4">Code</th>
+<th class="px-4 lg:px-6 py-4">BIC / Swift</th>
+<th class="px-4 lg:px-6 py-4">Label 1</th>
+<th class="px-4 lg:px-6 py-4">Label 2</th>
+<th class="px-6 lg:px-8 py-4 text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant/10" id="config-table-body">
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</section>
+
+</main>
+</div>
+</div>
+
+<!-- Background Decorative Elements -->
+
+<div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
+
+<div class="absolute -top-[10%] -right-[5%] w-[40%] h-[40%] bg-primary/5 rounded-full blur-[120px]"></div>
+
+<div class="absolute top-[40%] -left-[10%] w-[30%] h-[50%] bg-tertiary/5 rounded-full blur-[120px]"></div>
+
+<div class="absolute bottom-0 right-0 w-[20%] h-[20%] bg-secondary/5 rounded-full blur-[100px]"></div>
+
+</div>
+
+<script>
+    function mergeFlagToggle(key, btn) {
+        var isOn = btn.getAttribute('data-on') !== 'false';
+        isOn = !isOn;
+        btn.setAttribute('data-on', isOn ? 'true' : 'false');
+        btn.style.opacity = isOn ? '1' : '0.3';
+        btn.style.textDecoration = isOn ? 'none' : 'line-through';
+        var hpsBtn = document.getElementById('merge-hpsswitch-toggle');
+        var mobBtn = document.getElementById('merge-mobile-toggle');
+        var hps = hpsBtn ? hpsBtn.getAttribute('data-on') !== 'false' : true;
+        var mob = mobBtn ? mobBtn.getAttribute('data-on') !== 'false' : true;
+        fetch('/api/pipeline/merge-flags?mobile=' + mob + '&hpsswitch=' + hps, {method:'POST'}).catch(function(){});
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const API_URL = 'http://localhost:8000';
+
+        // ── SSE helper: consumes a POST endpoint streaming text/event-stream ──
+        async function fetchSSE(url, method, onEvent) {
+            const resp = await fetch(url, { method });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                throw new Error(err.detail || resp.statusText);
+            }
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                const parts = buf.split('\n\n');
+                buf = parts.pop();
+                for (const part of parts) {
+                    const line = part.trim();
+                    if (line.startsWith('data: ')) {
+                        try { onEvent(JSON.parse(line.slice(6))); } catch(e) {}
+                    }
+                }
+            }
+        }
+
+        const themeToggle = document.getElementById('theme-toggle');
+        themeToggle.addEventListener('click', () => {
+            const html = document.documentElement;
+            const isDark = html.classList.contains('dark');
+            html.classList.toggle('dark', !isDark);
+            html.classList.toggle('light', isDark);
+            localStorage.setItem('theme', isDark ? 'light' : 'dark');
+        });
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme) {
+            document.documentElement.classList.add(savedTheme);
+            document.documentElement.classList.remove(savedTheme === 'dark' ? 'light' : 'dark');
+        }
+
+        // Mobile Sidebar Toggle Logic
+        const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+        const mainSidebar = document.getElementById('main-sidebar');
+        const sidebarOverlay = document.getElementById('sidebar-overlay');
+
+        const toggleSidebar = () => {
+            const isHidden = mainSidebar.classList.contains('-translate-x-full');
+            if (isHidden) {
+                mainSidebar.classList.remove('-translate-x-full');
+                sidebarOverlay.classList.remove('hidden');
+            } else {
+                mainSidebar.classList.add('-translate-x-full');
+                sidebarOverlay.classList.add('hidden');
+            }
+        };
+
+        mobileMenuBtn.addEventListener('click', toggleSidebar);
+        sidebarOverlay.addEventListener('click', toggleSidebar);
+
+        if (window.innerWidth >= 1024) {
+            mainSidebar.classList.remove('-translate-x-full');
+        }
+
+        // Page Switching Logic
+        const sidebarLinks = document.querySelectorAll('aside a[data-page]');
+        const pages = {
+            overview: document.getElementById('overview-page'),
+            config: document.getElementById('config-page')
+        };
+
+        sidebarLinks.forEach(link => {
+            link.addEventListener('click', () => {
+                const targetPage = link.getAttribute('data-page');
+                
+                // Toggle active state in sidebar
+                sidebarLinks.forEach(l => {
+                    l.classList.remove('bg-primary', 'text-on-primary', 'shadow-md');
+                    l.classList.add('text-on-surface-variant');
+                    const icon = l.querySelector('.material-symbols-outlined');
+                    if(icon) {
+                        icon.classList.remove('material-symbols-thin-fill');
+                        icon.classList.add('material-symbols-thin');
+                    }
+                });
+
+                link.classList.add('bg-primary', 'text-on-primary', 'shadow-md');
+                link.classList.remove('text-on-surface-variant');
+                const activeIcon = link.querySelector('.material-symbols-outlined');
+                if(activeIcon) {
+                    activeIcon.classList.remove('material-symbols-thin');
+                    activeIcon.classList.add('material-symbols-thin-fill');
+                }
+
+                // Switch pages
+                Object.keys(pages).forEach(key => {
+                    if (key === targetPage) {
+                        pages[key].removeAttribute('hidden');
+                    } else {
+                        pages[key].setAttribute('hidden', '');
+                    }
+                });
+
+                if (window.innerWidth < 1024) {
+                    toggleSidebar();
+                }
+
+                window.location.hash = targetPage;
+            });
+        });
+
+        const initialPage = window.location.hash.replace('#', '') || 'overview';
+        const initialLink = document.querySelector(`aside a[data-page="${initialPage}"]`);
+        if (initialLink) initialLink.click();
+
+        // Config Editor Logic
+        const configState = {
+            type: 'mobile',
+            file: 'bank'
+        };
+
+        const updateSelectors = () => {
+            document.querySelectorAll('[data-type], [data-file]').forEach(btn => {
+                const isType = btn.hasAttribute('data-type');
+                const isActive = isType 
+                    ? btn.getAttribute('data-type') === configState.type
+                    : btn.getAttribute('data-file') === configState.file;
+
+                if (isActive) {
+                    btn.classList.add('bg-primary', 'text-on-primary', 'shadow-sm');
+                    btn.classList.remove('text-on-surface-variant', 'hover:bg-white/50');
+                } else {
+                    btn.classList.remove('bg-primary', 'text-on-primary', 'shadow-sm');
+                    btn.classList.add('text-on-surface-variant', 'hover:bg-white/50');
+                }
+            });
+        };
+
+        document.querySelectorAll('[data-type]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                configState.type = btn.getAttribute('data-type');
+                updateSelectors();
+            });
+        });
+
+        document.querySelectorAll('[data-file]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                configState.file = btn.getAttribute('data-file');
+                updateSelectors();
+            });
+        });
+
+        // Data Intake Logic
+        const intakeState = {
+            mode: 'single',
+            days: 1,
+            files: {}
+        };
+
+        const modeSingleBtn = document.getElementById('mode-single');
+        const modeMultiBtn = document.getElementById('mode-multi');
+        const multiControls = document.getElementById('multi-day-controls');
+        const dayDisplay = document.getElementById('day-display');
+        const zonesContainer = document.getElementById('intake-zones-container');
+        const originalZone = document.getElementById('upload-zone');
+        const uploadZoneTemplate = originalZone.cloneNode(true);
+
+        const logToTerminal = (message, type = 'INFO') => {
+            const log = document.getElementById('terminal-log');
+            if (!log) return;
+            const p = document.createElement('p');
+            const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const colors = { INFO: 'text-blue-400', WARN: 'text-yellow-400', SUCCESS: 'text-green-400', ERROR: 'text-red-400' };
+            p.innerHTML = `<span class="text-slate-600">[${time}]</span> <span class="${colors[type]} font-bold uppercase mr-2">${type}:</span> ${message}`;
+            log.appendChild(p);
+            log.scrollTop = log.scrollHeight;
+        };
+
+        const updateModeToggle = () => {
+            const isSingle = intakeState.mode === 'single';
+            
+            modeSingleBtn.classList.toggle('bg-primary', isSingle);
+            modeSingleBtn.classList.toggle('text-on-primary', isSingle);
+            modeSingleBtn.classList.toggle('text-on-surface-variant', !isSingle);
+            modeSingleBtn.classList.toggle('hover:bg-white/50', !isSingle);
+            
+            modeMultiBtn.classList.toggle('bg-primary', !isSingle);
+            modeMultiBtn.classList.toggle('text-on-primary', !isSingle);
+            modeMultiBtn.classList.toggle('text-on-surface-variant', isSingle);
+            modeMultiBtn.classList.toggle('hover:bg-white/50', isSingle);
+        };
+
+        const renderIntakeZones = () => {
+            zonesContainer.innerHTML = '';
+            const count = intakeState.mode === 'single' ? 1 : intakeState.days;
+            
+            if (intakeState.mode === 'multi') {
+                zonesContainer.className = 'overflow-y-auto scrollbar-hide grid grid-cols-1 lg:grid-cols-2 gap-4 content-start';
+            } else {
+                zonesContainer.className = 'overflow-y-auto scrollbar-hide flex flex-col gap-4';
+            }
+
+            for (let i = 1; i <= count; i++) {
+                const dayKey = `day${i}`;
+                if (!intakeState.files[dayKey]) intakeState.files[dayKey] = [];
+
+                const itemWrapper = document.createElement('div');
+                itemWrapper.className = 'flex flex-col h-full';
+
+                if (intakeState.mode === 'multi') {
+                    const label = document.createElement('div');
+                    label.className = 'text-[10px] font-black text-primary uppercase tracking-widest mb-1 px-1';
+                    label.textContent = `Day ${i}`;
+                    itemWrapper.appendChild(label);
+                }
+
+                const zone = uploadZoneTemplate.cloneNode(true);
+                zone.id = `upload-zone-day${i}`;
+                
+                // Content styling is now handled by the template (p-4, w-10 icons, mt-2/mt-1 margins)
+
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.multiple = true;
+                input.className = 'hidden';
+                input.accept = '.rar';
+                input.addEventListener('change', () => handleFileSelection(input.files, i));
+                zone.appendChild(input);
+
+                zone.addEventListener('click', () => input.click());
+                
+                zone.addEventListener('dragover', (e) => { 
+                    e.preventDefault(); 
+                    zone.classList.add('bg-primary/5', 'border-primary/40'); 
+                });
+                zone.addEventListener('dragleave', () => { 
+                    zone.classList.remove('bg-primary/5', 'border-primary/40'); 
+                });
+                zone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    zone.classList.remove('bg-primary/5', 'border-primary/40');
+                    handleFileSelection(e.dataTransfer.files, i);
+                });
+
+                if (intakeState.mode === 'multi') {
+                    itemWrapper.appendChild(zone);
+                    zonesContainer.appendChild(itemWrapper);
+                } else {
+                    zonesContainer.appendChild(zone);
+                }
+            }
+        };
+
+        const handleFileSelection = async (newFiles, dayIndex) => {
+            const dayKey = `day${dayIndex}`;
+            const currentCount = intakeState.files[dayKey].length;
+            const remaining = 4 - currentCount;
+
+            if (remaining <= 0) {
+                logToTerminal(`Day ${dayIndex} is full (limit: 4 files).`, 'WARN');
+                return;
+            }
+
+            const filesToAdd = Array.from(newFiles).slice(0, remaining);
+            if (newFiles.length > remaining) {
+                logToTerminal(`Day ${dayIndex}: File limit (4) exceeded. ${newFiles.length - remaining} file(s) ignored.`, 'WARN');
+            }
+
+            for (const file of filesToAdd) {
+                const formData = new FormData();
+                formData.append('file', file);
+                try {
+                    const resp = await fetch(`${API_URL}/api/intake/upload?day=${dayIndex}`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                        throw new Error(err.detail || resp.statusText);
+                    }
+                    intakeState.files[dayKey].push(file);
+                    logToTerminal(`Day ${dayIndex}: Uploaded ${file.name} (${(file.size/1024).toFixed(1)} KB)`, 'SUCCESS');
+                } catch(e) {
+                    logToTerminal(`Day ${dayIndex}: Upload failed — ${file.name}: ${e.message}`, 'ERROR');
+                }
+            }
+        };
+
+        modeSingleBtn.addEventListener('click', () => {
+            if (intakeState.mode === 'single') return;
+            intakeState.mode = 'single';
+            updateModeToggle();
+            multiControls.classList.add('hidden');
+            const cloudIcon = document.getElementById('intake-cloud-icon');
+            if (cloudIcon) cloudIcon.classList.remove('hidden');
+            renderIntakeZones();
+        });
+
+        modeMultiBtn.addEventListener('click', () => {
+            if (intakeState.mode === 'multi') return;
+            intakeState.mode = 'multi';
+            updateModeToggle();
+            multiControls.classList.remove('hidden');
+            multiControls.classList.add('flex');
+            const cloudIcon = document.getElementById('intake-cloud-icon');
+            if (cloudIcon) cloudIcon.classList.add('hidden');
+            if (intakeState.days < 2) intakeState.days = 2;
+            dayDisplay.textContent = intakeState.days;
+            renderIntakeZones();
+        });
+
+        document.getElementById('day-minus').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (intakeState.days > 2) { 
+                intakeState.days--; 
+                dayDisplay.textContent = intakeState.days; 
+                renderIntakeZones(); 
+            }
+        });
+
+        document.getElementById('day-plus').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (intakeState.days < 31) { 
+                intakeState.days++; 
+                dayDisplay.textContent = intakeState.days; 
+                renderIntakeZones(); 
+            }
+        });
+
+        // Initialize Intake UI
+        renderIntakeZones();
+
+        // Initial mapping for top nav links (History/Settings etc placeholders)
+        const allLinks = document.querySelectorAll('nav a[href="#"], nav a[href=""]');
+        allLinks.forEach(link => {
+            link.setAttribute('href', 'javascript:void(0)');
+        });
+
+        const PipelineManager = {
+          steps: {
+            'btn-gen-mobile': { label: 'Generate Mobile', icon: 'smartphone' },
+            'btn-gen-hpsswitch': { label: 'Generate Hpsswitch', icon: 'hub' },
+            'btn-parse-combine': { label: 'Parse + Combine', icon: 'merge_type' },
+            'btn-validate': { label: 'Validate Data', icon: 'fact_check' },
+            'btn-fill-excel': { label: 'Fill Excel Reports', icon: 'table_chart' }
+          },
+
+          setStep(id, state) {
+            const btn = document.getElementById(id);
+            if (!btn) return;
+            // Remove running badge
+            btn.querySelector('.running-badge')?.remove();
+            // Remove running border
+            btn.classList.remove('border-primary/30');
+            btn.classList.add('border-transparent');
+            const dot = btn.querySelector('.rounded-full:not(.material-symbols-outlined):not(button)');
+            const iconEl = btn.querySelector('.material-symbols-outlined');
+            if (state === 'done') {
+              if (dot) { dot.classList.remove('bg-secondary-container','bg-outline','status-pulse','opacity-30'); dot.classList.add('bg-tertiary','shadow-sm'); dot.style.boxShadow = ''; }
+              if (iconEl) { iconEl.classList.remove('text-primary','text-on-surface-variant'); iconEl.classList.add('text-tertiary'); }
+            } else if (state === 'running') {
+              if (dot) { dot.classList.remove('bg-tertiary','bg-outline','shadow-sm','opacity-30'); dot.classList.add('bg-secondary-container','status-pulse'); }
+              if (iconEl) { iconEl.classList.remove('text-on-surface-variant','text-tertiary'); iconEl.classList.add('text-primary'); }
+              btn.classList.add('border-primary/30');
+              btn.classList.remove('border-transparent');
+              const badge = document.createElement('div');
+              badge.className = 'running-badge absolute bottom-2 right-3 text-[8px] font-black text-primary uppercase bg-primary/5 px-1.5 py-0.5 rounded';
+              badge.textContent = 'Running...';
+              btn.appendChild(badge);
+            } else if (state === 'pending') {
+              if (dot) { dot.classList.remove('bg-tertiary','bg-secondary-container','status-pulse','shadow-sm'); dot.classList.add('bg-outline','opacity-30'); }
+              if (iconEl) { iconEl.classList.remove('text-primary','text-tertiary'); iconEl.classList.add('text-on-surface-variant'); }
+            } else if (state === 'error') {
+              if (dot) { dot.classList.remove('bg-tertiary','bg-secondary-container','status-pulse','shadow-sm','bg-outline','opacity-30'); dot.classList.add('bg-error','opacity-70'); }
+              if (iconEl) { iconEl.classList.remove('text-primary','text-tertiary','text-on-surface-variant'); iconEl.classList.add('text-error'); }
+            }
+          },
+
+          setStatus(status) {
+            const badge = document.getElementById('pipeline-status-badge');
+            const dot = document.getElementById('pipeline-status-dot');
+            if (!badge || !dot) return;
+            if (status === 'running') {
+              badge.classList.remove('bg-tertiary/10', 'text-tertiary', 'border-tertiary/20');
+              badge.classList.add('bg-primary/10', 'text-primary', 'border-primary/20');
+              dot.classList.remove('bg-tertiary');
+              dot.classList.add('bg-primary');
+              badge.querySelector('span:last-child').textContent = 'RUNNING';
+            } else {
+              badge.classList.remove('bg-primary/10', 'text-primary', 'border-primary/20');
+              badge.classList.add('bg-tertiary/10', 'text-tertiary', 'border-tertiary/20');
+              dot.classList.remove('bg-primary');
+              dot.classList.add('bg-tertiary');
+              badge.querySelector('span:last-child').textContent = 'READY';
+            }
+          },
+
+          reset() {
+            Object.keys(this.steps).forEach(id => this.setStep(id, 'pending'));
+            this.setStatus('idle');
+          }
+        };
+
+        window.PipelineManager = PipelineManager;
+
+        window._pipelineBusy = false;
+
+        const STEP_BTN_MAP = {
+          'btn-gen-mobile':    'generate-mobile',
+          'btn-gen-hpsswitch': 'generate-hpsswitch',
+          'btn-parse-combine': 'parse-combine',
+          'btn-validate':      'validate',
+          'btn-fill-excel':    'fill-excel',
+        };
+
+        async function runPipelineStep(btnId, stepName) {
+          if (window._pipelineBusy) {
+            logToTerminal('Pipeline is already running — please wait.', 'WARN');
+            return;
+          }
+          window._pipelineBusy = true;
+          if (stepName === 'run-full') {
+            PipelineManager.reset();
+            PipelineManager.setStatus('running');
+          } else {
+            PipelineManager.setStatus('running');
+            if (btnId) PipelineManager.setStep(btnId, 'running');
+          }
+          logToTerminal(`▶ Starting: ${stepName}`, 'INFO');
+          try {
+            await fetchSSE(
+              `${API_URL}/api/pipeline/run?step=${stepName}`,
+              'POST',
+              (evt) => {
+                if (evt.type === 'log') {
+                  logToTerminal(evt.message, 'INFO');
+                } else if (evt.type === 'error') {
+                  logToTerminal(evt.message, 'ERROR');
+                  if (btnId) PipelineManager.setStep(btnId, 'error');
+                  window._pipelineBusy = false;
+                  PipelineManager.setStatus('idle');
+                } else if (evt.type === 'done') {
+                  logToTerminal(`✓ Completed: ${evt.step}`, 'SUCCESS');
+                  if (stepName === 'run-full') {
+                    Object.keys(PipelineManager.steps).forEach(id => PipelineManager.setStep(id, 'done'));
+                  } else if (btnId) {
+                    PipelineManager.setStep(btnId, 'done');
+                  }
+                  PipelineManager.setStatus('idle');
+                  window._pipelineBusy = false;
+                  FilesManager.loadFiles();
+                }
+              }
+            );
+          } catch(e) {
+            logToTerminal(`✗ Request failed: ${e.message}`, 'ERROR');
+            if (btnId) PipelineManager.setStep(btnId, 'error');
+            PipelineManager.setStatus('idle');
+            window._pipelineBusy = false;
+          }
+        }
+
+        // Wire individual step buttons
+        Object.entries(STEP_BTN_MAP).forEach(([btnId, stepName]) => {
+          document.getElementById(btnId)?.addEventListener('click', () => runPipelineStep(btnId, stepName));
+        });
+
+        const FilesManager = {
+          getTypeStyle(type) {
+            const t = type.toLowerCase();
+            if (t === 'excel' || t === 'xlsx') return { icon: 'description', iconClass: 'text-primary bg-primary/5', badgeClass: 'bg-secondary-fixed text-on-secondary-fixed-variant border-secondary/10', label: 'EXCEL' };
+            if (t === 'csv') return { icon: 'csv', iconClass: 'text-tertiary bg-tertiary/5', badgeClass: 'bg-surface-container-highest text-on-surface-variant border-outline-variant/20', label: 'CSV' };
+            return { icon: 'draft', iconClass: 'text-on-surface-variant bg-surface-container', badgeClass: 'bg-surface-container text-on-surface-variant border-outline-variant/20', label: type.toUpperCase() };
+          },
+
+          render(files) {
+            const tbody = document.getElementById('files-table-body');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            if (!files || files.length === 0) {
+              tbody.innerHTML = `<tr><td colspan="4" class="px-8 py-12 text-center text-on-surface-variant text-sm font-medium opacity-50">No files produced yet.</td></tr>`;
+              return;
+            }
+            files.forEach(file => this.addFile(file));
+          },
+
+          addFile(file) {
+            const tbody = document.getElementById('files-table-body');
+            if (!tbody) return;
+            const style = this.getTypeStyle(file.type);
+            const count = file.row_count != null ? Number(file.row_count).toLocaleString() : '—';
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-primary/5 transition-colors cursor-pointer group';
+            tr.innerHTML = `
+              <td class="px-6 lg:px-8 py-4">
+                <div class="flex items-center gap-3">
+                  <span class="material-symbols-outlined ${style.iconClass} p-1.5 rounded">${style.icon}</span>
+                  <span class="font-bold text-sm">${file.name}</span>
+                </div>
+              </td>
+              <td class="px-4 lg:px-6 py-4">
+                <span class="text-[10px] font-bold px-2.5 py-1 rounded-full border ${style.badgeClass}">${style.label}</span>
+              </td>
+              <td class="px-4 lg:px-6 py-4 font-mono text-xs font-semibold text-on-surface-variant">${count}</td>
+              <td class="px-6 lg:px-8 py-4 text-right">
+                <div class="flex items-center justify-end gap-1">
+                  ${file.type !== 'excel' ? `<button class="btn-preview-file w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container transition-all duration-200 active:scale-90 text-on-surface-variant" data-filename="${file.name}"><span class="material-symbols-outlined">visibility</span></button>` : ''}
+                  <button onclick="${file.downloadUrl ? `window.open('${file.downloadUrl}')` : 'void(0)'}" class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-primary/10 hover:text-primary transition-all duration-200 active:scale-90 text-primary">
+                    <span class="material-symbols-outlined">download</span>
+                  </button>
+                </div>
+              </td>`;
+            tbody.appendChild(tr);
+          },
+
+          setLoading() {
+            const tbody = document.getElementById('files-table-body');
+            if (!tbody) return;
+            tbody.innerHTML = `<tr><td colspan="4" class="px-8 py-12 text-center text-on-surface-variant text-sm font-medium opacity-50">Loading files...</td></tr>`;
+          },
+
+          clear() {
+            const tbody = document.getElementById('files-table-body');
+            if (tbody) tbody.innerHTML = '';
+          },
+
+          async loadFiles() {
+            this.setLoading();
+            try {
+              const resp = await fetch(`${API_URL}/api/files`);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const data = await resp.json();
+              const files = (data.files || []).map(f => ({ ...f, downloadUrl: `${API_URL}${f.download_url}` }));
+              this.render(files);
+            } catch(e) {
+              logToTerminal(`Output files load error: ${e.message}`, 'WARN');
+              this.render([]);
+            }
+          }
+        };
+
+        window.FilesManager = FilesManager;
+        FilesManager.loadFiles();
+
+        const PreviewManager = {
+          _showState(state) {
+            document.getElementById('preview-modal-loading').classList.toggle('hidden', state !== 'loading');
+            document.getElementById('preview-modal-loading').classList.toggle('flex',   state === 'loading');
+            document.getElementById('preview-modal-content').classList.toggle('hidden', state !== 'text');
+          },
+
+          async open(filename) {
+            const modal = document.getElementById('preview-modal');
+            document.getElementById('preview-modal-title').textContent = filename;
+            document.getElementById('preview-modal-meta').textContent  = '';
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            this._showState('loading');
+            const ext = filename.split('.').pop().toLowerCase();
+            if (ext === 'csv') {
+              document.getElementById('preview-modal-icon').textContent = 'grid_on';
+              await this._openCsv(filename);
+            } else {
+              document.getElementById('preview-modal-icon').textContent = 'article';
+              await this._openText(filename);
+            }
+          },
+
+          async _openCsv(filename) {
+            try {
+              const res  = await fetch(API_URL + '/api/files/preview?filename=' + encodeURIComponent(filename));
+              const data = await res.json();
+              const content = document.getElementById('preview-modal-content');
+              if (data.rows && data.rows.length) {
+                document.getElementById('preview-modal-meta').textContent = data.rows.length + ' rows';
+                const thead = '<tr>' + data.headers.map(function(h){ return '<th class="px-3 py-2 text-left text-[10px] font-black uppercase tracking-widest text-on-surface-variant whitespace-nowrap bg-surface-container-low/50">' + h + '</th>'; }).join('') + '</tr>';
+                const tbody = data.rows.map(function(r){ return '<tr class="border-t border-outline-variant/10 hover:bg-primary/5">' + r.map(function(c){ return '<td class="px-3 py-2 whitespace-nowrap text-xs">' + (c || '') + '</td>'; }).join('') + '</tr>'; }).join('');
+                content.innerHTML = '<table class="w-full text-left border-collapse">' + thead + '<tbody>' + tbody + '</tbody></table>';
+              } else {
+                content.innerHTML = '<p class="text-on-surface-variant opacity-50">Empty file.</p>';
+              }
+              this._showState('text');
+            } catch(e) {
+              document.getElementById('preview-modal-content').innerHTML = '<p class="text-error">Failed to load: ' + e.message + '</p>';
+              this._showState('text');
+            }
+          },
+
+          async _openText(filename) {
+            try {
+              const res  = await fetch(API_URL + '/api/files/preview?filename=' + encodeURIComponent(filename));
+              const data = await res.json();
+              const content = document.getElementById('preview-modal-content');
+              if (data.text) {
+                document.getElementById('preview-modal-meta').textContent = data.text.split('\n').length + ' lines';
+                content.innerHTML = '<pre class="text-on-surface-variant whitespace-pre-wrap leading-relaxed text-xs">' + data.text.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</pre>';
+              } else {
+                content.innerHTML = '<p class="text-on-surface-variant opacity-50">Empty file.</p>';
+              }
+              this._showState('text');
+            } catch(e) {
+              document.getElementById('preview-modal-content').innerHTML = '<p class="text-error">Failed to load: ' + e.message + '</p>';
+              this._showState('text');
+            }
+          },
+
+          close() {
+            const modal = document.getElementById('preview-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            document.getElementById('preview-modal-content').innerHTML = '';
+            document.getElementById('preview-modal-meta').textContent  = '';
+            this._showState('loading');
+          }
+        };
+
+        document.getElementById('preview-modal-close').addEventListener('click', function(){ PreviewManager.close(); });
+        document.getElementById('preview-modal').addEventListener('click', function(e){ if (e.target === e.currentTarget) PreviewManager.close(); });
+        document.addEventListener('click', function(e) {
+          var btn = e.target.closest('.btn-preview-file');
+          if (btn) PreviewManager.open(btn.dataset.filename);
+        });
+        window.PreviewManager = PreviewManager;
+
+        // Wire Run Full Pipeline button
+        document.getElementById('btn-run-pipeline').addEventListener('click', () => runPipelineStep(null, 'run-full'));
+
+        // Wire terminal clear button
+        document.getElementById('btn-clear-terminal')?.addEventListener('click', () => {
+          const log = document.getElementById('terminal-log');
+          if (log) log.innerHTML = '<p class="text-slate-600 italic">Log cleared.</p>';
+        });
+
+        const ConfigManager = {
+          state: { type: 'mobile', file: 'bank', rows: [], dirty: new Set(), newRows: new Set(), cache: {} },
+
+          schemas: {
+            bank: {
+              headers: ['Code', 'BIC / Swift', 'Label 1', 'Label 2', 'Extra'],
+              fields: ['code', 'bic', 'label1', 'label2', 'extra'],
+              sample: [
+                { code: 'M_ATW', bic: 'BCMAMAMCXXXX', label1: 'Attijariwafa', label2: 'Attijariwafa', extra: 'NA' },
+                { code: 'M_BMCE', bic: 'BMCEMAMCXXXX', label1: 'BMCE', label2: 'BMCE', extra: 'NA' },
+                { code: 'M_CAM', bic: 'CNCAMAMRXXXX', label1: 'Credit Agricole', label2: 'Credit Agricole', extra: 'NA' },
+                { code: 'M_CIH', bic: 'CIHMMAMCXXXX', label1: 'CIH', label2: 'CIH', extra: 'NA' },
+                { code: 'M_ABB', bic: 'ABBMMAMCXXXX', label1: 'ALBARID BANQUE', label2: 'ALBARID BANQUE', extra: 'NA' }
+              ]
+            },
+            bank_pdf: {
+              headers: ['Code', 'BIC / Swift', 'Label 1', 'PDF Key'],
+              fields: ['code', 'bic', 'label1', 'pdf_key'],
+              sample: [
+                { code: 'ATW', bic: 'BCMAMAMCXXXX', label1: 'Attijariwafa', pdf_key: 'ATW_BANK' },
+                { code: 'BMCE', bic: 'BMCEMAMCXXXX', label1: 'BMCE', pdf_key: 'BMCE_BANK' },
+                { code: 'CAM', bic: 'CNCAMAMRXXXX', label1: 'Credit Agricole', pdf_key: 'CAM_BANK' },
+                { code: 'CIH', bic: 'CIHMMAMCXXXX', label1: 'CIH', pdf_key: 'CIH_BANK' },
+                { code: 'ABB', bic: 'ABBMMAMCXXXX', label1: 'ALBARID BANQUE', pdf_key: 'ABB_BANK' }
+              ]
+            }
+          },
+
+          getSchema() { return this.schemas[this.state.file]; },
+
+          renderHeaders() {
+            const head = document.getElementById('config-table-head');
+            if (!head) return;
+            const schema = this.getSchema();
+            head.innerHTML = `<tr>${schema.headers.map(h =>
+              `<th class="px-6 lg:px-8 py-4">${h}</th>`
+            ).join('')}<th class="px-6 lg:px-8 py-4 text-right">Actions</th></tr>`;
+          },
+
+          renderRows() {
+            const tbody = document.getElementById('config-table-body');
+            if (!tbody) return;
+            const schema = this.getSchema();
+            tbody.innerHTML = '';
+            if (this.state.rows.length === 0) {
+              tbody.innerHTML = `<tr><td colspan="${schema.fields.length + 1}" class="px-8 py-12 text-center text-on-surface-variant text-sm opacity-50">No data. Add a row or load from API.</td></tr>`;
+              return;
+            }
+            this.state.rows.forEach((row, i) => {
+              const isNew = this.state.newRows.has(i);
+              const isDirty = this.state.dirty.has(i);
+              const rowIndicator = isNew
+                ? 'border-l-2 border-tertiary bg-tertiary/5'
+                : isDirty
+                ? 'border-l-2 border-primary bg-primary/5'
+                : 'border-l-2 border-transparent';
+
+              const tr = document.createElement('tr');
+              tr.className = `hover:bg-primary/5 transition-all group ${rowIndicator}`;
+              tr.dataset.index = i;
+
+              const badge = isNew
+                ? `<span class="text-[8px] font-black text-tertiary uppercase tracking-widest bg-tertiary/10 px-2 py-0.5 rounded-full">NEW</span>`
+                : isDirty
+                ? `<span class="text-[8px] font-black text-primary uppercase tracking-widest bg-primary/10 px-2 py-0.5 rounded-full">MODIFIED</span>`
+                : '';
+
+              tr.innerHTML = schema.fields.map(f =>
+                `<td class="px-6 lg:px-8 py-4 text-sm text-on-surface-variant font-${f === 'code' ? 'bold text-on-surface' : f === 'bic' ? 'mono text-xs' : 'normal'}">${row[f] ?? ''}</td>`
+              ).join('') + `
+                <td class="px-6 lg:px-8 py-4 text-right">
+                  <div class="flex justify-end items-center gap-2">
+                    ${badge}
+                    <div class="flex justify-end gap-1">
+                      <button class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-primary/10 hover:text-primary transition-all duration-200 active:scale-90 text-primary/60 btn-edit-row" data-index="${i}" title="Edit Row">
+                        <span class="material-symbols-outlined text-[20px]">edit</span>
+                      </button>
+                      <button class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-error/10 hover:text-error transition-all duration-200 active:scale-90 text-error/60 btn-delete-row" data-index="${i}" title="Delete Row">
+                        <span class="material-symbols-outlined text-[20px]">delete</span>
+                      </button>
+                    </div>
+                  </div>
+                </td>`;
+              tbody.appendChild(tr);
+            });
+            this.bindRowActions();
+          },
+
+          renderEditRow(index) {
+            const tbody = document.getElementById('config-table-body');
+            const schema = this.getSchema();
+            const row = this.state.rows[index];
+            const tr = tbody.querySelector(`tr[data-index="${index}"]`);
+            if (!tr) return;
+
+            const isNew = this.state.newRows.has(index);
+            tr.classList.add(isNew ? 'bg-tertiary/5' : 'bg-primary/5');
+
+            tr.innerHTML = schema.fields.map(f =>
+              `<td class="px-4 py-2"><input class="w-full bg-surface-container-low border border-primary/30 rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-primary transition-all" value="${row[f] ?? ''}" data-field="${f}"/></td>`
+            ).join('') + `
+              <td class="px-6 lg:px-8 py-4 text-right">
+                <div class="flex justify-end gap-1">
+                  <button class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-primary/10 hover:text-primary transition-all duration-200 active:scale-90 text-tertiary/60 btn-save-row" data-index="${index}" title="Save">
+                    <span class="material-symbols-outlined text-[20px]">check</span>
+                  </button>
+                  <button class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container transition-all duration-200 active:scale-90 text-error/60 btn-cancel-row" data-index="${index}" title="Cancel">
+                    <span class="material-symbols-outlined text-[20px]">close</span>
+                  </button>
+                </div>
+              </td>`;
+            this.bindRowActions();
+          },
+
+          addRow() {
+            const schema = this.getSchema();
+            const empty = {};
+            schema.fields.forEach(f => empty[f] = '');
+            this.state.rows.push(empty);
+            this.state.newRows.add(this.state.rows.length - 1);
+            this.renderRows();
+            this.renderEditRow(this.state.rows.length - 1);
+          },
+
+          async deleteRow(index) {
+            const row = this.state.rows[index];
+            const swift = (row.bic || '').trim().toUpperCase();
+            if (this.state.newRows.has(index) || !swift) {
+              this.state.rows.splice(index, 1);
+              this.state.newRows = new Set([...this.state.newRows].filter(i => i !== index).map(i => i > index ? i - 1 : i));
+              this.renderRows();
+              return;
+            }
+            if (!confirm(`Remove member with SWIFT ${swift} from BANK.csv and BANK_PDF.csv?`)) return;
+            try {
+              const resp = await fetch(`${API_URL}/api/config/member?type=${this.state.type}&swift=${encodeURIComponent(swift)}`, { method: 'DELETE' });
+              const data = await resp.json();
+              if (!resp.ok) throw new Error(data.detail || resp.statusText);
+              (data.log || []).forEach(msg => logToTerminal(msg, 'SUCCESS'));
+              if (data.note) logToTerminal(data.note, 'WARN');
+              logToTerminal(`✓ Member '${data.canonical || swift}' removed from all config files`, 'SUCCESS');
+              this.loadFromAPI();
+            } catch(e) {
+              logToTerminal(`Delete failed: ${e.message}`, 'ERROR');
+            }
+          },
+
+
+          saveRow(index) {
+            const tbody = document.getElementById('config-table-body');
+            const tr = tbody.querySelector(`tr[data-index="${index}"]`);
+            if (!tr) return;
+            tr.querySelectorAll('input[data-field]').forEach(input => {
+              this.state.rows[index][input.dataset.field] = input.value.trim();
+            });
+            if (!this.state.newRows.has(index)) this.state.dirty.add(index);
+            this.renderRows();
+          },
+
+          bindRowActions() {
+            document.querySelectorAll('.btn-edit-row').forEach(btn =>
+              btn.addEventListener('click', () => this.renderEditRow(+btn.dataset.index)));
+            document.querySelectorAll('.btn-delete-row').forEach(btn =>
+              btn.addEventListener('click', () => this.deleteRow(+btn.dataset.index)));
+            document.querySelectorAll('.btn-save-row').forEach(btn =>
+              btn.addEventListener('click', () => this.saveRow(+btn.dataset.index)));
+            document.querySelectorAll('.btn-cancel-row').forEach(btn =>
+              btn.addEventListener('click', () => this.renderRows()));
+          },
+
+          load(rows) { this.state.rows = rows; this.renderHeaders(); this.renderRows(); },
+
+          getData() {
+            return {
+              type: this.state.type,
+              file: this.state.file,
+              rows: this.state.rows,
+              modified: [...this.state.dirty].map(i => this.state.rows[i]),
+              added: [...this.state.newRows].map(i => this.state.rows[i])
+            };
+          },
+
+          setContext(type, file) {
+            const currentKey = `${this.state.type}_${this.state.file}`;
+            this.state.cache[currentKey] = {
+              rows: [...this.state.rows],
+              dirty: new Set(this.state.dirty),
+              newRows: new Set(this.state.newRows)
+            };
+            this.state.type = type;
+            this.state.file = file;
+            const newKey = `${type}_${file}`;
+            if (this.state.cache[newKey]) {
+              this.state.rows = this.state.cache[newKey].rows;
+              this.state.dirty = this.state.cache[newKey].dirty;
+              this.state.newRows = this.state.cache[newKey].newRows;
+              this.renderHeaders();
+              this.renderRows();
+            } else {
+              this.state.rows = [];
+              this.state.dirty = new Set();
+              this.state.newRows = new Set();
+              this.renderHeaders();
+              this.renderRows();
+              this.loadFromAPI();
+            }
+          },
+
+          init() {
+            this.renderHeaders();
+            this.renderRows();
+            this.loadFromAPI();
+
+            document.querySelectorAll('[data-type]').forEach(btn =>
+              btn.addEventListener('click', () => this.setContext(btn.dataset.type, this.state.file)));
+            document.querySelectorAll('[data-file]').forEach(btn =>
+              btn.addEventListener('click', () => this.setContext(this.state.type, btn.dataset.file)));
+            document.getElementById('btn-save-config')?.addEventListener('click', async () => {
+              const data = this.getData();
+              try {
+                const resp = await fetch(`${API_URL}/api/config?type=${data.type}&file=${data.file}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ rows: data.rows })
+                });
+                if (!resp.ok) { const e = await resp.json().catch(() => ({detail: resp.statusText})); throw new Error(e.detail); }
+                this.state.dirty.clear();
+                this.state.newRows.clear();
+                this.renderRows();
+                logToTerminal(`Config saved: ${data.type}/${data.file} — ${data.rows.length} rows`, 'SUCCESS');
+              } catch(e) {
+                logToTerminal(`Config save failed: ${e.message}`, 'ERROR');
+              }
+            });
+          },
+
+          async loadFromAPI() {
+            const { type, file } = this.state;
+            try {
+              const resp = await fetch(`${API_URL}/api/config?type=${type}&file=${file}`);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const data = await resp.json();
+              this.state.rows = data.rows || [];
+              this.state.dirty = new Set();
+              this.state.newRows = new Set();
+              this.renderHeaders();
+              this.renderRows();
+            } catch(e) {
+              logToTerminal(`Config load failed (${type}/${file}): ${e.message} — using sample`, 'WARN');
+              this.state.rows = JSON.parse(JSON.stringify(this.schemas[file]?.sample || []));
+              this.renderHeaders();
+              this.renderRows();
+            }
+          }
+        };
+
+        window.ConfigManager = ConfigManager;
+        ConfigManager.init();
+
+        // ── Add Member Modal ────────────────────────────────────────────────
+        const AddMemberModal = {
+          memberType: 'mobile',
+          mode: 'add',           // 'add' | 'split'
+          sign: 'C',             // 'C' | 'D'
+
+          open() {
+            this.memberType = ConfigManager.state.type;
+            this.mode = 'add';
+            this.sign = 'C';
+            this._syncTypeButtons();
+            this._syncModeButtons();
+            this._syncSignButtons();
+            this._syncVisibility();
+            document.getElementById('add-member-type-badge').textContent = this.memberType.charAt(0).toUpperCase() + this.memberType.slice(1);
+            document.getElementById('add-member-modal').classList.remove('hidden');
+            document.getElementById('add-member-modal').classList.add('flex');
+          },
+
+          close() {
+            document.getElementById('add-member-modal').classList.add('hidden');
+            document.getElementById('add-member-modal').classList.remove('flex');
+            this._reset();
+          },
+
+          _reset() {
+            ['am-canonical','am-swift','am-display-recap','am-display-long','am-raw-names','am-pdf-key','am-split-from'].forEach(id => {
+              const el = document.getElementById(id);
+              if (el) el.value = '';
+            });
+            this.mode = 'add';
+            this.sign = 'C';
+            this._syncModeButtons();
+            this._syncSignButtons();
+            this._syncVisibility();
+            const btn = document.getElementById('add-member-submit');
+            if (btn) btn.disabled = false;
+          },
+
+          _syncTypeButtons() {
+            ['mobile','monetique'].forEach(t => {
+              const btn = document.getElementById(`member-type-${t}`);
+              if (!btn) return;
+              const active = t === this.memberType;
+              btn.classList.toggle('bg-primary', active);
+              btn.classList.toggle('text-on-primary', active);
+              btn.classList.toggle('shadow-sm', active);
+              btn.classList.toggle('text-on-surface-variant', !active);
+              btn.classList.toggle('hover:bg-white/50', !active);
+            });
+            const badge = document.getElementById('add-member-type-badge');
+            if (badge) badge.textContent = this.memberType.charAt(0).toUpperCase() + this.memberType.slice(1);
+          },
+
+          _syncModeButtons() {
+            ['add','split'].forEach(m => {
+              const btn = document.getElementById(`member-mode-${m}`);
+              if (!btn) return;
+              const active = m === this.mode;
+              btn.classList.toggle('bg-primary', active);
+              btn.classList.toggle('text-on-primary', active);
+              btn.classList.toggle('shadow-sm', active);
+              btn.classList.toggle('text-on-surface-variant', !active);
+              btn.classList.toggle('hover:bg-white/50', !active);
+            });
+          },
+
+          _syncSignButtons() {
+            ['C','D'].forEach(s => {
+              const btn = document.getElementById(`member-sign-${s}`);
+              if (!btn) return;
+              const active = s === this.sign;
+              btn.classList.toggle('bg-primary', active);
+              btn.classList.toggle('text-on-primary', active);
+              btn.classList.toggle('shadow-sm', active);
+              btn.classList.toggle('text-on-surface-variant', !active);
+              btn.classList.toggle('hover:bg-white/50', !active);
+            });
+          },
+
+          _syncVisibility() {
+            // Show/hide split_from input
+            const wrap = document.getElementById('am-split-from-wrap');
+            if (wrap) wrap.classList.toggle('hidden', this.mode !== 'split');
+            // Toggle help text
+            document.getElementById('am-help-mode-add')?.classList.toggle('hidden', this.mode !== 'add');
+            document.getElementById('am-help-mode-split')?.classList.toggle('hidden', this.mode !== 'split');
+            // Update submit label + icon
+            const lbl = document.getElementById('add-member-submit-label');
+            const ico = document.getElementById('add-member-submit-icon');
+            if (lbl) lbl.textContent = this.mode === 'split' ? 'Split Member' : 'Add Member';
+            if (ico) ico.textContent = this.mode === 'split' ? 'call_split' : 'person_add';
+          },
+
+          async submit() {
+            const canonical    = document.getElementById('am-canonical').value.trim();
+            const swift        = document.getElementById('am-swift').value.trim().toUpperCase();
+            const displayRecap = document.getElementById('am-display-recap').value.trim() || canonical;
+            const displayLong  = document.getElementById('am-display-long').value.trim() || canonical;
+            const rawNames     = document.getElementById('am-raw-names').value.trim();
+            const pdfKey       = document.getElementById('am-pdf-key').value.trim();
+            const splitFrom    = document.getElementById('am-split-from').value.trim();
+
+            if (!canonical || !swift || !displayLong) {
+              logToTerminal('Add Member: canonical code, SWIFT and full name are required.', 'WARN');
+              return;
+            }
+            if (swift.length !== 12) {
+              logToTerminal('Add Member: SWIFT code must be exactly 12 characters.', 'WARN');
+              return;
+            }
+            if (this.mode === 'split' && !splitFrom) {
+              logToTerminal('Split Member: "Split From" (umbrella canonical) is required in split mode.', 'WARN');
+              return;
+            }
+
+            const submitBtn = document.getElementById('add-member-submit');
+            const submitLbl = document.getElementById('add-member-submit-label');
+            submitBtn.disabled = true;
+            submitLbl.textContent = this.mode === 'split' ? 'Splitting...' : 'Adding...';
+
+            const payload = {
+              type: this.memberType,
+              canonical,
+              display_recap: displayRecap,
+              display_long: displayLong,
+              swift,
+              sign: this.sign,
+              raw_names: rawNames,
+              pdf_key: pdfKey
+            };
+            if (this.mode === 'split') {
+              payload.split_from = splitFrom;
+              // In split mode, leave pdf_key empty by default → endpoint
+              // will default it to the canonical (umbrella-routing convention
+              // like `CMI;;;DAMANCASHACQ`), not `{code}_BANK`.
+              if (!pdfKey) delete payload.pdf_key;
+            }
+
+            try {
+              const resp = await fetch(`${API_URL}/api/config/member`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+              const data = await resp.json();
+              if (!resp.ok) throw new Error(data.detail || resp.statusText);
+              (data.log || []).forEach(msg => logToTerminal(msg, 'SUCCESS'));
+              const verb = this.mode === 'split' ? 'split from ' + splitFrom : 'added';
+              logToTerminal(`✓ Member '${canonical}' ${verb} — all files updated`, 'SUCCESS');
+              this.close();
+              ConfigManager.loadFromAPI();
+            } catch(e) {
+              logToTerminal(`${this.mode === 'split' ? 'Split' : 'Add'} Member failed: ${e.message}`, 'ERROR');
+              submitBtn.disabled = false;
+              submitLbl.textContent = this.mode === 'split' ? 'Split Member' : 'Add Member';
+            }
+          }
+        };
+
+        document.getElementById('btn-add-member')?.addEventListener('click', () => AddMemberModal.open());
+        document.getElementById('add-member-modal-close')?.addEventListener('click', () => AddMemberModal.close());
+        document.getElementById('add-member-cancel')?.addEventListener('click', () => AddMemberModal.close());
+        document.getElementById('add-member-modal')?.addEventListener('click', e => { if (e.target === e.currentTarget) AddMemberModal.close(); });
+        document.getElementById('add-member-submit')?.addEventListener('click', () => AddMemberModal.submit());
+
+        ['mobile','monetique'].forEach(t =>
+          document.getElementById(`member-type-${t}`)?.addEventListener('click', () => {
+            AddMemberModal.memberType = t;
+            AddMemberModal._syncTypeButtons();
+          }));
+
+        ['add','split'].forEach(m =>
+          document.getElementById(`member-mode-${m}`)?.addEventListener('click', () => {
+            AddMemberModal.mode = m;
+            AddMemberModal._syncModeButtons();
+            AddMemberModal._syncVisibility();
+          }));
+
+        ['C','D'].forEach(s =>
+          document.getElementById(`member-sign-${s}`)?.addEventListener('click', () => {
+            AddMemberModal.sign = s;
+            AddMemberModal._syncSignButtons();
+          }));
+
+        document.getElementById('am-canonical')?.addEventListener('input', e => {
+          const recap   = document.getElementById('am-display-recap');
+          const pdfKey  = document.getElementById('am-pdf-key');
+          if (!recap.value) recap.value = e.target.value;
+          // In split mode the pdf_key convention is the plain canonical (no _BANK suffix)
+          // so we leave it empty and let the endpoint default correctly.
+          if (!pdfKey.value && AddMemberModal.mode === 'add') {
+            let c = e.target.value;
+            for (const p of ['M_','m_']) { if (c.startsWith(p)) { c = c.slice(p.length); break; } }
+            pdfKey.value = c + '_BANK';
+          }
+        });
+
+        async function refreshStatus() {
+          try {
+            const res = await fetch('/api/pipeline/status');
+            const data = await res.json();
+            const el = document.getElementById('last-run-display');
+            if (el && data.last_run) el.textContent = `Last run: ${data.last_run}`;
+          } catch {}
+        }
+        // Sync merge flags from server on load
+        fetch('/api/pipeline/merge-flags').then(function(r){ return r.json(); }).then(function(data){
+          var f = data.merge_flags || {};
+          var hpsBtn = document.getElementById('merge-hpsswitch-toggle');
+          var mobBtn = document.getElementById('merge-mobile-toggle');
+          if (hpsBtn) { hpsBtn.setAttribute('data-on', f.hpsswitch !== false ? 'true' : 'false'); hpsBtn.style.opacity = f.hpsswitch !== false ? '1' : '0.3'; hpsBtn.style.textDecoration = f.hpsswitch !== false ? 'none' : 'line-through'; }
+          if (mobBtn) { mobBtn.setAttribute('data-on', f.mobile !== false ? 'true' : 'false'); mobBtn.style.opacity = f.mobile !== false ? '1' : '0.3'; mobBtn.style.textDecoration = f.mobile !== false ? 'none' : 'line-through'; }
+        }).catch(function(){});
+
+        refreshStatus();
+        setInterval(refreshStatus, 10000);
+    });
+</script>
+
+<!-- Add Member Modal -->
+<div id="add-member-modal" class="fixed inset-0 z-[200] hidden items-center justify-center bg-black/40 backdrop-blur-sm">
+  <div class="bg-surface-container-lowest rounded-2xl shadow-2xl border border-outline-variant/20 flex flex-col overflow-hidden w-full max-w-xl mx-4">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-outline-variant/10 shrink-0">
+      <div class="flex items-center gap-3">
+        <span class="material-symbols-outlined text-primary text-[20px]">person_add</span>
+        <h3 class="font-bold text-sm">Add New Member</h3>
+        <span id="add-member-type-badge" class="text-[10px] font-black uppercase tracking-widest bg-primary/10 text-primary px-2 py-0.5 rounded-full">Mobile</span>
+      </div>
+      <button id="add-member-modal-close" class="w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container transition-all duration-200 active:scale-90">
+        <span class="material-symbols-outlined text-[20px]">close</span>
+      </button>
+    </div>
+    <div class="overflow-y-auto p-6 space-y-5">
+      <div class="space-y-2">
+        <label class="block text-[10px] font-black text-on-surface-variant uppercase tracking-widest opacity-60">Member Type</label>
+        <div class="flex gap-2 p-1 bg-surface-container-low rounded-2xl">
+          <button class="flex-1 px-4 py-2 rounded-xl font-bold text-xs transition-all" id="member-type-mobile" data-member-type="mobile">Mobile</button>
+          <button class="flex-1 px-4 py-2 rounded-xl font-bold text-xs transition-all" id="member-type-monetique" data-member-type="monetique">Monetique</button>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <label class="block text-[10px] font-black text-on-surface-variant uppercase tracking-widest opacity-60">Operation</label>
+        <div class="flex gap-2 p-1 bg-surface-container-low rounded-2xl">
+          <button class="flex-1 px-4 py-2 rounded-xl font-bold text-xs transition-all" id="member-mode-add" data-member-mode="add">
+            <span class="material-symbols-outlined align-middle text-[14px] mr-1">person_add</span>Add new
+          </button>
+          <button class="flex-1 px-4 py-2 rounded-xl font-bold text-xs transition-all" id="member-mode-split" data-member-mode="split">
+            <span class="material-symbols-outlined align-middle text-[14px] mr-1">call_split</span>Split from umbrella
+          </button>
+        </div>
+      </div>
+      <div class="space-y-1.5 hidden" id="am-split-from-wrap">
+        <label class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant opacity-60">
+          Split From <span class="text-error">*</span>
+          <span class="normal-case font-normal opacity-60 ml-1">— umbrella canonical this member currently aggregates into (e.g. CMI)</span>
+        </label>
+        <input id="am-split-from" class="w-full bg-surface-container-low border border-outline-variant/30 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary transition-all" placeholder="e.g. CMI"/>
+        <p class="text-[9px] text-amber-600 dark:text-amber-400 opacity-80 flex items-center gap-1.5 mt-1">
+          <span class="material-symbols-outlined text-[12px]">info</span>
+          The umbrella itself is preserved — only the specific sub-member is detached.
+        </p>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="space-y-1.5">
+          <label class="text-[9px] font-black uppercase tracking-widest text-on-surface-variant opacity-60">
+            Code <span class="text-error">*</span>
+            <span class="normal-case font-normal opacity-60 ml-1">— BANK.csv col 1, canonical identifier</span>
+          </label>
+          <input id="am-canonical" class="w-full bg-surface-container-low border border-outline-variant/30 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary transition-all" placeholder="e.g. BCM  or  M_ATW"/>
+        </div>
+        <div class="space-y-1.5">
+          <label class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant opacity-60">
+            SWIFT / BIC <span class="text-error">*</span>
+            <span class="normal-case font-normal opacity-60 ml-1">— 12 chars, BANK.csv col 2</span>
+          </label>
+          <input id="am-swift" class="w-full bg-surface-container-low border border-outline-variant/30 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary transition-all" placeholder="e.g. BCMAMAMCXXXX" maxlength="12"/>
+        </div>
+        <div class="space-y-1.5 sm:col-span-2">
+          <label class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant opacity-60">
+            Display Name <span class="text-error">*</span>
+            <span class="normal-case font-normal opacity-60 ml-1">— BANK.csv label1/label2, BANK_PDF.csv label1</span>
+          </label>
+          <input id="am-display-long" class="w-full bg-surface-container-low border border-outline-variant/30 rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-primary transition-all" placeholder="e.g. Attijariwafa bank"/>
+        </div>
+        <div class="space-y-1.5">
+          <label class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant opacity-60">
+            Short Name
+            <span class="normal-case font-normal opacity-60 ml-1">— Excel recap col, defaults to code</span>
+          </label>
+          <input id="am-display-recap" class="w-full bg-surface-container-low border border-outline-variant/30 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary transition-all" placeholder="auto from code"/>
+        </div>
+        <div class="space-y-1.5">
+          <label class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant opacity-60">
+            PDF Key
+            <span class="normal-case font-normal opacity-60 ml-1">— BANK_PDF.csv col 4, defaults to CODE_BANK</span>
+          </label>
+          <input id="am-pdf-key" class="w-full bg-surface-container-low border border-outline-variant/30 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary transition-all" placeholder="e.g. BCM_BANK"/>
+        </div>
+        <div class="space-y-1.5 sm:col-span-2">
+          <label class="text-[10px] font-black uppercase tracking-widest text-on-surface-variant opacity-60">
+            CSV Aliases
+            <span class="normal-case font-normal opacity-60 ml-1">— legacy field, no longer persisted (informational only)</span>
+          </label>
+          <input id="am-raw-names" class="w-full bg-surface-container-low border border-outline-variant/30 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary transition-all" placeholder="(ignored — aliases are read from BANK_PDF.csv)"/>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <label class="block text-[10px] font-black text-on-surface-variant uppercase tracking-widest opacity-60">
+          Sign
+          <span class="normal-case font-normal opacity-60 ml-1">— which side of the reconciliation this member posts to</span>
+        </label>
+        <div class="flex gap-2 p-1 bg-surface-container-low rounded-2xl">
+          <button class="flex-1 px-4 py-2 rounded-xl font-bold text-xs transition-all" id="member-sign-C" data-member-sign="C">
+            <span class="material-symbols-outlined align-middle text-[14px] mr-1">trending_up</span>Credit (C)
+          </button>
+          <button class="flex-1 px-4 py-2 rounded-xl font-bold text-xs transition-all" id="member-sign-D" data-member-sign="D">
+            <span class="material-symbols-outlined align-middle text-[14px] mr-1">trending_down</span>Debit (D)
+          </button>
+        </div>
+      </div>
+      <p id="am-help-text" class="text-[10px] text-on-surface-variant opacity-60 leading-relaxed">
+        <span id="am-help-mode-add">Creates a brand-new member. Updates BANK.csv, BANK_PDF.csv, and the Excel template (all sheets) in one shot. A timestamped template backup is made automatically.</span>
+        <span id="am-help-mode-split" class="hidden">Promotes an existing sub-member to its own canonical. Rewrites the umbrella's BANK_PDF.csv routing in place and adds a new standalone row in BANK.csv + Excel template. The umbrella itself is preserved with its other sub-members.</span>
+      </p>
+    </div>
+    <div class="flex justify-end gap-3 px-6 py-4 border-t border-outline-variant/10 shrink-0">
+      <button id="add-member-cancel" class="px-6 py-2.5 rounded-2xl text-on-surface-variant font-bold text-xs hover:bg-surface-container transition-all">Cancel</button>
+      <button id="add-member-submit" class="flex items-center gap-2 px-8 py-2.5 rounded-2xl bg-primary text-on-primary font-bold text-xs shadow-lg hover:shadow-xl active:scale-95 transition-all">
+        <span id="add-member-submit-icon" class="material-symbols-outlined text-sm">person_add</span>
+        <span id="add-member-submit-label">Add Member</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="preview-modal" class="fixed inset-0 z-[200] hidden items-center justify-center bg-black/40 backdrop-blur-sm">
+  <div class="bg-surface-container-lowest rounded-2xl shadow-2xl border border-outline-variant/20 flex flex-col overflow-hidden" style="width:95vw;height:92vh;">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-outline-variant/10 shrink-0">
+      <div class="flex items-center gap-3 min-w-0">
+        <span id="preview-modal-icon" class="material-symbols-outlined text-primary text-[20px] shrink-0">table_chart</span>
+        <h3 id="preview-modal-title" class="font-bold text-sm truncate"></h3>
+        <span id="preview-modal-meta" class="text-[10px] font-semibold text-on-surface-variant opacity-60 shrink-0 ml-2"></span>
+      </div>
+      <button id="preview-modal-close" class="ml-4 shrink-0 w-9 h-9 rounded-full flex items-center justify-center hover:bg-surface-container transition-all duration-200 active:scale-90">
+        <span class="material-symbols-outlined text-[20px]">close</span>
+      </button>
+    </div>
+    <div id="preview-modal-loading" class="flex flex-col items-center justify-center flex-1 gap-4 text-on-surface-variant">
+      <div class="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+      <p class="text-sm font-medium opacity-60">Loading...</p>
+    </div>
+    <div id="preview-modal-content" class="hidden overflow-auto flex-1 p-6 font-mono text-xs"></div>
+  </div>
+</div>
+
+</body></html>
