@@ -1,0 +1,5 @@
+streamlit
+reportlab
+num2words
+openpyxl
+pandas

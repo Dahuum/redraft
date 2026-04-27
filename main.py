@@ -121,9 +121,9 @@ class InvoicePDF:
         if os.path.exists(LOGO_PATH):
             c.drawImage(LOGO_PATH, 45.2, self._ry(64.3), width=138.1, height=40.1, mask='auto')
 
-        # 2. Yellow invoice box
-        c.setFillColor(colors.HexColor("#FFFF00"))
-        c.rect(331.8, self._ry(141.5), 224.8, 64.9, fill=1, stroke=0)
+        # 2. Invoice box
+        # c.setFillColor(colors.HexColor("#FFFF00"))          # yellow background
+        # c.rect(331.8, self._ry(141.5), 224.8, 64.9, fill=1, stroke=0)
         c.setStrokeColor(BLACK); c.setLineWidth(0.5)
         c.rect(331.8, self._ry(141.5), 224.8, 64.9, fill=0, stroke=1)
         c.setFont("Helvetica", 10); c.setFillColor(BLACK)
