@@ -1,0 +1,38 @@
+{
+  "variable_fields": {
+    "p1_elem_0004": {"column": "invoice_number"},
+    "p1_elem_0005": {"column": "invoice_date"},
+    "p1_elem_0006": {"column": "client_name",     "wrap": true, "leading": 13},
+    "p1_elem_0007": {"column": "client_ref"},
+    "p1_elem_0008": {"column": "client_address",   "wrap": true, "leading": 13},
+    "p1_elem_0009": {"column": "client_ice"},
+    "p1_elem_0017": {"column": "description",      "wrap": true, "leading": 13},
+    "p1_elem_0018": {"column": "montant_ht",       "format": "currency"},
+    "p1_elem_0019": {"column": "bon_commande",     "wrap": true, "leading": 11},
+    "p1_elem_0030": {"column": "banque"},
+    "p1_elem_0031": {"column": "agence"},
+    "p1_elem_0032": {"column": "compte"}
+  },
+
+  "computed_fields": [
+    {
+      "target": "p1_elem_0023",
+      "formula": "montant_ht * 0.20",
+      "format": "currency",
+      "column": "tva"
+    },
+    {
+      "target": "p1_elem_0025",
+      "formula": "montant_ht + tva",
+      "format": "currency",
+      "column": "ttc"
+    },
+    {
+      "target": "p1_elem_0028",
+      "formula": "amount_in_words_fr(ttc)",
+      "format": "text"
+    }
+  ],
+
+  "filename_pattern": "facture_{invoice_number}.pdf"
+}
