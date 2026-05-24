@@ -340,6 +340,7 @@ def _extract_shape_elements(page: fitz.Page) -> list:
         x0, y0, x1, y1 = rect
 
         if is_rect or path.get("type") == "re":
+            br = round(path.get("radius") or 0, 2)
             elements.append({
                 "type":         "rectangle",
                 "x":            round(x0, 2),
@@ -349,6 +350,7 @@ def _extract_shape_elements(page: fitz.Page) -> list:
                 "fill_color":   fill,
                 "stroke_color": stroke,
                 "stroke_width": width,
+                "border_radius": br,
                 "origin":       "pymupdf",
             })
         else:

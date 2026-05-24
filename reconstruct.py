@@ -166,21 +166,22 @@ class PageRenderer:
         pw = self.page["width_pt"]
         c = rl_canvas.Canvas(out_path, pagesize=(pw, self.ph))
 
-        for el in self.page["elements"]:
-            t = el["type"]
+        elements = self.page["elements"]
 
-            if t in ("path", "rectangle"):
-                self._draw_rect(c, el)
-            elif t == "line":
-                self._draw_line(c, el)
-            elif t == "text":
-                self._draw_text(c, el)
-            elif t == "image":
-                self._draw_image(c, el)
-            # table type is intentionally skipped — individual text spans
-            # and line elements inside the table region already cover its
-            # visual content. Rendering the table struct separately would
-            # double-draw cell text and produce incorrect grid overlaps.
+        # Enforce paint order: backgrounds → fills → borders → images → text
+        rects  = [e for e in elements if e["type"] in ("path", "rectangle")]
+        lines  = [e for e in elements if e["type"] == "line"]
+        images = [e for e in elements if e["type"] == "image"]
+        texts  = [e for e in elements if e["type"] == "text"]
+
+        for el in rects:
+            self._draw_rect(c, el)
+        for el in lines:
+            self._draw_line(c, el)
+        for el in images:
+            self._draw_image(c, el)
+        for el in texts:
+            self._draw_text(c, el)
 
         c.save()
 
@@ -198,15 +199,31 @@ class PageRenderer:
         x, y, w, h = el["x"], el["y"], el["width"], el["height"]
         yr = self._y(y, h)
 
+        # Fill-only rects with no stroke of their own bleed 0.5 pt beyond
+        # their nominal edges so they extend under adjacent border strokes.
+        # PDF strokes are centred on the path; without this, a 0.5 pt gap
+        # appears between the fill edge and the border stroke centre.
+        if fill_c is not None and stroke_c is None:
+            bleed = 0.5
+            x, y, w, h = x - bleed, y - bleed, w + 2 * bleed, h + 2 * bleed
+            yr = self._y(y, h)
+
         if fill_c is not None:
             c.setFillColor(fill_c)
         if stroke_c is not None:
             c.setStrokeColor(stroke_c)
 
         c.setLineWidth(max(sw, 0.0))
-        c.rect(x, yr, w, h,
-               fill=1 if fill_c is not None else 0,
-               stroke=1 if stroke_c is not None else 0)
+
+        radius = el.get("border_radius", 0)
+        if radius > 0:
+            c.roundRect(x, yr, w, h, radius,
+                        fill=1 if fill_c is not None else 0,
+                        stroke=1 if stroke_c is not None else 0)
+        else:
+            c.rect(x, yr, w, h,
+                   fill=1 if fill_c is not None else 0,
+                   stroke=1 if stroke_c is not None else 0)
 
         c.setFillColor(colors.black)
         c.setStrokeColor(colors.black)
