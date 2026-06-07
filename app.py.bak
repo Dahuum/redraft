@@ -1,0 +1,673 @@
+"""
+app.py — Redraft v1
+Two features:
+  1. PDF Editor   — click any text field on the rendered PDF → edit in panel → download
+  2. Bulk Generator — upload template + CSV → map fields → generate ZIP
+"""
+
+import base64
+import csv
+import io
+import os
+import sys
+import tempfile
+import warnings
+import zipfile
+from pathlib import Path
+
+import fitz
+import streamlit as st
+from PIL import Image, ImageDraw
+from streamlit_image_coordinates import streamlit_image_coordinates
+
+sys.path.insert(0, os.path.dirname(__file__))
+from pdf_editor import PDFEditor, get_spans  # noqa: E402
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Page config
+# ─────────────────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Redraft",
+    page_icon="📄",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rendering helpers (pure Streamlit — no custom JS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+DPI   = 150
+SCALE = DPI / 72.0   # PDF points → image pixels at DPI
+
+_HL_BLUE  = (0.231, 0.510, 0.965)   # selected span outline
+_HL_GREEN = (0.133, 0.773, 0.369)   # already-edited span outline
+
+
+def render_page_b64(pdf_bytes: bytes, page_num: int = 0) -> tuple:
+    """Render *page_num* at DPI, return (base64_png_str, img_w_px, img_h_px)."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    mat = fitz.Matrix(SCALE, SCALE)
+    pix = doc[page_num].get_pixmap(matrix=mat)
+    doc.close()
+    b64 = base64.b64encode(pix.tobytes("png")).decode()
+    return b64, pix.width, pix.height
+
+
+def render_page_png(pdf_bytes: bytes, page_num: int = 0,
+                    highlight_bbox=None, edited_bboxes=None) -> bytes:
+    """
+    Render *page_num* to PNG bytes, optionally drawing outline rectangles:
+      • each bbox in *edited_bboxes* → green outline
+      • *highlight_bbox* (the selected span) → thicker blue outline
+    Rectangles are drawn on an in-memory copy and never saved.
+    """
+    doc  = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[page_num]
+
+    for b in (edited_bboxes or []):
+        page.draw_rect(fitz.Rect(b), color=_HL_GREEN, width=1.5, overlay=True)
+
+    if highlight_bbox is not None:
+        r = fitz.Rect(highlight_bbox)
+        page.draw_rect(r, color=_HL_BLUE, width=2.5, overlay=True)
+
+    pix = page.get_pixmap(matrix=fitz.Matrix(SCALE, SCALE))
+    png = pix.tobytes("png")
+    doc.close()
+    return png
+
+
+def render_base_png_cached(display_bytes: bytes, page_num: int) -> bytes:
+    """Render *page_num* (NO overlays) to PNG once and cache it in session_state.
+
+    Rasterising the PDF is the slow part of each click rerun; highlight outlines
+    are cheap PIL draws done on top of this cached base.  The cache is keyed by a
+    light signature (page + length + edge bytes) so it auto-invalidates when the
+    displayed PDF changes (e.g. switching to the edited preview).
+    """
+    sig = (page_num, len(display_bytes), display_bytes[:24], display_bytes[-24:])
+    cache = st.session_state.get("ed_png_cache")
+    if cache and cache.get("sig") == sig:
+        return cache["png"]
+    doc = fitz.open(stream=display_bytes, filetype="pdf")
+    pix = doc[page_num].get_pixmap(matrix=fitz.Matrix(SCALE, SCALE))
+    png = pix.tobytes("png")
+    doc.close()
+    st.session_state["ed_png_cache"] = {"sig": sig, "png": png}
+    return png
+
+
+def overlay_highlights(base_png: bytes, spans: list, page_num: int,
+                       selected=None, edited_idxs=()) -> Image.Image:
+    """Draw edited (green) and selected (blue) outline boxes onto the base image.
+
+    Pure PIL — no PDF re-render.  bbox is in PDF points; multiply by SCALE to get
+    pixel coordinates in the DPI-rendered image.
+    """
+    img  = Image.open(io.BytesIO(base_png)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    def _px(b):
+        return [b[0] * SCALE, b[1] * SCALE, b[2] * SCALE, b[3] * SCALE]
+
+    for i in edited_idxs:
+        if spans[i]["page"] == page_num:
+            draw.rectangle(_px(spans[i]["bbox"]), outline=(34, 197, 94), width=2)
+    if selected is not None and spans[selected]["page"] == page_num:
+        draw.rectangle(_px(spans[selected]["bbox"]), outline=(59, 130, 246), width=3)
+    return img
+
+
+def _pos_hint(bbox: list, pw: float, ph: float) -> str:
+    """Human-readable position of *bbox* on a page of size (pw, ph) in PDF pts."""
+    cx = (bbox[0] + bbox[2]) / 2.0
+    cy = (bbox[1] + bbox[3]) / 2.0
+    col = "left"   if cx < pw / 3 else ("right"  if cx > 2 * pw / 3 else "center")
+    row = "top"    if cy < ph / 3 else ("bottom" if cy > 2 * ph / 3 else "middle")
+    return f"{row}-{col}"
+
+
+def _span_at(spans: list, page_num: int, px: float, py: float):
+    """Return the global index of the span whose bbox contains PDF point (px, py).
+
+    When several bboxes overlap the point, the smallest-area one wins (the most
+    specific target).  A small padding makes thin text lines easier to hit.
+    Returns None if the click landed on empty space.
+    """
+    PAD = 1.5  # pt — forgiveness for thin glyph rows
+    best, best_area = None, None
+    for i, s in enumerate(spans):
+        if s["page"] != page_num:
+            continue
+        x0, y0, x1, y1 = s["bbox"]
+        if (x0 - PAD) <= px <= (x1 + PAD) and (y0 - PAD) <= py <= (y1 + PAD):
+            area = max(x1 - x0, 1) * max(y1 - y0, 1)
+            if best_area is None or area < best_area:
+                best, best_area = i, area
+    return best
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _TmpPDF:
+    def __init__(self, data: bytes):
+        self._data = data
+        self._path = None
+
+    def __enter__(self) -> str:
+        fd, self._path = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd)
+        with open(self._path, "wb") as f:
+            f.write(self._data)
+        return self._path
+
+    def __exit__(self, *_):
+        if self._path and os.path.exists(self._path):
+            try: os.unlink(self._path)
+            except OSError: pass
+
+
+def extract_spans(pdf_bytes: bytes) -> list:
+    """Extract all spans from all pages as plain serialisable dicts."""
+    result = []
+    with _TmpPDF(pdf_bytes) as path:
+        doc = fitz.open(path)
+        for pn in range(len(doc)):
+            for span in get_spans(doc, pn):
+                result.append({
+                    "page":   pn,
+                    "text":   span["text"],
+                    "font":   span["font"],
+                    "size":   round(span["size"], 1),
+                    "color":  list(span["color"]),
+                    "flags":  span["flags"],
+                    "bbox":   list(span["bbox"]),     # [x0,y0,x1,y1] in PDF pts
+                    "origin": list(span["origin"]),
+                })
+        doc.close()
+    return result
+
+
+def apply_replacements(pdf_bytes: bytes, replacements: list) -> bytes:
+    """Apply [(span_dict, new_text), …] to *pdf_bytes*, return new PDF bytes.
+
+    Side effect: stores a per-font resolution report in
+    ``st.session_state['font_report']`` so the UI can show where each font was
+    resolved from (system / Google Fonts / substitute / builtin fallback) and
+    surface any warnings — instead of silently swallowing them.
+    """
+    from pdf_editor import font_source  # local import: avoids touching module top
+
+    with _TmpPDF(pdf_bytes) as in_path:
+        fd, out_path = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd)
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                ed = PDFEditor(in_path)
+
+                by_page: dict = {}
+                for sd, new_text in replacements:
+                    by_page.setdefault(sd["page"], []).append((sd, new_text))
+
+                for pn, items in by_page.items():
+                    pairs = [({
+                        "text":   sd["text"],
+                        "bbox":   fitz.Rect(sd["bbox"]),
+                        "origin": tuple(sd["origin"]),
+                        "font":   sd["font"],
+                        "size":   sd["size"],
+                        "color":  tuple(sd["color"]),
+                        "flags":  sd["flags"],
+                    }, nt) for sd, nt in items]
+                    ed.replace_all(pairs, page_num=pn)
+
+                ed.save(out_path)
+
+            # Build the font report: one row per distinct original font used.
+            fonts_used = {sd["font"] for sd, _ in replacements}
+            report = []
+            for fn in sorted(fonts_used):
+                src = font_source(fn)
+                if (src.startswith("system:") or src.startswith("google")
+                        or src.startswith("builtin:")):
+                    status = "match"
+                elif src.startswith("substitute"):
+                    status = "substitute"
+                elif src.startswith("BUILTIN") or src.startswith("SUBSET"):
+                    status = "fallback"
+                else:
+                    status = "unknown"
+                report.append({"font": fn, "status": status, "source": src})
+            st.session_state["font_report"] = {
+                "fonts": report,
+                "warnings": [str(w.message) for w in caught],
+            }
+
+            with open(out_path, "rb") as f:
+                return f.read()
+        finally:
+            if os.path.exists(out_path):
+                try: os.unlink(out_path)
+                except OSError: pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature 1 — PDF Editor (select-from-list → highlight → edit)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _editor_reset(name: str, pdf_bytes: bytes):
+    st.session_state.update({
+        "ed_name":       name,
+        "ed_bytes":      pdf_bytes,
+        "ed_spans":      extract_spans(pdf_bytes),
+        "ed_page":       0,
+        "ed_edits":      {},      # {span_idx: new_text}
+        "ed_result":     None,    # bytes of last previewed PDF
+        "ed_selected":   None,    # global index of currently selected span
+        "ed_click_time": None,    # unix_time of last handled image click
+        "ed_png_cache":  None,    # cached base page render (no overlays)
+    })
+
+
+def feature_editor():
+    st.markdown("## PDF Editor")
+    st.caption(
+        "**Click any text on the PDF** to select it — it's outlined 🟦. "
+        "Edit it on the right, click **Apply**, then click the next field. "
+        "Edited fields are outlined 🟩."
+    )
+
+    uploaded = st.file_uploader("Upload PDF", type=["pdf"], key="editor_upload")
+    if uploaded is None:
+        st.info("👆 Upload a PDF to get started.")
+        return
+
+    if st.session_state.get("ed_name") != uploaded.name:
+        with st.spinner("Loading…"):
+            _editor_reset(uploaded.name, uploaded.read())
+
+    pdf_bytes   = st.session_state["ed_bytes"]
+    spans       = st.session_state["ed_spans"]
+    edits: dict = st.session_state.get("ed_edits", {})
+
+    # Page dimensions / count
+    doc      = fitz.open(stream=pdf_bytes, filetype="pdf")
+    n_pages  = len(doc)
+    page_num = min(st.session_state.get("ed_page", 0), n_pages - 1)
+    pw, ph   = doc[page_num].rect.width, doc[page_num].rect.height
+    doc.close()
+
+    page_idxs = [i for i, s in enumerate(spans) if s["page"] == page_num]
+
+    # ── Resolve a fresh image click into the selected span ────────────────────
+    # The image component (rendered below in col_img) stores its last click under
+    # its key.  We read it here, BEFORE drawing the panel, so the new selection is
+    # reflected this run.  Clicks are de-duplicated by their unix_time.
+    click_key = f"ed_click_{page_num}"
+    click = st.session_state.get(click_key)
+    if click and click.get("unix_time") != st.session_state.get("ed_click_time"):
+        st.session_state["ed_click_time"] = click["unix_time"]
+        cx_px, cy_px = click["x"], click["y"]
+        # The image is shown at its natural render size (see col_img below), so
+        # displayed pixels == render pixels.  The render scale is exactly DPI/72
+        # (e.g. 150/72 = 2.083) pixels per PDF point, so:  pdf_pt = pixel / SCALE.
+        # If the component reports a displayed width that differs from natural
+        # (shouldn't happen with a pinned width), fall back to that ratio.
+        nat_w = pw * SCALE
+        disp_w = click.get("width") or nat_w
+        sx = SCALE if abs(disp_w - nat_w) < 1.0 else disp_w / pw
+        sy = sx
+        pdf_x = cx_px / sx
+        pdf_y = cy_px / sy
+        hit = _span_at(spans, page_num, pdf_x, pdf_y)
+        _hit_txt = spans[hit]["text"][:30] if hit is not None else "<none>"
+        print(f"[click] px=({cx_px:.0f},{cy_px:.0f}) disp_w={disp_w:.0f} "
+              f"scale={sx:.4f}px/pt (DPI/72={SCALE:.4f}) → "
+              f"pdf=({pdf_x:.1f},{pdf_y:.1f}) → span #{hit}: {_hit_txt!r}",
+              file=sys.stderr, flush=True)
+        if hit is not None:
+            st.session_state["ed_selected"] = hit
+
+    # Current selection (default: first field on the page)
+    selected = st.session_state.get("ed_selected")
+    if selected not in page_idxs:
+        selected = page_idxs[0] if page_idxs else None
+        st.session_state["ed_selected"] = selected
+
+    col_img, col_panel = st.columns([3, 1.6], gap="large")
+
+    # ── Right: select + edit controls ─────────────────────────────────────────
+    with col_panel:
+        if n_pages > 1:
+            page_num = st.selectbox(
+                "Page",
+                list(range(n_pages)),
+                index=page_num,
+                format_func=lambda x: f"Page {x + 1} of {n_pages}",
+                key="ed_page_sel",
+            )
+            st.session_state["ed_page"] = page_num
+
+        if selected is None:
+            st.info("No editable text found on this page.")
+            return
+
+        def _label(i: int) -> str:
+            s    = spans[i]
+            mark = "🟩 " if i in edits else ""
+            shown = edits.get(i, s["text"])
+            txt  = (shown[:38] + "…") if len(shown) > 38 else shown
+            pos  = _pos_hint(s["bbox"], pw, ph)
+            return f"{mark}{txt}  —  {pos}"
+
+        st.markdown("### 1 · Click a field on the PDF")
+        st.caption("…or pick it from this list:")
+        # Driven by ed_selected (set by image clicks). No widget key, so the
+        # index always reflects the current selection — clicks and this list
+        # stay in sync.
+        sel_pos = page_idxs.index(selected) if selected in page_idxs else 0
+        picked = st.selectbox(
+            "Text field",
+            page_idxs,
+            index=sel_pos,
+            format_func=_label,
+            label_visibility="collapsed",
+        )
+        if picked != selected:
+            selected = picked
+            st.session_state["ed_selected"] = selected
+
+        st.markdown("### 2 · Edit it")
+        sp = spans[selected]
+        font_label = sp["font"].split("+")[-1]
+        st.caption(f"**{font_label}** · {sp['size']:.0f} pt · {_pos_hint(sp['bbox'], pw, ph)}")
+        st.markdown(f"**Original:** `{sp['text'][:60]}`")
+
+        current = edits.get(selected, sp["text"])
+        new_val = st.text_input(
+            "Replacement text",
+            value=current,
+            key=f"ed_input_{selected}",
+            placeholder="Type replacement…",
+        )
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("✓ Apply", type="primary", width="stretch"):
+                if new_val.strip() and new_val != sp["text"]:
+                    edits[selected] = new_val
+                else:
+                    edits.pop(selected, None)
+                st.session_state["ed_edits"]  = edits
+                st.session_state["ed_result"] = None   # preview is now stale
+                st.rerun()
+        with b2:
+            if st.button("↩ Revert", width="stretch",
+                         disabled=selected not in edits):
+                edits.pop(selected, None)
+                st.session_state["ed_edits"]  = edits
+                st.session_state["ed_result"] = None
+                st.rerun()
+
+        st.divider()
+
+        n_edits = len(edits)
+        if n_edits:
+            st.markdown(f"**{n_edits} field{'s' if n_edits > 1 else ''} edited:**")
+            for idx, nv in list(edits.items()):
+                o = spans[idx]["text"][:24]
+                st.caption(f"✏️ ~~{o}~~ → {nv[:24]}")
+
+        st.divider()
+
+        if st.button("🔍 Preview", type="primary",
+                     width="stretch", disabled=n_edits == 0):
+            reps = [(spans[i], v) for i, v in edits.items()]
+            with st.spinner("Applying edits…"):
+                st.session_state["ed_result"] = apply_replacements(pdf_bytes, reps)
+            st.rerun()
+
+        if st.button("↺ Reset All", width="stretch"):
+            _editor_reset(uploaded.name, pdf_bytes)
+            st.rerun()
+
+        result_bytes = st.session_state.get("ed_result")
+        if result_bytes:
+            st.download_button(
+                "⬇ Download Edited PDF",
+                data=result_bytes,
+                file_name=f"edited_{Path(uploaded.name).stem}.pdf",
+                mime="application/pdf",
+                width="stretch",
+            )
+        elif n_edits:
+            st.caption("Click **Preview** to prepare the download.")
+
+        # ── Font resolution report (why a replacement might look different) ──
+        report = st.session_state.get("font_report")
+        if result_bytes and report and report["fonts"]:
+            _ICON = {"match": "🟢", "substitute": "🟡",
+                     "fallback": "🔴", "unknown": "⚪"}
+            n_bad = sum(1 for r in report["fonts"]
+                        if r["status"] in ("substitute", "fallback"))
+            label = ("Fonts: all matched ✓" if n_bad == 0
+                     else f"Fonts: {n_bad} substituted/fallback ⚠")
+            with st.expander(label, expanded=n_bad > 0):
+                for r in report["fonts"]:
+                    nm = r["font"].split("+")[-1]
+                    if r["status"] == "match":
+                        st.caption(f"{_ICON[r['status']]} **{nm}** — exact font")
+                    elif r["status"] == "substitute":
+                        st.caption(f"{_ICON[r['status']]} **{nm}** — {r['source']}")
+                    elif r["status"] == "fallback":
+                        st.caption(f"{_ICON[r['status']]} **{nm}** — no full font found; "
+                                   f"may render differently")
+                    else:
+                        st.caption(f"{_ICON[r['status']]} **{nm}**")
+
+    # ── Left: clickable page image with highlight ─────────────────────────────
+    with col_img:
+        result_bytes  = st.session_state.get("ed_result")
+        display_bytes = result_bytes if result_bytes else pdf_bytes
+        if result_bytes:
+            st.caption("📋 Showing edited preview · click any field to keep editing")
+        else:
+            st.caption("🖱️ Click any text to select it")
+
+        # Fast path: render the page ONCE (cached), then draw highlight outlines
+        # with PIL on top — no PDF re-render per click.
+        base_png = render_base_png_cached(display_bytes, page_num)
+        img = overlay_highlights(
+            base_png, spans, page_num,
+            selected=selected, edited_idxs=list(edits.keys()),
+        )
+        # Show at natural render size (width = pw * SCALE) so displayed px ==
+        # render px and the click→PDF scale is exactly DPI/72.  The component
+        # container scrolls horizontally if the column is narrower.
+        # Returns {x, y, width, height, unix_time}; resolved at the top of
+        # feature_editor() on the next run.
+        streamlit_image_coordinates(
+            img,
+            width=int(round(pw * SCALE)),
+            key=click_key,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature 2 — Bulk Generator (unchanged from previous version)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _bulk_reset(name: str, pdf_bytes: bytes):
+    st.session_state["bk_name"]  = name
+    st.session_state["bk_bytes"] = pdf_bytes
+    st.session_state["bk_spans"] = extract_spans(pdf_bytes)
+    st.session_state["bk_zip"]   = None
+
+
+def parse_csv(data: bytes) -> tuple:
+    for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            text   = data.decode(enc)
+            reader = csv.DictReader(io.StringIO(text))
+            rows   = [dict(r) for r in reader]
+            hdrs   = list(reader.fieldnames or [])
+            return hdrs, rows
+        except (UnicodeDecodeError, Exception):
+            continue
+    return [], []
+
+
+def feature_bulk():
+    st.markdown("## Bulk Generator")
+    st.caption(
+        "Upload a PDF template and a CSV file. "
+        "Map each text field to a CSV column. "
+        "One PDF is generated per row."
+    )
+
+    up_col, csv_col = st.columns(2, gap="large")
+
+    with up_col:
+        st.markdown("### 1 · Template PDF")
+        tmpl = st.file_uploader("Upload PDF template", type=["pdf"], key="bk_tmpl")
+
+    with csv_col:
+        st.markdown("### 2 · CSV Data")
+        csv_file = st.file_uploader("Upload CSV", type=["csv"], key="bk_csv")
+
+    if tmpl is None:
+        st.info("👆 Upload a template PDF to begin.")
+        return
+
+    if st.session_state.get("bk_name") != tmpl.name:
+        with st.spinner("Loading template…"):
+            _bulk_reset(tmpl.name, tmpl.read())
+
+    pdf_bytes: bytes   = st.session_state["bk_bytes"]
+    spans: list        = st.session_state["bk_spans"]
+
+    headers: list  = []
+    all_rows: list = []
+    if csv_file:
+        headers, all_rows = parse_csv(csv_file.read())
+
+    st.image(
+        render_page_b64(pdf_bytes, 0)[0],
+        caption="Template (page 1)",
+        width=380,
+    )
+
+    st.markdown("### 3 · Map Fields → CSV Columns")
+    st.caption(
+        "Choose which CSV column replaces each text field. "
+        "Leave **— skip —** to keep the field unchanged."
+    )
+
+    col_opts = ["— skip —"] + headers
+    rows_ui  = []
+
+    for i, span in enumerate(spans):
+        c1, c2 = st.columns([3, 3])
+        with c1:
+            st.markdown(
+                f"<div style='padding:5px 0;font-size:.92em'>"
+                f"<b>{span['text'][:50]}</b><br>"
+                f"<span style='color:grey;font-size:.82em'>"
+                f"{span['font'].split('+')[-1]} · {span['size']}pt · p{span['page']+1}"
+                f"</span></div>",
+                unsafe_allow_html=True,
+            )
+        with c2:
+            sel = st.selectbox(
+                "col",
+                col_opts,
+                key=f"bk_map_{i}",
+                label_visibility="collapsed",
+            )
+        rows_ui.append((i, sel))
+
+    mapping = {i: col for i, col in rows_ui if col != "— skip —"}
+
+    st.divider()
+
+    # Row-1 preview
+    if mapping and all_rows:
+        st.markdown("### 4 · Preview (Row 1)")
+        first = all_rows[0]
+        reps  = [(spans[i], first.get(col, ""))
+                 for i, col in mapping.items()
+                 if first.get(col, "")]
+        if reps:
+            with st.spinner("Rendering…"):
+                prev = apply_replacements(pdf_bytes, reps)
+            st.image(render_page_b64(prev, 0)[0], caption="Row 1 preview", width=380)
+
+    st.markdown("### 5 · Generate")
+
+    if not mapping:
+        st.warning("Map at least one field to a CSV column.")
+        return
+    if not all_rows:
+        st.warning("Upload a CSV file with data rows.")
+        return
+
+    n_rows   = len(all_rows)
+    n_mapped = len(mapping)
+    st.info(f"**{n_rows}** PDF(s) will be generated · **{n_mapped}** field(s) mapped")
+
+    if st.button("⚡ Generate All PDFs", type="primary"):
+        progress = st.progress(0.0, text="Generating…")
+        status   = st.empty()
+        zip_buf  = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for row_idx, row in enumerate(all_rows):
+                reps = [(spans[i], row.get(col, ""))
+                        for i, col in mapping.items()
+                        if row.get(col, "")]
+                pdf_out = apply_replacements(pdf_bytes, reps)
+                zf.writestr(f"row_{row_idx + 1:04d}.pdf", pdf_out)
+                pct = (row_idx + 1) / n_rows
+                progress.progress(pct, text=f"Row {row_idx + 1} / {n_rows}")
+                status.caption(f"Generated row_{row_idx + 1:04d}.pdf")
+
+        progress.progress(1.0, text="Done!")
+        status.empty()
+        st.session_state["bk_zip"] = zip_buf.getvalue()
+        st.success(f"✅ {n_rows} PDFs generated.")
+        st.rerun()
+
+    bk_zip = st.session_state.get("bk_zip")
+    if bk_zip:
+        zip_name = f"{Path(tmpl.name).stem}_bulk.zip"
+        st.download_button(
+            f"⬇ Download ZIP ({n_rows} PDFs)",
+            data=bk_zip,
+            file_name=zip_name,
+            mime="application/zip",
+            type="primary",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# App shell
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.markdown(
+    "<h1 style='margin-bottom:0'>📄 Redraft</h1>"
+    "<p style='color:grey;margin-top:2px'>PDF editing & bulk generation</p>",
+    unsafe_allow_html=True,
+)
+st.divider()
+
+tab_editor, tab_bulk = st.tabs(["✏️ PDF Editor", "⚡ Bulk Generator"])
+
+with tab_editor:
+    feature_editor()
+
+with tab_bulk:
+    feature_bulk()

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: transparent; overflow: hidden; font-family: sans-serif; }
+#wrap { position: relative; width: 100%; user-select: none; }
+#img  { display: block; width: 100%; height: auto; }
+
+.s {
+  position: absolute;
+  cursor: pointer;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  transition: border-color .1s, background .1s;
+}
+/* hover */
+.s:hover {
+  border-color: rgba(59,130,246,.65);
+  background:   rgba(59,130,246,.07);
+}
+/* selected (blue) */
+.s.sel {
+  border-color: rgba(59,130,246,.9);
+  background:   rgba(59,130,246,.13);
+  box-shadow: 0 0 0 1px rgba(59,130,246,.3);
+}
+/* edited (green) */
+.s.ed {
+  border-color: rgba(34,197,94,.8);
+  background:   rgba(34,197,94,.07);
+}
+/* edited + selected */
+.s.ed.sel {
+  border-color: rgba(34,197,94,1);
+  background:   rgba(34,197,94,.14);
+  box-shadow: 0 0 0 1px rgba(34,197,94,.35);
+}
+
+/* small tooltip-like label that appears on hover */
+.s .tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 0;
+  background: rgba(30,30,30,.85);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 10;
+}
+.s:hover .tip { display: block; }
+</style>
+</head>
+<body>
+<div id="wrap"><img id="img" alt="" draggable="false"/></div>
+
+<script>
+// ── Streamlit component protocol ──────────────────────────────────────────────
+const send = (type, extra) =>
+  window.parent.postMessage({ isStreamlitMessage: true, type, ...extra }, "*");
+
+send("streamlit:componentReady", { apiVersion: 1 });
+
+let _a = null; // last args from Streamlit
+
+window.addEventListener("message", ev => {
+  if (ev.data?.type === "streamlit:render") {
+    _a = ev.data.args;
+    render(_a);
+  }
+});
+
+// Resize: rebuild overlays so CSS positions stay accurate
+const ro = new ResizeObserver(() => { if (_a) buildOverlays(_a); sendH(); });
+ro.observe(document.getElementById("wrap"));
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+function render(a) {
+  const img  = document.getElementById("img");
+  const wrap = document.getElementById("wrap");
+  const src  = "data:image/png;base64," + a.image_b64;
+
+  if (img.getAttribute("src") !== src) {
+    img.onload = () => { buildOverlays(a); sendH(); };
+    img.setAttribute("src", src);
+  } else {
+    buildOverlays(a);
+    sendH();
+  }
+
+  // Set a provisional frame height immediately so Streamlit doesn't collapse
+  if (a.height_hint) send("streamlit:setFrameHeight", { height: a.height_hint });
+}
+
+function buildOverlays(a) {
+  const img  = document.getElementById("img");
+  const wrap = document.getElementById("wrap");
+  if (!img.naturalWidth || !img.offsetWidth) return;
+
+  // Clear previous overlays
+  wrap.querySelectorAll(".s").forEach(e => e.remove());
+
+  const sx = img.offsetWidth  / img.naturalWidth;
+  const sy = img.offsetHeight / img.naturalHeight;
+
+  const sel    = a.selected_idx;
+  const edited = new Set(a.edited_indices || []);
+
+  (a.spans || []).forEach(sp => {
+    const [x0, y0, x1, y1] = sp.bbox_px;
+    const d   = document.createElement("div");
+    d.className = "s";
+
+    const left  = x0 * sx;
+    const top   = y0 * sy;
+    const w     = Math.max((x1 - x0) * sx, 4);
+    const h     = Math.max((y1 - y0) * sy, 4);
+    d.style.cssText = `left:${left}px;top:${top}px;width:${w}px;height:${h}px`;
+
+    if (sp.idx === sel)     d.classList.add("sel");
+    if (edited.has(sp.idx)) d.classList.add("ed");
+
+    // Tooltip with original text
+    const tip = document.createElement("span");
+    tip.className = "tip";
+    tip.textContent = sp.text;
+    d.appendChild(tip);
+
+    d.addEventListener("click", e => {
+      e.stopPropagation();
+      send("streamlit:setComponentValue", { value: sp.idx });
+    });
+
+    wrap.appendChild(d);
+  });
+}
+
+function sendH() {
+  const h = document.getElementById("img").offsetHeight;
+  if (h > 0) send("streamlit:setFrameHeight", { height: h + 6 });
+}
+</script>
+</body>
+</html>

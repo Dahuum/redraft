@@ -65,6 +65,19 @@ FONT_FALLBACK = {
 _FONT_BOLD   = getattr(fitz, "TEXT_FONT_BOLD",   0x10)
 _FONT_ITALIC = getattr(fitz, "TEXT_FONT_ITALIC", 0x02)
 
+# Keywords that identify script / handwriting / decorative fonts which must
+# always be embedded — Helvetica is never an acceptable substitute.
+_SCRIPT_KEYWORDS = frozenset({
+    "script", "hand", "writing", "italic", "cursive",
+    "bd", "brush", "pen", "sign",
+})
+
+
+def _is_decorative_font(name: str) -> bool:
+    """True if *name* looks like a script, handwriting, or decorative face."""
+    lower = name.lower()
+    return any(kw in lower for kw in _SCRIPT_KEYWORDS)
+
 
 # ── Text / script helpers ─────────────────────────────────────────────────────
 
@@ -182,11 +195,12 @@ def extract_fonts(doc: fitz.Document, out_dir: str) -> Tuple[dict, dict]:
             fallback_fn = _find_fallback_font(font_name)
 
             subset[font_name] = {
-                "base_name": base_name,
-                "fallback":  fallback_fn,
-                "is_subset": is_subset,
-                "font_type": font_type,
-                "skipped":   False,
+                "base_name":    base_name,
+                "fallback":     fallback_fn,
+                "is_subset":    is_subset,
+                "font_type":    font_type,
+                "skipped":      False,
+                "is_decorative": _is_decorative_font(base_name),
             }
 
             if font_type.lower() == "type3":
@@ -204,6 +218,8 @@ def extract_fonts(doc: fitz.Document, out_dir: str) -> Tuple[dict, dict]:
                 raw_bytes = font_data[3]
                 if not raw_bytes:
                     subset[font_name]["skipped"] = True
+                    print(f"  WARNING: font {font_name} could not be extracted "
+                          f"— falling back to {fallback_fn}")
                     continue
 
                 if raw_bytes[:4] == b"\x00\x01\x00\x00" or raw_bytes[:4] == b"true":
@@ -289,11 +305,29 @@ def _extract_text_elements(page: fitz.Page) -> list:
                 direction = _detect_text_direction(value)
                 font_is_subset = _is_subset_font(font_name)
 
+                # span["origin"] is the exact baseline position (PyMuPDF top-left coords).
+                # Store it so reconstruct.py can use it directly instead of approximating.
+                span_origin = span.get("origin")
+                baseline_y  = round(span_origin[1], 2) if span_origin else None
+
+                # Store per-character x origins so the renderer can draw each
+                # character at its exact PDF position.  This avoids font-metrics
+                # mismatches when ReportLab's advance widths differ from the PDF's.
+                chars_data = span.get("chars", [])
+                char_origins = None
+                if chars_data and len(chars_data) > 1:
+                    char_origins = [
+                        [round(ch.get("origin", [0, 0])[0], 2), ch.get("c", "")]
+                        for ch in chars_data
+                    ]
+
                 elements.append({
                     "type":           "text",
                     "value":          value,
                     "x":              round(x0, 2),
                     "y":              round(y0, 2),
+                    "baseline_y":     baseline_y,
+                    "char_origins":   char_origins,
                     "width":          round(x1 - x0, 2),
                     "height":         round(y1 - y0, 2),
                     "font_family":    font_name,
@@ -312,27 +346,145 @@ def _extract_text_elements(page: fitz.Page) -> list:
     return elements
 
 
+# ── Shape extraction helpers ───────────────────────────────────────────────────
+
+def _split_line_subpaths(items, tol: float = 2.0) -> list:
+    """Group ('l', p1, p2) items into connected sub-paths."""
+    if not items:
+        return []
+    subpaths = [[items[0]]]
+    for item in items[1:]:
+        prev_end   = subpaths[-1][-1][2]
+        curr_start = item[1]
+        if abs(prev_end.x - curr_start.x) <= tol and abs(prev_end.y - curr_start.y) <= tol:
+            subpaths[-1].append(item)
+        else:
+            subpaths.append([item])
+    return subpaths
+
+
+def _is_closed_axis_rect(sp, tol: float = 1.5) -> bool:
+    """True if sp (4 line items) forms a closed axis-aligned rectangle."""
+    if len(sp) != 4 or any(i[0] != 'l' for i in sp):
+        return False
+    for item in sp:
+        p1, p2 = item[1], item[2]
+        if not (abs(p1.x - p2.x) < tol or abs(p1.y - p2.y) < tol):
+            return False  # diagonal → not axis-aligned
+    end, start = sp[-1][2], sp[0][1]
+    return abs(end.x - start.x) <= tol and abs(end.y - start.y) <= tol
+
+
 # ── Shape extraction ───────────────────────────────────────────────────────────
+
+def _sample_page_color(pix: "fitz.Pixmap", rect: "fitz.Rect",
+                        page_w: float, page_h: float) -> Optional[str]:
+    """Sample the median color of a rect region from a pre-rendered pixmap.
+
+    Returns a hex color string or None if sampling fails.
+    The pixmap is assumed to be rendered at 72 DPI (1 px = 1 pt).
+    """
+    try:
+        import numpy as np
+        x0 = max(0, int(rect.x0))
+        y0 = max(0, int(rect.y0))
+        x1 = min(pix.width,  int(rect.x1))
+        y1 = min(pix.height, int(rect.y1))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        samples = pix.samples
+        n = pix.n  # bytes per pixel (3=RGB, 4=RGBA)
+        rows = []
+        for row in range(y0, y1, max(1, (y1 - y0) // 8)):
+            for col in range(x0, x1, max(1, (x1 - x0) // 8)):
+                base = (row * pix.width + col) * n
+                rows.append((samples[base], samples[base+1], samples[base+2]))
+        if not rows:
+            return None
+        arr = sorted(rows, key=lambda t: t[0]+t[1]+t[2])
+        mid = arr[len(arr)//2]
+        return "#{:02X}{:02X}{:02X}".format(mid[0], mid[1], mid[2])
+    except Exception:
+        return None
+
 
 def _extract_shape_elements(page: fitz.Page) -> list:
     """
     Extract vector paths: rectangles, lines, curves.
     PyMuPDF get_drawings() returns all vector graphics.
     """
+    # Pre-render at 72 DPI (1 pt = 1 px) for color sampling of opacity-0 shapes.
+    # These are PDF knockout/transparency-group elements that punch through to the
+    # actual rendered color, which we must sample directly.
+    _pix72 = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0), alpha=False)
+
     elements = []
 
     for path in page.get_drawings():
+        # Respect transparency: zero opacity means fully transparent.
+        fill_opacity   = path.get("fill_opacity")
+        stroke_opacity = path.get("stroke_opacity")
+
         fill   = _parse_color(path.get("fill"))
         stroke = _parse_color(path.get("color"))
-        width  = round(path.get("width") or 0, 2)
-        rect   = path.get("rect")           # bounding box of the whole path
 
-        # Check if this is a simple rectangle
-        items  = path.get("items", [])
-        is_rect = (
-            len(items) == 5
-            and all(i[0] in ("l", "re", "c") for i in items)
-        )
+        if fill_opacity is not None and fill_opacity <= 0.0:
+            # Sample the rendered color to detect PDF knockout/erase transparency
+            # groups that punch through a dark background to reveal white paper.
+            # Only emit the sampled color when it is meaningfully lighter than
+            # black (luminance > 30%), meaning a true knockout effect.
+            # Dark sampled colors indicate the shape is just a metadata/bounding-box
+            # element that happens to overlap an already-dark region.
+            rect = path.get("rect")
+            if rect is not None:
+                sampled = _sample_page_color(_pix72, rect,
+                                             page.rect.width, page.rect.height)
+                if sampled:
+                    # Parse hex → luminance check
+                    try:
+                        r = int(sampled[1:3], 16)
+                        g = int(sampled[3:5], 16)
+                        b = int(sampled[5:7], 16)
+                        lum = 0.299*r + 0.587*g + 0.114*b
+                        fill = sampled if lum > 76 else None  # >30% luminance
+                    except Exception:
+                        fill = None
+                else:
+                    fill = None
+            else:
+                fill = None
+        if stroke_opacity is not None and stroke_opacity <= 0.0:
+            stroke = None
+
+        width = round(path.get("width") or 0, 2)
+        rect  = path.get("rect")
+        items = path.get("items", [])
+
+        # True only for paths that actually form an axis-aligned rectangle:
+        # either a single 're' item, or line items whose endpoints use no more
+        # than 2 distinct x-values and 2 distinct y-values (rounded to nearest
+        # integer to tolerate floating-point imprecision in PDF coordinates).
+        def _items_form_rect(its) -> bool:
+            # Single-item 're' paths are handled by path.get("type")=="re" — don't intercept here.
+            if not its or len(its) <= 1:
+                return False
+            if not all(i[0] in ("l", "re", "c") for i in its):
+                return False
+            pts = []
+            for it in its:
+                for p in it[1:]:
+                    if hasattr(p, "x"):
+                        pts.append((round(p.x), round(p.y)))
+            if not pts:
+                return False
+            xs = {p[0] for p in pts}
+            ys = {p[1] for p in pts}
+            # A rectangle has exactly 2 distinct x-values and 2 distinct y-values.
+            # A single line has xs=2,ys=1 or xs=1,ys=2 which must NOT be a rect.
+            # Multiple parallel lines have xs=2, ys=N>2 — also not a rect.
+            return len(xs) == 2 and len(ys) == 2
+
+        is_rect = _items_form_rect(items)
 
         if rect is None:
             continue
@@ -341,21 +493,30 @@ def _extract_shape_elements(page: fitz.Page) -> list:
 
         if is_rect or path.get("type") == "re":
             br = round(path.get("radius") or 0, 2)
+
+            # Detect ellipses: PyMuPDF encodes an ellipse/oval as a single
+            # ('re', rect, -1) item. Use max border_radius to render as a circle.
+            w_shape = x1 - x0
+            h_shape = y1 - y0
+            if (len(items) == 1
+                    and items[0][0] == "re"
+                    and len(items[0]) > 2
+                    and items[0][2] == -1):
+                br = round(min(w_shape, h_shape) / 2.0, 2)
+
             elements.append({
-                "type":         "rectangle",
-                "x":            round(x0, 2),
-                "y":            round(y0, 2),
-                "width":        round(x1 - x0, 2),
-                "height":       round(y1 - y0, 2),
-                "fill_color":   fill,
-                "stroke_color": stroke,
-                "stroke_width": width,
+                "type":          "rectangle",
+                "x":             round(x0, 2),
+                "y":             round(y0, 2),
+                "width":         round(w_shape, 2),
+                "height":        round(h_shape, 2),
+                "fill_color":    fill,
+                "stroke_color":  stroke,
+                "stroke_width":  width,
                 "border_radius": br,
-                "origin":       "pymupdf",
+                "origin":        "pymupdf",
             })
         else:
-            # Generic path — store as a line using bounding box
-            # (handles horizontal/vertical rules well)
             is_horizontal = abs(y1 - y0) < 2
             is_vertical   = abs(x1 - x0) < 2
 
@@ -382,9 +543,64 @@ def _extract_shape_elements(page: fitz.Page) -> list:
                     "origin":       "pymupdf",
                 })
             else:
-                # Complex path — check if it has bezier curves
                 curve_cmds = {"c", "v", "y", "qu", "curve"}
                 has_curves = any(i[0] in curve_cmds for i in items)
+
+                # For all-line paths: split into connected sub-paths and handle
+                # each sub-path specifically rather than treating the whole as
+                # a filled bounding-box rectangle.
+                all_lines = bool(items) and all(i[0] == 'l' for i in items)
+                if all_lines:
+                    subpaths = _split_line_subpaths(items)
+                    handled  = True
+                    sub_elems: list = []
+
+                    for sp in subpaths:
+                        if len(sp) == 1:
+                            # Single disconnected segment → line
+                            lx1, ly1 = sp[0][1].x, sp[0][1].y
+                            lx2, ly2 = sp[0][2].x, sp[0][2].y
+                            if abs(lx2 - lx1) > 0.1 or abs(ly2 - ly1) > 0.1:
+                                sub_elems.append({
+                                    "type":         "line",
+                                    "x1":           round(lx1, 2),
+                                    "y1":           round(ly1, 2),
+                                    "x2":           round(lx2, 2),
+                                    "y2":           round(ly2, 2),
+                                    "color":        stroke or "#000000",
+                                    "stroke_width": width,
+                                    "origin":       "pymupdf",
+                                })
+                        elif _is_closed_axis_rect(sp):
+                            # Closed axis-aligned rectangle → filled rect
+                            pts = [p for seg in sp for p in (seg[1], seg[2])]
+                            rx0 = min(p.x for p in pts)
+                            rx1 = max(p.x for p in pts)
+                            ry0 = min(p.y for p in pts)
+                            ry1 = max(p.y for p in pts)
+                            if (rx1 - rx0) > 0.3 and (ry1 - ry0) > 0.3:
+                                sub_elems.append({
+                                    "type":          "rectangle",
+                                    "x":             round(rx0, 2),
+                                    "y":             round(ry0, 2),
+                                    "width":         round(rx1 - rx0, 2),
+                                    "height":        round(ry1 - ry0, 2),
+                                    "fill_color":    fill,
+                                    "stroke_color":  stroke,
+                                    "stroke_width":  width,
+                                    "border_radius": 0,
+                                    "origin":        "pymupdf",
+                                })
+                        else:
+                            # Non-rectangular connected polygon → rasterize
+                            handled = False
+                            break
+
+                    if handled:
+                        elements.extend(sub_elems)
+                        continue
+                    # Fall through with rasterization forced
+                    has_curves = True
 
                 elements.append({
                     "type":         "path",
@@ -396,6 +612,11 @@ def _extract_shape_elements(page: fitz.Page) -> list:
                     "stroke_color": stroke,
                     "stroke_width": width,
                     "_has_curves":  has_curves,
+                    # Raw data for isolated rasterization (stripped before JSON output)
+                    "_items":       items,
+                    "fill":         path.get("fill"),
+                    "color":        path.get("color"),
+                    "width_raw":    path.get("width"),
                     "origin":       "pymupdf",
                 })
 
@@ -447,6 +668,69 @@ def _extract_shape_elements(page: fitz.Page) -> list:
 
 # ── Complex path rasterization ────────────────────────────────────────────────
 
+def _draw_path_on_shape(shape, items: list):
+    """Replay path items onto a PyMuPDF shape object."""
+    for item in items:
+        cmd = item[0]
+        try:
+            if cmd == "l":
+                shape.draw_line(item[1], item[2])
+            elif cmd == "c":
+                # cubic bezier: p1=start, p2=ctrl1, p3=ctrl2, p4=end
+                shape.draw_bezier(item[1], item[2], item[3], item[4])
+            elif cmd == "re":
+                shape.draw_rect(item[1])
+            elif cmd == "qu":
+                shape.draw_quad(item[1])
+            # 'm' (moveto) is implicit when consecutive draw_* calls are non-adjacent
+        except Exception:
+            pass  # skip malformed items
+
+
+def _rasterize_path_isolated(path_data: dict,
+                              page_w: float, page_h: float,
+                              clip_rect: fitz.Rect,
+                              scale: float) -> Optional[bytes]:
+    """
+    Rasterize a single path in isolation on a transparent background.
+
+    Creates a temporary blank page, replays the path's drawing commands,
+    and rasterizes only the clip_rect region.  Returns raw PNG bytes.
+    """
+    items = path_data.get("_items", [])
+    fill  = path_data.get("fill")    # tuple (r, g, b) or None
+    color = path_data.get("color")   # tuple (r, g, b) or None
+    width = path_data.get("width") or 0
+
+    if not items:
+        return None
+
+    try:
+        doc  = fitz.open()
+        pg   = doc.new_page(width=page_w, height=page_h)
+        shp  = pg.new_shape()
+
+        _draw_path_on_shape(shp, items)
+
+        shp.finish(
+            fill=fill,
+            color=color,
+            width=max(width, 0.5) if color else 0,
+            closePath=True,
+            even_odd=False,
+            fill_opacity=1.0 if fill is not None else 0.0,
+            stroke_opacity=1.0 if color is not None else 0.0,
+        )
+        shp.commit()
+
+        mat = fitz.Matrix(scale, scale)
+        pix = pg.get_pixmap(clip=clip_rect, matrix=mat, alpha=True)
+        doc.close()
+        return pix.tobytes("png")
+    except Exception:
+        return None
+
+
 def _rasterize_complex_paths(page: fitz.Page,
                               paths: list,
                               img_dir: str,
@@ -455,16 +739,16 @@ def _rasterize_complex_paths(page: fitz.Page,
     """
     Render complex vector paths (icons, bezier shapes) as PNG images.
 
-    Uses PyMuPDF's built-in renderer to rasterize only the bounding-box
-    region of each path at *dpi*.  The resulting PNGs are saved in *img_dir*
-    and returned as ``{"type": "image", ...}`` elements.
+    Each path is rendered IN ISOLATION on a transparent background so that
+    surrounding text and other page content is not baked into the raster image
+    (which would cause double-rendering when text is drawn again as vectors).
+    Falls back to full-page clip rasterization if isolation fails.
     """
     os.makedirs(img_dir, exist_ok=True)
     if not paths:
         return []
 
     scale = dpi / 72.0
-    mat = fitz.Matrix(scale, scale)
     images = []
 
     for i, p in enumerate(paths):
@@ -476,21 +760,31 @@ def _rasterize_complex_paths(page: fitz.Page,
         if clip_rect.is_empty or clip_rect.width < 1 or clip_rect.height < 1:
             continue
 
-        try:
-            pix = page.get_pixmap(clip=clip_rect, matrix=mat, alpha=False)
-        except Exception as e:
-            print(f"  ⚠  rasterize failed {clip_rect}: {e}")
-            continue
+        # Try isolated rasterization first
+        png_bytes = _rasterize_path_isolated(
+            p, page.rect.width, page.rect.height, clip_rect, scale
+        )
+
+        if png_bytes is None:
+            # Fallback: full-page clip (may include surrounding content)
+            try:
+                mat = fitz.Matrix(scale, scale)
+                pix = page.get_pixmap(clip=clip_rect, matrix=mat, alpha=False)
+                png_bytes = pix.tobytes("png")
+            except Exception as e:
+                print(f"  ⚠  rasterize failed {clip_rect}: {e}")
+                continue
 
         img_path = os.path.join(img_dir, f"page{page_num}_path{i:04d}.png")
-        pix.save(img_path)
+        with open(img_path, "wb") as fh:
+            fh.write(png_bytes)
 
         images.append({
             "type":      "image",
-            "x":         round(x, 2),
-            "y":         round(y, 2),
-            "width":     round(w, 2),
-            "height":    round(h, 2),
+            "x":         round(clip_rect.x0, 2),
+            "y":         round(clip_rect.y0, 2),
+            "width":     round(clip_rect.width, 2),
+            "height":    round(clip_rect.height, 2),
             "file_path": img_path,
             "origin":    "pymupdf_rasterized",
         })
@@ -512,20 +806,84 @@ def _extract_image_elements(page: fitz.Page, doc: fitz.Document,
     elements = []
 
     for img_info in page.get_images(full=True):
-        xref = img_info[0]
+        xref   = img_info[0]
+        smask  = img_info[1]  # soft-mask xref (0 if none)
         try:
-            bbox_list = page.get_image_bbox(img_info)
-            if not bbox_list:
+            bbox_raw = page.get_image_bbox(img_info)
+            if not bbox_raw:
                 continue
+
+            # get_image_bbox may return a single Rect or a list of Rects
+            # depending on the PyMuPDF version.
+            if isinstance(bbox_raw, fitz.Rect):
+                bbox_list = [bbox_raw]
+            else:
+                bbox_list = list(bbox_raw) if bbox_raw else []
 
             base_image = doc.extract_image(xref)
             img_bytes  = base_image["image"]
             ext        = base_image.get("ext", "png")
 
+            # If a soft mask (SMask) exists, composite it as an alpha channel
+            # so the image renders with correct transparency.
+            if smask:
+                try:
+                    import io
+                    from PIL import Image as PILImage
+                    mask_data = doc.extract_image(smask)
+                    rgb_img   = PILImage.open(io.BytesIO(img_bytes)).convert("RGBA")
+                    mask_img  = PILImage.open(io.BytesIO(mask_data["image"])).convert("L")
+                    if mask_img.size != rgb_img.size:
+                        mask_img = mask_img.resize(rgb_img.size, PILImage.LANCZOS)
+                    rgb_img.putalpha(mask_img)
+                    buf = io.BytesIO()
+                    rgb_img.save(buf, format="PNG")
+                    img_bytes = buf.getvalue()
+                    ext = "png"
+                except Exception:
+                    pass  # fall back to image without alpha
+
             for bbox_idx, rect in enumerate(bbox_list):
-                if not rect:
+                if not isinstance(rect, fitz.Rect):
+                    continue
+                if rect.is_empty:
                     continue
                 x0, y0, x1, y1 = rect
+
+                # Detect background images: those with the bounding box extending
+                # meaningfully off the page.  For these, rasterize the page region
+                # directly (preserving blending/overlay effects) instead of using
+                # the raw embedded image, which would ignore overlapping vector shapes.
+                is_background = (x0 < -1 or y0 < -1
+                                 or x1 > page.rect.width + 1
+                                 or y1 > page.rect.height + 1)
+
+                if is_background:
+                    clip = rect & page.rect  # visible portion only
+                    if clip.is_empty or clip.width < 1 or clip.height < 1:
+                        continue
+                    try:
+                        mat = fitz.Matrix(2.0, 2.0)  # 144 DPI
+                        pix = page.get_pixmap(clip=clip, matrix=mat, alpha=False)
+                        img_bytes_bg = pix.tobytes("png")
+                        img_path = os.path.join(
+                            img_dir,
+                            f"page{page_num}_img{xref}_{bbox_idx}_bg.png"
+                        )
+                        with open(img_path, "wb") as f:
+                            f.write(img_bytes_bg)
+                        elements.append({
+                            "type":      "image",
+                            "x":         round(clip.x0, 2),
+                            "y":         round(clip.y0, 2),
+                            "width":     round(clip.width, 2),
+                            "height":    round(clip.height, 2),
+                            "file_path": img_path,
+                            "origin":    "pymupdf_bg",
+                        })
+                    except Exception as e:
+                        print(f"  ⚠ bg rasterize failed xref={xref}: {e}")
+                    continue
 
                 img_path = os.path.join(
                     img_dir,
@@ -609,9 +967,15 @@ def _is_scanned(page: fitz.Page) -> bool:
     page_area = page.rect.width * page.rect.height
     has_full_page_img = False
     for img_info in imgs:
-        bboxes = page.get_image_bbox(img_info)
+        try:
+            bboxes = page.get_image_bbox(img_info)
+        except Exception:
+            continue
         if not bboxes:
             continue
+        # bboxes may be a Rect or a list of Rects depending on PyMuPDF version
+        if isinstance(bboxes, fitz.Rect):
+            bboxes = [bboxes]
         for bbox in bboxes:
             if bbox.width * bbox.height > page_area * 0.7:
                 has_full_page_img = True
@@ -692,14 +1056,20 @@ def extract_pdf(pdf_path: str, output_dir: str = None) -> dict:
                 page_area = page_w * page_h
                 is_huge  = (p["width"] * p["height"]) > page_area * 0.8
 
-                if is_white or (is_huge and not p.get("stroke_color")):
-                    keep_as_rect.append({**p, "type": "rectangle"})
-                elif has_curves:
+                # Rasterize curved paths regardless of fill color — a white curved
+                # shape (e.g. signature drawn in white on a dark background) must be
+                # rasterized in isolation, not collapsed to a plain white rectangle.
+                if has_curves:
                     to_rasterize.append(p)
+                elif is_white or (is_huge and not p.get("stroke_color")):
+                    keep_as_rect.append({**p, "type": "rectangle"})
                 else:
                     keep_as_rect.append({**p, "type": "rectangle"})
 
-            elements.extend(keep_as_rect)
+            _internal = {"_items", "_has_curves", "fill", "color", "width_raw"}
+            clean_rects = [{k: v for k, v in r.items() if k not in _internal}
+                           for r in keep_as_rect]
+            elements.extend(clean_rects)
             if to_rasterize:
                 rasterized = _rasterize_complex_paths(page, to_rasterize,
                                                        img_dir, page_num + 1)

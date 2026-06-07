@@ -31,6 +31,13 @@ from reportlab.pdfgen import canvas as rl_canvas
 
 _SUBSET_RE = re.compile(r"^[A-Z]{6,8}\+")
 
+# Keywords that mark script / handwriting / decorative fonts that must always
+# be registered — Helvetica is never an acceptable substitute for these.
+_SCRIPT_KEYWORDS = frozenset({
+    "script", "hand", "writing", "italic", "cursive",
+    "bd", "brush", "pen", "sign",
+})
+
 
 def _strip_prefix(name: str) -> str:
     return _SUBSET_RE.sub("", name)
@@ -47,6 +54,12 @@ def _to_color(val):
     if isinstance(val, str):
         return colors.HexColor(val)
     return val
+
+
+def _is_decorative_font(name: str) -> bool:
+    """True if *name* looks like a script, handwriting, or decorative face."""
+    lower = name.lower()
+    return any(kw in lower for kw in _SCRIPT_KEYWORDS)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -68,44 +81,50 @@ def _is_standard_font(name: str) -> bool:
 
 
 def register_fonts(fonts_dict: dict, subset_info: dict, font_dir: str) -> dict:
-    """Register non-subset TTF/OTF fonts + decorative subset fonts.
+    """Register extracted fonts with ReportLab.
 
-    Skips subset fonts whose base name is a standard sans/serif family
-    (Helvetica/Arial/OpenSans/Poppins/...) because their CMAPs clash with
-    ReportLab encoding, causing offset-duplicate text.  The built-in
-    Helvetica fallback renders them cleanly.
+    Every font is attempted.  Registration uses the *base name* (XXXXXX+ prefix
+    stripped) so lookup is deterministic.  Fonts that cannot be loaded are
+    logged as WARNING with their fallback name — no silent substitutions.
 
-    Keeps subset fonts that are *not* standard (BDScript, decorative,
-    symbol, handwriting) because Helvetica cannot reasonably substitute
-    a script face.
+    Script / decorative fonts (BDScript, Brush, etc.) are always registered
+    regardless of family.  Standard sans/serif subsets (Poppins, OpenSans …)
+    are also registered; if their CMAP clashes with ReportLab's encoder the
+    exception is caught and a WARNING is emitted.
     """
     lookup: dict[str, str] = {}
 
     for font_name, rel_path in fonts_dict.items():
-        info = subset_info.get(font_name, {})
-        is_subset = info.get("is_subset") or info.get("skipped")
+        info          = subset_info.get(font_name, {})
+        base_name     = info.get("base_name", _strip_prefix(font_name))
+        fallback      = info.get("fallback", "Helvetica")
+        is_decorative = info.get("is_decorative", False) or _is_decorative_font(base_name)
 
-        if is_subset and _is_standard_font(info.get("base_name", font_name)):
-            continue
-
+        # Resolve the file path
         path = rel_path if os.path.isabs(rel_path) else os.path.join(
             font_dir, os.path.basename(rel_path))
+
         if not os.path.exists(path):
+            print(f"  WARNING: font {base_name} — file not found, "
+                  f"falling back to {fallback}")
             continue
         if not path.lower().endswith((".ttf", ".otf")):
             continue
 
-        safe_name = _sanitize(font_name)
+        # Register under the exact base name (no XXXXXX+ prefix).
+        safe_base = _sanitize(base_name)
         try:
-            pdfmetrics.registerFont(TTFont(safe_name, path))
+            pdfmetrics.registerFont(TTFont(safe_base, path))
         except Exception as e:
-            print(f"  ⚠  font register failed '{font_name}': {e}")
+            print(f"  WARNING: font {base_name} could not be registered "
+                  f"({e}) — falling back to {fallback}")
             continue
 
-        lookup[font_name] = safe_name
-        base = _strip_prefix(font_name)
-        if base != font_name:
-            lookup.setdefault(base, safe_name)
+        # Map: full subset name  →  registered name
+        #      base name         →  registered name  (for fallback lookup)
+        lookup[font_name] = safe_base
+        lookup.setdefault(base_name, safe_base)
+        print(f"  ✔ Registered: {base_name} ({safe_base})")
 
     return lookup
 
@@ -117,6 +136,7 @@ def register_fonts(fonts_dict: dict, subset_info: dict, font_dir: str) -> dict:
 class PageRenderer:
     """Renders a single page from extraction JSON to a ReportLab canvas."""
 
+    # Built-in Helvetica family used when no matching font is registered.
     _BUILTIN_STYLES = {
         ("normal", "normal"): "Helvetica",
         ("bold",   "normal"): "Helvetica-Bold",
@@ -132,63 +152,202 @@ class PageRenderer:
         self.img_dir     = img_dir
         self.ph          = page["height_pt"]
 
-    # coordinate helpers -------------------------------------------------------
+    # ── coordinate helpers ────────────────────────────────────────────────────
+    # PyMuPDF uses top-left origin (y increases downward).
+    # ReportLab uses bottom-left origin (y increases upward).
+    #
+    # Conversion formulas:
+    #   rectangles / images : rl_y = page_height - pdf_y - element_height
+    #   text baseline       : rl_y = page_height - pdf_y - font_size * 0.75
+    #   line endpoints      : rl_y = page_height - pdf_y   (h = 0)
 
     def _y(self, top: float, h: float = 0.0) -> float:
-        """Top-left y → ReportLab bottom-left y."""
+        """Top-left y (PDF) → ReportLab bottom-left y.
+        Formula: page_height - top - h
+        """
         return self.ph - top - h
 
     def _ty(self, top: float, sz: float) -> float:
-        """Top-left y → approximate baseline y."""
+        """Top-left y (PDF) → approximate text baseline y.
+        Formula: page_height - top - font_size * 0.75
+        """
         return self.ph - top - sz * 0.75
 
-    # font ---------------------------------------------------------------------
+    # ── font resolution ───────────────────────────────────────────────────────
 
     def _font(self, el: dict) -> str:
-        family  = el.get("font_family", "")
+        family   = el.get("font_family", "")
         fallback = el.get("font_fallback", "")
-        weight  = el.get("font_weight", "normal")
-        style   = el.get("font_style",  "normal")
+        weight   = el.get("font_weight", "normal")
+        style    = el.get("font_style",  "normal")
 
         if family in self.font_lookup:
             return self.font_lookup[family]
         if fallback in self.font_lookup:
             return self.font_lookup[fallback]
+        # Strip subset prefix and retry
+        base = _strip_prefix(family)
+        if base in self.font_lookup:
+            return self.font_lookup[base]
 
         key = (weight, style)
         if key in self._BUILTIN_STYLES:
             return self._BUILTIN_STYLES[key]
         return "Helvetica"
 
-    # render -------------------------------------------------------------------
+    # ── render ────────────────────────────────────────────────────────────────
 
     def render(self, out_path: str):
         pw = self.page["width_pt"]
-        c = rl_canvas.Canvas(out_path, pagesize=(pw, self.ph))
+        c  = rl_canvas.Canvas(out_path, pagesize=(pw, self.ph))
 
         elements = self.page["elements"]
 
-        # Enforce paint order: backgrounds → fills → borders → images → text
-        rects  = [e for e in elements if e["type"] in ("path", "rectangle")]
-        lines  = [e for e in elements if e["type"] == "line"]
-        images = [e for e in elements if e["type"] == "image"]
-        texts  = [e for e in elements if e["type"] == "text"]
+        # Guard: each element is rendered at most once.
+        # Prevents double-drawing when the element list contains duplicates
+        # or when script/CID font registration affects encoding layers.
+        rendered_ids: set = set()
 
-        for el in rects:
+        # Split images into background (extends off-page — usually placed before
+        # vector shapes in the PDF) and foreground (rasterised path images).
+        pw, ph = self.page["width_pt"], self.ph
+        def _is_bg_image(e):
+            return (e["type"] == "image"
+                    and e.get("origin") == "pymupdf_bg")
+
+        all_rects  = [e for e in elements if e["type"] in ("path", "rectangle")]
+        bg_images  = [e for e in elements if _is_bg_image(e)]
+        lines      = [e for e in elements if e["type"] == "line"]
+        fg_images  = [e for e in elements
+                      if e["type"] == "image" and not _is_bg_image(e)]
+        texts      = [e for e in elements if e["type"] == "text"]
+
+        # Build a list of background regions.  Shapes/lines fully inside a bg
+        # region are already captured by the rasterized bg_image and must be
+        # skipped to avoid double-painting.
+        bg_rects = []
+        for bi in bg_images:
+            bg_rects.append((bi["x"], bi["y"],
+                             bi["x"] + bi["width"],
+                             bi["y"] + bi["height"]))
+
+        page_area = pw * ph
+
+        def _is_full_page(el) -> bool:
+            """True if the element covers ≥80% of the page — i.e. a background rect."""
+            w = el.get("width", 0)
+            h = el.get("height", 0)
+            return w * h >= page_area * 0.8
+
+        def _in_bg(el) -> bool:
+            """True if the element's visible (on-page) region is fully enclosed by a bg region."""
+            ex0 = el.get("x", el.get("x1", 0))
+            ey0 = el.get("y", el.get("y1", 0))
+            ex1 = ex0 + el.get("width", abs(el.get("x2", ex0) - ex0))
+            ey1 = ey0 + el.get("height", abs(el.get("y2", ey0) - ey0))
+            # Clip element to page bounds before checking containment
+            ex0c = max(ex0, 0.0);  ey0c = max(ey0, 0.0)
+            ex1c = min(ex1, pw);   ey1c = min(ey1, ph)
+            if ex1c <= ex0c or ey1c <= ey0c:
+                return False  # element fully off-page
+            for bx0, by0, bx1, by1 in bg_rects:
+                if ex0c >= bx0 - 2 and ey0c >= by0 - 2 and ex1c <= bx1 + 2 and ey1c <= by1 + 2:
+                    return True
+            return False
+
+        def _overlaps_bg(el) -> bool:
+            """True if the element overlaps any bg region (even partially).
+            Such elements are background containers and must be drawn before bg_images,
+            not after — otherwise they cover the rasterized bg image."""
+            ex0 = el.get("x", el.get("x1", 0))
+            ey0 = el.get("y", el.get("y1", 0))
+            ex1 = ex0 + el.get("width", abs(el.get("x2", ex0) - ex0))
+            ey1 = ey0 + el.get("height", abs(el.get("y2", ey0) - ey0))
+            ex0c = max(ex0, 0.0);  ey0c = max(ey0, 0.0)
+            ex1c = min(ex1, pw);   ey1c = min(ey1, ph)
+            if ex1c <= ex0c or ey1c <= ey0c:
+                return False
+            for bx0, by0, bx1, by1 in bg_rects:
+                # Overlap = not (completely outside)
+                if ex1c > bx0 - 2 and ex0c < bx1 + 2 and ey1c > by0 - 2 and ey0c < by1 + 2:
+                    return True
+            return False
+
+        full_page_rects = [e for e in all_rects if _is_full_page(e)]
+        content_rects   = [e for e in all_rects if not _is_full_page(e)]
+
+        # Paint order:
+        # 1. Full-page background rects (white/colored page fill)
+        # 2. Pre-bg content rects: overlap a bg_image region → drawn before bg image
+        #    (they are the background containers for the rasterized scene)
+        # 3. Background images (rasterized from original, preserving blending)
+        # 4. Remaining content rects (skip those fully inside bg region — already captured)
+        # 5. Lines (skip those in bg region)
+        # 6. Foreground images (rasterized complex paths)
+        # 7. Text
+        for el in full_page_rects:
+            eid = el.get("id", "")
+            if eid and eid in rendered_ids:
+                continue
+            rendered_ids.add(eid)
             self._draw_rect(c, el)
-        for el in lines:
-            self._draw_line(c, el)
-        for el in images:
+
+        for el in content_rects:
+            if not _overlaps_bg(el):
+                continue
+            eid = el.get("id", "")
+            if eid and eid in rendered_ids:
+                continue
+            rendered_ids.add(eid)
+            self._draw_rect(c, el)
+
+        for el in bg_images:
+            eid = el.get("id", "")
+            if eid and eid in rendered_ids:
+                continue
+            rendered_ids.add(eid)
             self._draw_image(c, el)
+
+        for el in content_rects:
+            eid = el.get("id", "")
+            if eid and eid in rendered_ids:
+                continue
+            if _in_bg(el):
+                rendered_ids.add(eid)
+                continue  # already captured in bg_image rasterization
+            rendered_ids.add(eid)
+            self._draw_rect(c, el)
+
+        for el in lines:
+            eid = el.get("id", "")
+            if eid and eid in rendered_ids:
+                continue
+            if _in_bg(el):
+                rendered_ids.add(eid)
+                continue
+            rendered_ids.add(eid)
+            self._draw_line(c, el)
+
+        for el in fg_images:
+            eid = el.get("id", "")
+            if eid and eid in rendered_ids:
+                continue
+            rendered_ids.add(eid)
+            self._draw_image(c, el)
+
         for el in texts:
+            eid = el.get("id", "")
+            if eid and eid in rendered_ids:
+                continue
+            rendered_ids.add(eid)
             self._draw_text(c, el)
 
         c.save()
 
     def _draw_rect(self, c, el: dict):
-        fill_raw = el.get("fill_color") or el.get("fill")
+        fill_raw   = el.get("fill_color") or el.get("fill")
         stroke_raw = el.get("stroke_color") or el.get("stroke")
-        sw = el.get("stroke_width", 0)
+        sw         = el.get("stroke_width", 0)
 
         fill_c   = _to_color(fill_raw)
         stroke_c = _to_color(stroke_raw)
@@ -197,16 +356,15 @@ class PageRenderer:
             return
 
         x, y, w, h = el["x"], el["y"], el["width"], el["height"]
+        # rl_y = page_height - pdf_y - element_height
         yr = self._y(y, h)
 
-        # Fill-only rects with no stroke of their own bleed 0.5 pt beyond
-        # their nominal edges so they extend under adjacent border strokes.
-        # PDF strokes are centred on the path; without this, a 0.5 pt gap
-        # appears between the fill edge and the border stroke centre.
+        # Fill-only rects bleed 0.5 pt so they extend under adjacent strokes
+        # (PDF strokes are centred on the path edge).
         if fill_c is not None and stroke_c is None:
             bleed = 0.5
             x, y, w, h = x - bleed, y - bleed, w + 2 * bleed, h + 2 * bleed
-            yr = self._y(y, h)
+            yr = self._y(y, h)  # recompute after bleed
 
         if fill_c is not None:
             c.setFillColor(fill_c)
@@ -241,6 +399,7 @@ class PageRenderer:
         if col is not None:
             c.setStrokeColor(col)
         c.setLineWidth(sw)
+        # rl_y = page_height - pdf_y  (line endpoints have no height)
         c.line(x1, self._y(y1), x2, self._y(y2))
         c.setStrokeColor(colors.black)
         c.setLineWidth(0.5)
@@ -253,20 +412,32 @@ class PageRenderer:
         if text_color is not None:
             c.setFillColor(text_color)
 
-        value = str(el.get("value", ""))
-        x, y = el["x"], el["y"]
-        w = el.get("width", 0)
+        value     = str(el.get("value", ""))
+        x, y      = el["x"], el["y"]
+        w         = el.get("width", 0)
         alignment = el.get("alignment", "left")
 
-        # choose rendering method
-        if alignment == "right":
-            yr = self._ty(y, fs)
-            c.drawRightString(x + w, yr, value)
-        elif alignment == "center":
-            yr = self._ty(y, fs)
-            c.drawCentredString(x + w / 2.0, yr, value)
+        # Use the exact baseline_y from PyMuPDF's span["origin"][1] when available.
+        # This is far more accurate than the 0.75*fs approximation, especially for
+        # fonts with non-standard ascender ratios (e.g. Poppins, custom display fonts).
+        baseline_y = el.get("baseline_y")
+        if baseline_y is not None:
+            yr = self.ph - baseline_y
         else:
             yr = self._ty(y, fs)
+
+        char_origins = el.get("char_origins")
+        if char_origins and alignment == "left":
+            # Draw each character at its exact PDF x origin to avoid font-metrics
+            # mismatches between the extracted TTF and ReportLab's advance widths.
+            for cx, ch in char_origins:
+                if ch:
+                    c.drawString(cx, yr, ch)
+        elif alignment == "right":
+            c.drawRightString(x + w, yr, value)
+        elif alignment == "center":
+            c.drawCentredString(x + w / 2.0, yr, value)
+        else:
             c.drawString(x, yr, value)
 
         c.setFillColor(colors.black)
@@ -280,9 +451,11 @@ class PageRenderer:
 
         x, y, w, h = el["x"], el["y"], el["width"], el["height"]
         try:
+            # rl_y = page_height - pdf_y - element_height
             c.drawImage(fp, x, self._y(y, h), width=w, height=h, mask="auto")
         except Exception as e:
             print(f"  ⚠  image failed {fp}: {e}")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Main
