@@ -94,7 +94,7 @@ export default function App() {
 
   // Editor view (the approved dark "Text Fields" design)
   return (
-    <div className="h-screen w-full flex flex-col overflow-hidden bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-[#1a233a] via-background to-background">
+    <div className="h-screen w-full flex flex-col overflow-hidden animate-fade bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-[#1a233a] via-background to-background">
       {/* TopNavBar */}
       <header className="bg-surface/80 backdrop-blur-xl text-primary font-label-md text-label-md h-14 w-full border-b border-outline-variant flex justify-between items-center sticky top-0 z-30 px-6">
         <button

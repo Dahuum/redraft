@@ -41,7 +41,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
   const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
 
   return (
-    <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1400px] w-full mx-auto">
+    <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1400px] w-full mx-auto animate-rise">
       <input
         ref={inputRef}
         type="file"

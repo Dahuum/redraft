@@ -129,7 +129,7 @@ export default function PdfCanvas({
             return (
               <div
                 key={s.id}
-                className="absolute rounded-[2px]"
+                className="absolute rounded-[2px] animate-pop"
                 style={{
                   left: x0 * scale,
                   top: y0 * scale,
@@ -139,6 +139,7 @@ export default function PdfCanvas({
                     ? "2px solid #2563eb"
                     : "2px solid #2563eb",
                   background: isSel ? "rgba(37,99,235,.12)" : "rgba(37,99,235,.05)",
+                  transition: "background-color .15s ease, outline-color .15s ease",
                 }}
               />
             );

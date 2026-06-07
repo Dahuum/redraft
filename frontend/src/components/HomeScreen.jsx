@@ -87,7 +87,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
       </nav>
 
       {/* Main Workspace Canvas */}
-      <main className="pt-20 min-h-screen flex flex-col px-lg pb-lg md:px-xl md:pb-xl max-w-[1100px] mx-auto w-full relative z-10">
+      <main className="pt-20 min-h-screen flex flex-col px-lg pb-lg md:px-xl md:pb-xl max-w-[1100px] mx-auto w-full relative z-10 animate-fade">
         {/* Ambient Glow */}
         <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[600px] h-[600px] bg-[#00f5ff]/5 rounded-full blur-[120px] pointer-events-none -z-10"></div>
 
@@ -165,11 +165,12 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-md">
-                {docs.map((d) => (
+                {docs.map((d, i) => (
                   <div
                     key={d.id}
                     onClick={() => onOpen(d)}
-                    className="group relative rounded-xl bg-[#1c1b1c] border border-white/5 p-4 hover:border-white/10 transition-all cursor-pointer hover:-translate-y-0.5 shadow-sm hover:shadow-md"
+                    style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+                    className="group relative rounded-xl bg-[#1c1b1c] border border-white/5 p-4 hover:border-white/10 transition-all cursor-pointer hover:-translate-y-0.5 shadow-sm hover:shadow-md animate-rise"
                   >
                     <button
                       onClick={(e) => {

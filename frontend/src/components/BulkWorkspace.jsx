@@ -272,7 +272,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       : "Type the new values — each row makes one PDF, then press Generate";
 
   return (
-    <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1500px] w-full mx-auto">
+    <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
       {/* Left: the document — click spots to make them editable */}
       <div className="flex-[0.58] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-[inset_0_0_80px_rgba(0,0,0,0.2)]">
         {/* Toolbar */}
@@ -378,7 +378,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
         {/* Body */}
         <div className="flex-1 overflow-auto">
           {picked.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-on-surface-variant">
+            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-on-surface-variant animate-fade">
               <span className="material-symbols-outlined text-[44px] text-accent-cyan/70">ads_click</span>
               <p className="mt-3 text-body-lg text-on-surface font-semibold">
                 Click on the document to start
@@ -403,7 +403,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
             </div>
           ) : showImport ? (
             /* ---- Import panel ---- */
-            <div className="p-4 space-y-4">
+            <div className="p-4 space-y-4 animate-drop">
               <div className="flex items-center gap-1 bg-surface-container-low rounded-lg p-1 border border-outline-variant/20 w-max">
                 {[
                   ["upload", "upload_file", "Upload"],

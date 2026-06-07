@@ -47,3 +47,61 @@ body {
   border-color: rgba(37, 99, 235, 0.8);
   cursor: pointer;
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Motion layer — make every click / hover / press feel smooth and intentional.
+   All of it is disabled automatically for users who prefer reduced motion.
+   ─────────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: no-preference) {
+  /* Ease state changes on everything interactive (incl. any element with a
+     Tailwind hover: utility, like cards and table rows). */
+  a,
+  button,
+  summary,
+  label,
+  input,
+  select,
+  textarea,
+  [role="button"],
+  [class*="hover:"] {
+    transition-property: color, background-color, border-color, box-shadow,
+      transform, opacity;
+    transition-duration: 180ms;
+    transition-timing-function: cubic-bezier(0.2, 0.6, 0.2, 1);
+  }
+
+  /* Tactile press feedback — a gentle squeeze on anything clickable. */
+  button:not(:disabled):active,
+  [role="button"]:active {
+    transform: scale(0.97);
+  }
+
+  .material-symbols-outlined {
+    transition: color 180ms ease, transform 180ms ease;
+  }
+}
+
+/* Entrance animations (applied via .animate-* classes on mount) */
+@keyframes rd-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes rd-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes rd-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes rd-drop {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .animate-fade { animation: rd-fade 0.25s ease both; }
+  .animate-rise { animation: rd-rise 0.32s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .animate-pop  { animation: rd-pop 0.2s ease both; }
+  .animate-drop { animation: rd-drop 0.22s ease both; }
+}

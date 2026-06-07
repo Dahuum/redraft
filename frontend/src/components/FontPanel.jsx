@@ -67,7 +67,7 @@ export default function FontPanel({ file, onChanged }) {
   const okCount = (fonts || []).length - attention.length;
 
   return (
-    <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3">
+    <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 animate-rise">
       <div className="flex items-center justify-between gap-2">
         <span className="text-label-md text-on-surface flex items-center gap-1.5">
           <span className="material-symbols-outlined text-[16px]">font_download</span>
