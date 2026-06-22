@@ -274,9 +274,9 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   return (
     <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
       {/* Left: the document — click spots to make them editable */}
-      <div className="flex-[0.58] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-[inset_0_0_80px_rgba(0,0,0,0.2)]">
+      <div className="flex-[0.58] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
         {/* Toolbar */}
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-white/10 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
           <button
             disabled={pageIndex === 0}
             onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
@@ -311,14 +311,14 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
         </div>
 
         {/* Hint */}
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-white/10 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
           <span className="material-symbols-outlined text-[14px] text-accent-cyan">ads_click</span>
           {pickedSpans.length
             ? `${pickedSpans.length} selected — click text to add, click again to remove`
             : "Click any text or number you want to change"}
         </div>
 
-        <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-black/20">
+        <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-on-surface/[0.04]">
           {file && data ? (
             <div className="paper-shadow rounded-sm mt-12 mb-10 h-fit">
               <PdfCanvas
@@ -341,7 +341,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       </div>
 
       {/* Right: values for only the picked fields */}
-      <div className="flex-[0.42] bg-surface-container rounded-xl border border-white/5 flex flex-col shadow-[0_10px_40px_rgba(0,0,0,0.3)] overflow-hidden">
+      <div className="flex-[0.42] bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden">
         {/* Header + guided steps */}
         <div className="px-4 pt-4 pb-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md">
           <div className="flex items-start justify-between gap-2">
@@ -658,7 +658,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
           <button
             onClick={process}
             disabled={busy || !picked.length || !rows.length}
-            className="w-full bg-secondary-container hover:bg-[#003ea8] text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-white/10 disabled:opacity-40"
+            className="w-full bg-secondary-container hover:bg-[#003ea8] text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
           >
             <span className="material-symbols-outlined text-[18px]">bolt</span>
             {busy

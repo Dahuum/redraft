@@ -51,9 +51,9 @@ export default function EditorWorkspace({ ed, onDownload }) {
       />
 
       {/* Left Pane: Document Preview (65%) */}
-      <div className="flex-[0.65] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-[inset_0_0_80px_rgba(0,0,0,0.2)]">
+      <div className="flex-[0.65] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
         {/* Toolbar overlay */}
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-white/10 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
           <button
             className="text-on-surface-variant hover:text-primary transition-colors"
             onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
@@ -78,7 +78,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
         </div>
 
         {/* Document Canvas */}
-        <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-black/20">
+        <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-on-surface/[0.04]">
           {file && fileData ? (
             <div className="paper-shadow rounded-sm mt-8 mb-6 h-fit">
               <PdfCanvas
@@ -115,7 +115,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
       </div>
 
       {/* Right Pane: Text Fields Sidebar (35%) */}
-      <div className="flex-[0.35] bg-surface-container rounded-xl border border-white/5 flex flex-col shadow-[0_10px_40px_rgba(0,0,0,0.3)] overflow-hidden relative">
+      <div className="flex-[0.35] bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden relative">
         {/* Header */}
         <div className="p-5 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md sticky top-0 z-10">
           <h2 className="font-display-md text-xl font-bold mb-0.5 tracking-tight">Text Fields</h2>
@@ -171,7 +171,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
             <button
               onClick={preview}
               disabled={nEdits === 0 || busy}
-              className="flex-1 bg-secondary-container hover:bg-[#003ea8] text-on-secondary-container py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-white/10 disabled:opacity-40"
+              className="flex-1 bg-secondary-container hover:bg-[#003ea8] text-on-secondary-container py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
             >
               <span className="material-symbols-outlined text-[18px]">visibility</span>
               {busy ? "Working…" : "Preview"}

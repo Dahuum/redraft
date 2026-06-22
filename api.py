@@ -39,6 +39,9 @@ from fastapi.responses import JSONResponse, Response
 sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
+from annex_model import (  # noqa: E402  — annex rules
+    build_model, plan_edits, plan_header_edits, parse_num,
+)
 
 app = FastAPI(title="Redraft API", version="1.0")
 
@@ -173,6 +176,29 @@ def apply_replacements(pdf_bytes: bytes, replacements: list) -> tuple:
 
 _SFNT_MAGICS = (b"\x00\x01\x00\x00", b"OTTO", b"true", b"typ1", b"ttcf")
 
+# Characters an edited invoice realistically needs. A font is "complete enough"
+# only if it can render all of these — otherwise edits risk boxes (▯).
+_COVER = (
+    "0123456789"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    " .,:;/-_'\"()%°€&+*"
+    "àâçéèêëîïôûùÀÂÇÉÈÊ"
+)
+
+# Per-process memo: canonical real-font name → full clone bytes (or None). Avoids
+# re-attempting a (possibly network) lookup for the same font on every request.
+_CLONE_CACHE: dict = {}
+
+
+def _font_covers(buf: bytes) -> bool:
+    """True if the font file can render every character in _COVER."""
+    try:
+        fnt = fitz.Font(fontbuffer=buf)
+    except Exception:  # noqa: BLE001
+        return False
+    return all(fnt.has_glyph(ord(c)) for c in _COVER)
+
 
 def _font_cache_name(fontname: str) -> str:
     """The exact .font_cache filename the engine looks up for *fontname*."""
@@ -204,6 +230,105 @@ def _font_status(fontname: str) -> dict:
         "source":     src,
         "cache_name": _font_cache_name(fontname),
     }
+
+
+def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
+    """Use a PDF's OWN embedded fonts when their names have been stripped.
+
+    Many generators (iText / JasperReports, etc.) embed the *full* real font but
+    rename it to an anonymous tag like ``CIDFont+F1``. The engine resolves fonts
+    by name, so it can't identify that tag and falls back — which is why new text
+    can render as boxes even though the real font (e.g. full Arial / Calibri) is
+    sitting right inside the file. Here we extract that embedded program and drop
+    it into the engine's font cache under the *exact* name the engine looks up, so
+    it loads the document's own font: pixel-perfect, automatic, no engine change.
+
+    Picking the font for each stripped name (in order of preference):
+      1. the embedded program itself, IF it can render the full editing charset
+         (exact, best fidelity);
+      2. else the full open-source clone of the embedded font's *real* name
+         (e.g. Arial → Arimo: metric-identical, complete cmap, no boxes);
+      3. else the embedded program as a best effort (covers the doc's own chars).
+
+    An existing cache file that already covers the charset is left untouched (so a
+    user-uploaded font, or a clone we installed earlier, is respected).
+
+    Returns a list describing what was installed (empty if nothing changed).
+    """
+    installed: list = []
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return installed
+    seen, changed = set(), False
+    try:
+        for pno in range(doc.page_count):
+            for fo in doc[pno].get_fonts(full=True):
+                xref, basefont = fo[0], fo[3]
+                if xref in seen or not basefont:
+                    continue
+                seen.add(xref)
+                cache_name = _font_cache_name(basefont)
+                cache_path = os.path.join(_pe._FONT_CACHE_DIR, cache_name)
+
+                # Already have a complete font under this name → done.
+                if os.path.exists(cache_path):
+                    with open(cache_path, "rb") as fh:
+                        if _font_covers(fh.read()):
+                            continue
+
+                try:
+                    _, _ext, _ftype, buf = doc.extract_font(xref)
+                except Exception:  # noqa: BLE001
+                    buf = None
+                if not buf or len(buf) < 4 or buf[:4] not in _SFNT_MAGICS:
+                    continue  # nothing usable embedded — leave to the name resolver
+                try:
+                    fnt = fitz.Font(fontbuffer=buf)
+                    real_name, nglyph = fnt.name, fnt.glyph_count
+                except Exception:  # noqa: BLE001
+                    continue
+
+                if _font_covers(buf):
+                    chosen, via = buf, f"embedded:{real_name}"      # exact + complete
+                else:
+                    canonical = real_name.replace(" ", "")
+                    if canonical not in _CLONE_CACHE:
+                        # Probe for an open-source clone of the embedded font. A miss
+                        # (e.g. Calibri → no clone) is EXPECTED — we keep the embedded
+                        # font — so silence the engine's misleading "fallback" warning.
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            try:
+                                _CLONE_CACHE[canonical] = resolve_full_font(canonical)
+                            except Exception:  # noqa: BLE001
+                                _CLONE_CACHE[canonical] = None
+                    full = _CLONE_CACHE[canonical]
+                    if full and _font_covers(full):
+                        chosen, via = full, f"clone:{canonical}"     # full metric clone
+                    elif nglyph >= 200:
+                        chosen, via = buf, f"embedded-partial:{real_name}"
+                    else:
+                        continue
+
+                if os.path.exists(cache_path):
+                    with open(cache_path, "rb") as fh:
+                        if fh.read() == chosen:
+                            continue                                 # already installed
+                with open(cache_path, "wb") as fh:
+                    fh.write(chosen)
+                changed = True
+                installed.append({"font": basefont.split("+")[-1],
+                                  "real_name": real_name,
+                                  "via": via,
+                                  "installed_as": cache_name})
+    finally:
+        doc.close()
+    if changed:
+        # Drop the in-memory resolution memo so the next edit picks up the files.
+        _pe._RESOLVED.clear()
+        _pe._FONT_SOURCE.clear()
+    return installed
 
 
 def parse_table(filename: str, data: bytes) -> tuple:
@@ -248,6 +373,7 @@ async def extract(file: UploadFile = File(...)):
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
+    _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
     try:
         spans = extract_spans(data)
         pages = page_dims(data)
@@ -271,6 +397,7 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...)):
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
+    _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
     try:
         edit_list = json.loads(edits)
         assert isinstance(edit_list, list)
@@ -326,6 +453,7 @@ async def bulk(template: UploadFile = File(...),
     data_bytes = await data.read()
     if not tmpl_bytes or not data_bytes:
         raise HTTPException(400, "Both a template PDF and a data file are required.")
+    _ingest_embedded_fonts(tmpl_bytes)  # use the template's own embedded fonts
 
     try:
         mp = json.loads(mapping)
@@ -391,13 +519,14 @@ async def fonts(file: UploadFile = File(...)):
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
+    auto = _ingest_embedded_fonts(data)  # adopt the PDF's own embedded fonts first
     try:
         spans = extract_spans(data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
     distinct = sorted({s["font"] for s in spans})
     report = [_font_status(f) for f in distinct]
-    return {"count": len(report), "fonts": report}
+    return {"count": len(report), "fonts": report, "auto_installed": auto}
 
 
 @app.post("/font")
@@ -432,6 +561,247 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...)):
     _pe._FONT_SOURCE.clear()
 
     return {"ok": True, "installed_as": name, "font": _font_status(fontname)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Annex automation (rules-based line-item generation).
+#   /annex/model     PDF                          → structured rows (for the UI)
+#   /annex/generate  template + data + mapping    → ZIP, one annex per data row
+# Quantity rule: a mapped cell that is 0 or empty REMOVES that line; any other
+# value sets the quantity and recomputes the line amount + the Total HT.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _annex_spans_and_model(pdf_bytes: bytes):
+    """Extract spans (id == index) and build the annex model. Raises on bad PDF."""
+    spans = extract_spans(pdf_bytes)
+    for i, s in enumerate(spans):
+        s["id"] = i
+    return spans, build_model(spans)
+
+
+# Numeric columns are right-aligned, and the engine shrinks any value wider than
+# its original cell (pdf_editor shrink-to-fit). Widening the cell leftward — right
+# edge fixed — lets a longer number (qty 9 → 5000) render full-size instead of
+# tiny. Floors sit in the gaps between columns so the erase never hits a neighbour.
+_COL_FLOOR = {"qty": 360.0, "amount": 478.0, "total": 472.0}
+
+
+def _relax_numeric(span: dict, col: str | None) -> dict:
+    """Return a copy of *span* with its cell widened leftward (for numeric cols)."""
+    floor = _COL_FLOOR.get(col or "")
+    if floor is None:
+        return span
+    x0, y0, x1, y1 = span["bbox"]
+    if x0 <= floor:
+        return span
+    widened = dict(span)
+    widened["bbox"] = [floor, y0, x1, y1]
+    return widened
+
+
+def _relax_header(span: dict) -> dict:
+    """Header fields are left-aligned 'label value'; widen the cell to the RIGHT so
+    a longer value isn't shrunk. Left column → up to x=400 (before the right
+    column); right column → page edge."""
+    x0, y0, x1, y1 = span["bbox"]
+    right = 400.0 if x0 < 300 else 545.0
+    if x1 >= right:
+        return span
+    widened = dict(span)
+    widened["bbox"] = [x0, y0, right, y1]
+    return widened
+
+
+def _annex_colmap(model: dict) -> dict:
+    """span_id → numeric column ('qty'|'amount'|'total') for width-relaxing."""
+    cm: dict = {}
+    for it in model["items"]:
+        if it["spanIds"]["qty"] is not None:
+            cm[it["spanIds"]["qty"]] = "qty"
+        if it["spanIds"]["amount"] is not None:
+            cm[it["spanIds"]["amount"]] = "amount"
+    if model.get("total") and model["total"].get("valueId") is not None:
+        cm[model["total"]["valueId"]] = "total"
+    return cm
+
+
+# Table left/right edges (PDF pt) for full-width band erases.
+_TABLE_X0, _TABLE_X1 = 23.0, 540.5
+
+
+def _annex_erase_bands(model: dict, spans: list,
+                       removed_items: set, removed_secs: list) -> list:
+    """Synthetic blank spans that erase a whole removed row / section band.
+
+    Per-cell blanks only cover text; a removed row/section can also carry vector
+    marks (the section-title underline, row background shading) the engine won't
+    touch. Erasing the full band (text + marks) leaves a clean gap. Returns
+    (span, "") pairs ready to append to the replacement list.
+    """
+    out: list = []
+
+    def band(ids: list, pad_bottom: float = 1.0):
+        boxes = [spans[i]["bbox"] for i in ids if 0 <= i < len(spans)]
+        if not boxes:
+            return None
+        y0 = min(b[1] for b in boxes) - 1.0
+        y1 = max(b[3] for b in boxes) + pad_bottom
+        s = dict(spans[ids[0]])
+        s["bbox"] = [_TABLE_X0, y0, _TABLE_X1, y1]
+        s["text"] = ""
+        return s
+
+    for idx in removed_items:
+        it = model["items"][idx]
+        ids = list(it["spanIds"]["label"])
+        ids += [it["spanIds"][k] for k in ("unit", "qty", "price", "amount")
+                if it["spanIds"][k] is not None]
+        s = band(ids)
+        if s:
+            out.append((s, ""))
+
+    for si in removed_secs:
+        s = band(model["sections"][si]["ids"], pad_bottom=3.0)  # +catch underline
+        if s:
+            out.append((s, ""))
+
+    return out
+
+
+@app.post("/annex/model")
+async def annex_model(file: UploadFile = File(...)):
+    """Upload an annex PDF → its detected line items, sections and total."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    _ingest_embedded_fonts(data)
+    try:
+        _spans, model = _annex_spans_and_model(data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
+    def _flat_ids(it):
+        ids = list(it["spanIds"]["label"])
+        ids += [it["spanIds"][k] for k in ("unit", "qty", "price", "amount")
+                if it["spanIds"][k] is not None]
+        return ids
+
+    items = [{"index": idx,
+              "section":   it["section"],
+              "label":     it["label"],
+              "unit":      it["unit"],
+              "qty":       it["qty"],
+              "unitPrice": it["unitPrice"],
+              "amount":    it["amount"],
+              "ids":       _flat_ids(it)}
+             for idx, it in enumerate(model["items"])]
+    headers = [{"key": h["key"], "label": h["label"],
+                "value": h["value"], "spanId": h["spanId"]}
+               for h in model.get("headers", [])]
+    return {"filename": file.filename,
+            "sections": [s["title"] for s in model["sections"]],
+            "items": items,
+            "headers": headers,
+            "total": model["total"],
+            "item_count": len(items)}
+
+
+@app.post("/annex/generate")
+async def annex_generate(template: UploadFile = File(...),
+                         data: UploadFile = File(...),
+                         mapping: str = Form(...),
+                         headers: str = Form("{}")):
+    """One annex per data row → ZIP.
+
+    `mapping` is a JSON object {"<item_index>": "<column_name>", …} linking each
+    line item to the data column holding its quantity. Per row: 0/empty quantity
+    removes the line; any other value sets it and recomputes amount + Total HT.
+    `headers` (optional) is {"<field_key>": "<column_name>", …} for the document
+    info fields (facture N°, client, ICE, période…).
+    """
+    tmpl_bytes = await template.read()
+    data_bytes = await data.read()
+    if not tmpl_bytes or not data_bytes:
+        raise HTTPException(400, "Both a template PDF and a data file are required.")
+    _ingest_embedded_fonts(tmpl_bytes)
+
+    try:
+        mp = json.loads(mapping)
+        mp = {int(k): str(v) for k, v in mp.items()}
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "`mapping` must be a JSON object of "
+                                 "{item_index: column_name}.")
+    try:
+        hmap = json.loads(headers)
+        hmap = {str(k): str(v) for k, v in hmap.items()}
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "`headers` must be a JSON object of "
+                                 "{field_key: column_name}.")
+    if not mp and not hmap:
+        raise HTTPException(400, "Map at least one line or field to a column.")
+
+    try:
+        data_headers, rows = parse_table(data.filename or "data.csv", data_bytes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if not rows:
+        raise HTTPException(400, "The data file has no rows.")
+
+    try:
+        spans, model = _annex_spans_and_model(tmpl_bytes)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't read the template ({type(exc).__name__}).")
+    if not model["items"] and not model.get("headers"):
+        raise HTTPException(400, "No line items or document fields were detected.")
+
+    unknown = [c for c in list(mp.values()) + list(hmap.values())
+               if c not in data_headers]
+    if unknown:
+        raise HTTPException(400, f"Column(s) not found in data file: "
+                                 f"{', '.join(sorted(set(unknown)))}.")
+
+    colmap = _annex_colmap(model)
+    zip_buf = io.BytesIO()
+    made = failed = 0
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for row_idx, row in enumerate(rows):
+            spec: dict = {}
+            for idx, col in mp.items():
+                if not (0 <= idx < len(model["items"])):
+                    continue
+                qv = parse_num(str(row.get(col, "")))
+                spec[idx] = {"remove": True} if not qv else {"qty": qv}
+            reps = [(_relax_numeric(spans[sid], colmap.get(sid)) if txt else spans[sid], txt)
+                    for sid, txt in plan_edits(model, spec)
+                    if 0 <= sid < len(spans)]
+            removed_items = {idx for idx, a in spec.items() if a.get("remove")}
+            removed_secs = [si for si, sec in enumerate(model["sections"])
+                            if sec.get("itemIdx")
+                            and all(k in removed_items for k in sec["itemIdx"])]
+            reps += _annex_erase_bands(model, spans, removed_items, removed_secs)
+            if hmap:
+                hspec = {key: row.get(col, "") for key, col in hmap.items()}
+                for sid, txt in plan_header_edits(model.get("headers", []), hspec):
+                    if 0 <= sid < len(spans):
+                        reps.append((_relax_header(spans[sid]), txt))
+            try:
+                out, _ = apply_replacements(tmpl_bytes, reps)
+                zf.writestr(f"annex_{row_idx + 1:04d}.pdf", out)
+                made += 1
+            except Exception:  # noqa: BLE001 — skip the bad row, keep going
+                failed += 1
+
+    if made == 0:
+        raise HTTPException(500, "Every annex failed to generate.")
+
+    stem = Path(template.filename or "annex").stem
+    return Response(
+        content=zip_buf.getvalue(), media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{stem}_annexes.zip"',
+            "X-Redraft-Generated": str(made),
+            "X-Redraft-Failed": str(failed),
+        },
+    )
 
 
 if __name__ == "__main__":

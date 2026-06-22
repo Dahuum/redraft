@@ -1,8 +1,9 @@
 import { useRef, useState } from "react";
 import { useHistory, removeDoc, ago } from "../lib/history.js";
+import ThemeToggle from "./ThemeToggle.jsx";
 
 const STATUS = {
-  Draft: "bg-[#00f5ff]/10 text-[#00f5ff]",
+  Draft: "bg-accent-cyan/10 text-accent-cyan",
   Final: "bg-emerald-500/10 text-emerald-400",
   Review: "bg-amber-500/10 text-amber-400",
 };
@@ -31,21 +32,21 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
       />
 
       {/* Top Toolbar */}
-      <nav className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-lg h-14 bg-[#0f131c]/90 backdrop-blur-md border-b border-white/5 shadow-sm transition-all duration-300">
+      <nav className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-lg h-14 bg-page/90 backdrop-blur-md border-b border-outline-variant/30 shadow-sm transition-all duration-300">
         <div className="flex items-center gap-md">
           <div className="flex items-center gap-xs">
             <div className="font-display-md text-[18px] font-bold text-on-surface tracking-tight">
               Redraft
             </div>
           </div>
-          <div className="h-4 w-[1px] bg-white/10 mx-xs hidden md:block"></div>
+          <div className="h-4 w-[1px] bg-on-surface/10 mx-xs hidden md:block"></div>
           <span className="hidden md:flex items-center text-on-surface-variant font-label-md text-sm">
             Personal Workspace
           </span>
         </div>
 
         {/* Center Mode Toggle */}
-        <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center bg-[#1c1b1c] rounded-lg p-1 border border-white/5">
+        <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center bg-surface-container-low rounded-lg p-1 border border-outline-variant/30">
           <button
             onClick={() => setTab("editor")}
             className={`px-md py-1.5 rounded-md font-label-md text-sm transition-all ${
@@ -70,13 +71,14 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
 
         {/* Trailing Actions */}
         <div className="flex items-center gap-sm">
-          <button className="font-label-md text-[13px] px-md py-1.5 rounded-md border border-white/10 text-on-surface hover:bg-surface-container-high transition-colors active:scale-95">
+          <ThemeToggle />
+          <button className="font-label-md text-[13px] px-md py-1.5 rounded-md border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors active:scale-95">
             Share
           </button>
-          <button className="font-label-md text-[13px] px-md py-1.5 rounded-md bg-[#00f5ff]/10 text-[#00f5ff] border border-[#00f5ff]/20 hover:bg-[#00f5ff]/20 transition-colors active:scale-95">
+          <button className="font-label-md text-[13px] px-md py-1.5 rounded-md bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20 hover:bg-accent-cyan/20 transition-colors active:scale-95">
             Export
           </button>
-          <div className="w-8 h-8 rounded-full bg-surface-container-high border border-white/10 overflow-hidden cursor-pointer hover:border-[#00f5ff]/50 transition-colors ml-xs">
+          <div className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 overflow-hidden cursor-pointer hover:border-accent-cyan/50 transition-colors ml-xs">
             <img
               alt="User avatar"
               className="w-full h-full object-cover"
@@ -89,7 +91,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
       {/* Main Workspace Canvas */}
       <main className="pt-20 min-h-screen flex flex-col px-lg pb-lg md:px-xl md:pb-xl max-w-[1100px] mx-auto w-full relative z-10 animate-fade">
         {/* Ambient Glow */}
-        <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[600px] h-[600px] bg-[#00f5ff]/5 rounded-full blur-[120px] pointer-events-none -z-10"></div>
+        <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[600px] h-[600px] bg-accent-cyan/5 rounded-full blur-[120px] pointer-events-none -z-10"></div>
 
         <div className="flex-1 flex flex-col w-full mx-auto">
           {/* Drop Zone (Primary Action Area) */}
@@ -106,15 +108,15 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
                 setDrag(false);
                 pick(e.dataTransfer.files?.[0]);
               }}
-              className={`relative w-full rounded-2xl bg-[#1c1b1c]/40 backdrop-blur-xl border transition-all duration-300 group cursor-pointer overflow-hidden flex flex-col items-center justify-center py-[60px] px-lg mb-lg shadow-[0_8px_32px_rgba(0,0,0,0.4)] mt-2 ${
+              className={`relative w-full rounded-2xl bg-surface-container-low/40 backdrop-blur-xl border transition-all duration-300 group cursor-pointer overflow-hidden flex flex-col items-center justify-center py-[60px] px-lg mb-lg shadow-panel mt-2 ${
                 drag
-                  ? "border-[#00f5ff]/30 bg-[#1c1b1c]/60"
-                  : "border-white/5 hover:border-[#00f5ff]/30 hover:bg-[#1c1b1c]/60"
+                  ? "border-accent-cyan/30 bg-surface-container-low/60"
+                  : "border-outline-variant/30 hover:border-accent-cyan/30 hover:bg-surface-container-low/60"
               }`}
             >
-              <div className="absolute inset-0 rounded-2xl ring-1 ring-inset ring-white/5 group-hover:ring-[#00f5ff]/20 transition-all pointer-events-none"></div>
-              <div className="w-14 h-14 rounded-2xl bg-surface-container flex items-center justify-center mb-md shadow-[0_0_20px_rgba(0,0,0,0.5)] border border-white/5 group-hover:-translate-y-1 transition-transform duration-300">
-                <span className="material-symbols-outlined text-[28px] text-on-surface-variant group-hover:text-[#00f5ff] transition-colors">
+              <div className="absolute inset-0 rounded-2xl ring-1 ring-inset ring-on-surface/10 group-hover:ring-accent-cyan/20 transition-all pointer-events-none"></div>
+              <div className="w-14 h-14 rounded-2xl bg-surface-container flex items-center justify-center mb-md shadow-soft border border-outline-variant/30 group-hover:-translate-y-1 transition-transform duration-300">
+                <span className="material-symbols-outlined text-[28px] text-on-surface-variant group-hover:text-accent-cyan transition-colors">
                   {busy ? "hourglass_top" : "upload_file"}
                 </span>
               </div>
@@ -130,7 +132,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
                   inputRef.current?.click();
                 }}
                 disabled={busy}
-                className="font-label-md text-sm px-lg py-2 rounded-lg bg-[#00f5ff] text-[#080c14] hover:bg-[#00d0d9] shadow-[0_0_15px_rgba(0,245,255,0.2)] transition-all font-semibold active:scale-95 disabled:opacity-50"
+                className="font-label-md text-sm px-lg py-2 rounded-lg bg-accent-cyan text-[#080c14] hover:bg-[#00d0d9] shadow-[0_0_15px_rgba(0,245,255,0.2)] transition-all font-semibold active:scale-95 disabled:opacity-50"
               >
                 Browse Files
               </button>
@@ -142,7 +144,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
 
           {/* Recent Activity Section */}
           <section className="mt-2 flex-1">
-            <div className="flex items-center justify-between mb-md border-b border-white/5 pb-sm">
+            <div className="flex items-center justify-between mb-md border-b border-outline-variant/30 pb-sm">
               <h3 className="font-label-md text-sm text-on-surface font-medium flex items-center gap-sm">
                 <span className="material-symbols-outlined text-[18px] text-on-surface-variant">
                   history
@@ -155,7 +157,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
             </div>
 
             {docs.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-white/10 p-10 text-center">
+              <div className="rounded-xl border border-dashed border-outline-variant/50 p-10 text-center">
                 <span className="material-symbols-outlined text-[32px] text-on-surface-variant/40">
                   folder_open
                 </span>
@@ -170,7 +172,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
                     key={d.id}
                     onClick={() => onOpen(d)}
                     style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-                    className="group relative rounded-xl bg-[#1c1b1c] border border-white/5 p-4 hover:border-white/10 transition-all cursor-pointer hover:-translate-y-0.5 shadow-sm hover:shadow-md animate-rise"
+                    className="group relative rounded-xl bg-surface-container-low border border-outline-variant/30 p-4 hover:border-outline-variant/50 transition-all cursor-pointer hover:-translate-y-0.5 shadow-sm hover:shadow-md animate-rise"
                   >
                     <button
                       onClick={(e) => {
@@ -182,7 +184,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
                     >
                       <span className="material-symbols-outlined text-[16px]">close</span>
                     </button>
-                    <div className="aspect-[4/3] rounded-lg bg-surface-container-lowest mb-md border border-white/5 flex items-center justify-center overflow-hidden relative">
+                    <div className="aspect-[4/3] rounded-lg bg-surface-container-lowest mb-md border border-outline-variant/30 flex items-center justify-center overflow-hidden relative">
                       <div
                         className={`absolute top-2 left-2 z-10 px-2 py-1 font-label-md text-[10px] rounded uppercase tracking-wider font-bold ${
                           STATUS[d.status] || STATUS.Draft
@@ -202,7 +204,7 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
                         </span>
                       )}
                     </div>
-                    <h4 className="font-body-md text-sm text-on-surface font-medium truncate mb-xs group-hover:text-[#00f5ff] transition-colors">
+                    <h4 className="font-body-md text-sm text-on-surface font-medium truncate mb-xs group-hover:text-accent-cyan transition-colors">
                       {d.name}
                     </h4>
                     <div className="flex items-center justify-between text-on-surface-variant font-caption text-[11px]">

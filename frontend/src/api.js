@@ -71,6 +71,31 @@ export async function uploadFont(fontname, file) {
   return res.json();
 }
 
+// POST /annex/model → { filename, sections, items:[{index,section,label,unit,qty,unitPrice,amount,ids}], total, item_count }
+export async function annexModel(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`${API_BASE}/annex/model`, { method: "POST", body: fd });
+  if (!res.ok) throw await asError(res);
+  return res.json();
+}
+
+// POST /annex/generate → { blob, generated, failed } — one annex per data row
+export async function annexGenerate(template, dataFile, mapping, headers = {}) {
+  const fd = new FormData();
+  fd.append("template", template);
+  fd.append("data", dataFile);
+  fd.append("mapping", JSON.stringify(mapping));
+  fd.append("headers", JSON.stringify(headers));
+  const res = await fetch(`${API_BASE}/annex/generate`, { method: "POST", body: fd });
+  if (!res.ok) throw await asError(res);
+  return {
+    blob: await res.blob(),
+    generated: Number(res.headers.get("X-Redraft-Generated") || 0),
+    failed: Number(res.headers.get("X-Redraft-Failed") || 0),
+  };
+}
+
 // POST /bulk → { blob, generated, failed }
 export async function bulkGenerate(template, dataFile, mapping) {
   const fd = new FormData();

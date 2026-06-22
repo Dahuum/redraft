@@ -86,6 +86,10 @@ export async function getBytes(id) {
   return rec ? rec.bytes : null;
 }
 
+export async function getRecord(id) {
+  return (await run("readonly", (s) => s.get(id))) || null;
+}
+
 export async function getAllRecords() {
   try {
     return (await run("readonly", (s) => s.getAll())) || [];

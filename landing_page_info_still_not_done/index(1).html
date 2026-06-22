@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Redraft — Edit any PDF. Exactly how you want it.</title>
+<meta name="description" content="Upload your PDF, let AI reconstruct it perfectly, edit anything — text, numbers, layout — and export a clean result in seconds." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="tour.css" />
+<link rel="stylesheet" href="theme.css" />
+<link rel="stylesheet" href="modal.css" />
+</head>
+<body data-screen-label="Redraft Landing">
+
+<!-- ─────────── NAVIGATION ─────────── -->
+<header class="nav-wrap">
+  <nav class="nav" aria-label="Primary">
+    <a href="#" class="brand">
+      <span class="brand__mark" aria-hidden="true"></span>
+      <span class="brand__name">Redraft</span>
+    </a>
+    <ul class="nav__links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#tools">Tools</a></li>
+      <li><a href="#pricing">Pricing</a></li>
+      <li><a href="#enterprise">Enterprise</a></li>
+      <li><a href="#docs">Docs</a></li>
+    </ul>
+    <div class="nav__cta">
+      <button class="nav__signin" data-modal="signin">Sign In</button>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark mode">
+        <!-- Sun: shown in light mode — click to go dark -->
+        <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="5"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+        </svg>
+        <!-- Moon: shown in dark mode — click to go light -->
+        <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+      </button>
+      <button class="btn btn--primary btn--pill" data-modal="signup">Get Started</button>
+    </div>
+    <button class="nav__burger" aria-label="Open menu" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+  </nav>
+</header>
+
+<!-- ─────────── HERO ─────────── -->
+<section class="hero">
+  <div class="hero__glow" aria-hidden="true"></div>
+
+  <!-- Floating mini doc cards (decorative, desktop only) -->
+  <div class="floating" aria-hidden="true">
+    <!-- LEFT cluster -->
+    <article class="doc-card doc-card--certificate" style="--x:42px; --y:73px; --rot:-3deg;">
+      <header class="doc-card__head">
+        <span class="doc-card__icon"><img src="assets/icon-certificate.svg" alt="" /></span>
+        <span class="doc-card__title">Certificate</span>
+      </header>
+      <div class="doc-card__body doc-card__body--cert">
+        <div class="cert-badge"><span class="cert-badge__diamond"></span></div>
+        <div class="bar bar--md"></div>
+        <div class="bar bar--sm bar--dark"></div>
+      </div>
+    </article>
+
+    <article class="doc-card doc-card--invoice" style="--x:88px; --y:142px; --rot:-3deg;">
+      <header class="doc-card__head doc-card__head--split">
+        <span class="doc-card__icon-wrap">
+          <span class="doc-card__icon"><img src="assets/icon-invoice.svg" alt="" /></span>
+          <span class="doc-card__title">Invoice</span>
+        </span>
+        <span class="tag tag--success">Ready</span>
+      </header>
+      <div class="doc-card__body doc-card__body--rows">
+        <div class="row"><div class="bar bar--40"></div><div class="bar bar--24"></div></div>
+        <div class="row"><div class="bar bar--48"></div><div class="bar bar--32"></div></div>
+      </div>
+    </article>
+
+    <article class="doc-card doc-card--report" style="--x:24px; --y:203px; --rot:2deg;">
+      <header class="doc-card__head">
+        <span class="doc-card__icon"><img src="assets/icon-report.svg" alt="" /></span>
+        <span class="doc-card__title">Report</span>
+      </header>
+      <div class="doc-card__body doc-card__body--bars">
+        <span class="mini-bar" style="height:14px"></span>
+        <span class="mini-bar" style="height:22px"></span>
+        <span class="mini-bar mini-bar--accent" style="height:32px"></span>
+      </div>
+    </article>
+
+    <article class="doc-card doc-card--idcard" style="--x:65px; --y:279px; --rot:-3deg;">
+      <header class="doc-card__head">
+        <span class="doc-card__icon"><img src="assets/icon-idcard.svg" alt="" /></span>
+        <span class="doc-card__title">ID Card</span>
+      </header>
+      <div class="doc-card__body doc-card__body--id">
+        <span class="avatar-placeholder"></span>
+        <div class="id-lines">
+          <div class="bar bar--full"></div>
+          <div class="bar bar--two-thirds bar--dark"></div>
+        </div>
+      </div>
+    </article>
+
+    <!-- RIGHT cluster -->
+    <article class="doc-card doc-card--spreadsheet right" style="--x:78px; --y:78px; --rot:3deg;">
+      <header class="doc-card__head">
+        <span class="doc-card__icon"><img src="assets/icon-invoice.svg" alt="" /></span>
+        <span class="doc-card__title">Spreadsheet</span>
+      </header>
+      <div class="doc-card__body doc-card__body--grid">
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+      </div>
+    </article>
+
+    <article class="doc-card doc-card--contract right" style="--x:123px; --y:156px; --rot:3deg;">
+      <header class="doc-card__head doc-card__head--split">
+        <span class="doc-card__icon-wrap">
+          <span class="doc-card__icon"><img src="assets/icon-contract.svg" alt="" /></span>
+          <span class="doc-card__title">Contract</span>
+        </span>
+        <span class="meta">2 pages</span>
+      </header>
+      <div class="doc-card__body doc-card__body--dotrows">
+        <div class="dotrow"><span class="dot"></span><div class="bar bar--64"></div></div>
+        <div class="dotrow"><span class="dot"></span><div class="bar bar--40"></div></div>
+      </div>
+    </article>
+
+    <article class="doc-card doc-card--form right" style="--x:58px; --y:230px; --rot:-1deg;">
+      <header class="doc-card__head">
+        <span class="doc-card__icon"><img src="assets/icon-form.svg" alt="" /></span>
+        <span class="doc-card__title">Form</span>
+      </header>
+      <div class="doc-card__body doc-card__body--inputs">
+        <div class="input-stub"></div>
+        <div class="input-stub input-stub--short"></div>
+      </div>
+    </article>
+
+    <article class="doc-card doc-card--agreement right" style="--x:101px; --y:296px; --rot:1deg;">
+      <header class="doc-card__head">
+        <span class="doc-card__icon"><img src="assets/icon-agreement.svg" alt="" /></span>
+        <span class="doc-card__title">Agreement</span>
+      </header>
+      <div class="doc-card__body doc-card__body--center">
+        <span class="tag tag--success tag--pill">Signed ✓</span>
+      </div>
+    </article>
+  </div>
+
+  <div class="hero__inner">
+    <a href="#" class="eyebrow eyebrow--badge">
+      <span class="eyebrow__icon" aria-hidden="true"></span>
+      AI-Powered PDF Editing — No Adobe needed
+    </a>
+    <h1 class="hero__title">
+      Edit any PDF.<br />
+      <span class="hero__title-gradient">Exactly how you want it.</span>
+    </h1>
+    <p class="hero__sub">
+      Upload your PDF, let AI reconstruct it perfectly, edit anything —
+      text, numbers, layout — and export a clean result in seconds.
+    </p>
+
+    <div class="hero__actions">
+      <a href="#" class="btn btn--primary btn--lg" data-modal="signup">Start Editing Free</a>
+      <a href="#how" class="btn btn--ghost btn--lg">
+        See how it works
+        <svg width="14" height="14" viewBox="0 0 13.333 13.333" fill="currentColor" aria-hidden="true">
+          <path d="M 10.146 7.5 L 0 7.5 L 0 5.833 L 10.146 5.833 L 5.479 1.167 L 6.667 0 L 13.333 6.667 L 6.667 13.333 L 5.479 12.167 L 10.146 7.5 L 10.146 7.5" />
+        </svg>
+      </a>
+    </div>
+
+    <div class="social-proof">
+      <div class="avatar-stack" aria-hidden="true">
+        <img src="assets/user-1.jpg" alt="" />
+        <img src="assets/user-2.jpg" alt="" />
+        <img src="assets/user-3.jpg" alt="" />
+      </div>
+      <span>Already used by 500+ freelancers and businesses</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── PRODUCT SHOWCASE (single framed preview) ─────────── -->
+<section class="showcase" id="product" aria-label="Product preview" data-screen-label="Showcase">
+  <figure class="showcase__frame">
+    <div class="showcase__fade" aria-hidden="true"></div>
+
+    <div class="showcase__window">
+      <div class="showcase__chrome">
+        <span class="showcase__dot"></span>
+        <span class="showcase__dot"></span>
+        <span class="showcase__dot"></span>
+        <span class="showcase__urlbar">redraft.app&nbsp;&nbsp;/&nbsp;&nbsp;contract-final.pdf</span>
+        <span class="showcase__chrome-spacer"></span>
+      </div>
+
+      <div class="showcase__screen">
+        <!-- Sidebar -->
+        <aside class="showcase__sidebar">
+          <p class="showcase__sb-label">PAGES</p>
+          <ul class="showcase__pages">
+            <li class="is-current"><span>01</span>Cover</li>
+            <li><span>02</span>Definitions</li>
+            <li><span>03</span>Terms</li>
+            <li><span>04</span>Schedule A</li>
+            <li><span>05</span>Signatures</li>
+          </ul>
+          <p class="showcase__sb-label showcase__sb-label--mt">DETECTED</p>
+          <ul class="showcase__chips">
+            <li>Heading</li>
+            <li>Paragraph</li>
+            <li>Table</li>
+            <li>Signature</li>
+          </ul>
+        </aside>
+
+        <!-- Main page -->
+        <div class="showcase__main">
+          <div class="showcase__toolbar">
+            <span class="showcase__tool">B</span>
+            <span class="showcase__tool"><em>i</em></span>
+            <span class="showcase__tool">U</span>
+            <span class="showcase__tool-sep"></span>
+            <span class="showcase__tool">Inter</span>
+            <span class="showcase__tool">14 pt</span>
+            <span class="showcase__tool-sep"></span>
+            <span class="showcase__tool showcase__tool--accent">AI rewrite</span>
+          </div>
+
+          <div class="showcase__page">
+            <h3 class="showcase__doc-title">Mutual Non-Disclosure Agreement</h3>
+            <p class="showcase__doc-p">
+              This agreement is entered into on
+              <span class="showcase__chip">May 14, 2026</span>
+              between <span class="showcase__chip">Redraft Labs Inc.</span>
+              and <span class="showcase__chip showcase__chip--active">Acme Co.<i class="showcase__caret"></i></span>
+              regarding the exchange of confidential information
+              related to the engagement scope.
+            </p>
+            <p class="showcase__doc-p showcase__doc-p--muted">
+              Both parties agree that any confidential information
+              shared under this agreement will remain protected for
+              a period of 24 months from the date of disclosure.
+            </p>
+            <p class="showcase__doc-p showcase__doc-p--muted">
+              No party may assign or transfer this agreement
+              without the prior written consent of the other.
+            </p>
+          </div>
+        </div>
+
+        <!-- Right inspector -->
+        <aside class="showcase__inspector">
+          <p class="showcase__sb-label">SELECTION</p>
+          <div class="showcase__field">
+            <span>Element</span><em>Text · Inline</em>
+          </div>
+          <div class="showcase__field">
+            <span>Font</span><em>Inter · 14 pt</em>
+          </div>
+          <div class="showcase__field">
+            <span>Weight</span><em>Regular</em>
+          </div>
+          <div class="showcase__field">
+            <span>Tracking</span><em>−0.01 em</em>
+          </div>
+          <div class="showcase__field showcase__field--ok">
+            <span>Layout</span><em>preserved</em>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </figure>
+</section>
+
+<!-- ─────────── MISSION ─────────── -->
+<section class="mission">
+  <p class="eyebrow">OUR MISSION</p>
+  <p class="mission__copy reveal-text">
+    We think AI integration is the way of the future for document
+    management. Our goal is to build strong tools and infrastructure
+    that enable teams to fully utilize intelligent PDF technology.
+  </p>
+</section>
+
+<!-- ─────────── BENTO FEATURES ─────────── -->
+<section class="bento" id="features">
+  <article class="card card--feature card--tall">
+    <p class="eyebrow eyebrow--sm">WORKFLOW EFFICIENCY</p>
+    <h3 class="card__title">Automate tasks.<br />Focus on growth.</h3>
+    <p class="card__body">
+      Cut out the boring stuff with our awesome automations,
+      so your team can keep their eyes on the prize and grow
+      your product like never before.
+    </p>
+
+    <div class="card__art">
+      <div class="chart" aria-hidden="true">
+        <div class="chart__bar" style="--h:34%"></div>
+        <div class="chart__bar" style="--h:60%"></div>
+        <div class="chart__bar" style="--h:42%"></div>
+        <div class="chart__bar" style="--h:72%"></div>
+        <div class="chart__bar chart__bar--hi" style="--h:92%">
+          <span class="chart__pill">24%</span>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <article class="card card--feature">
+    <p class="eyebrow eyebrow--sm">APP USERS</p>
+    <h3 class="card__title card__title--md">Track and improve</h3>
+    <p class="card__body">
+      Monitor performance in real-time and optimize your
+      workflow with clear, actionable insights.
+    </p>
+    <span class="blob blob--right" aria-hidden="true"></span>
+  </article>
+
+  <article class="card card--feature">
+    <p class="eyebrow eyebrow--sm">COMPLETED TASK</p>
+    <h3 class="card__title card__title--md">Track Your Success</h3>
+    <p class="card__body">
+      Get detailed insights on task completion, team performance,
+      and progress with customizable reports.
+    </p>
+    <span class="blob blob--left" aria-hidden="true"></span>
+  </article>
+</section>
+
+<!-- ─────────── PRICING ─────────── -->
+<section class="pricing" id="pricing" data-screen-label="Pricing">
+  <div class="pricing__inner">
+
+    <header class="pricing__header">
+      <p class="eyebrow eyebrow--sm">PRICING</p>
+    </header>
+
+    <!-- Billing toggle -->
+    <div class="pricing__toggle" role="group" aria-label="Billing period">
+      <button class="pricing__period pricing__period--active" id="btn-monthly">Monthly</button>
+      <button class="pricing__period" id="btn-yearly">
+        Yearly
+        <span class="pricing__save-badge">Save 30%</span>
+      </button>
+    </div>
+
+    <!-- Cards -->
+    <div class="pricing__grid">
+
+      <!-- Free -->
+      <article class="pricing-card">
+        <div class="pricing-card__head">
+          <p class="pricing-card__name">Free</p>
+          <div class="pricing-card__price">
+            <span class="pricing-card__dollar">$</span>
+            <span class="pricing-card__num">0</span>
+            <span class="pricing-card__mo">/mo</span>
+          </div>
+          <p class="pricing-card__billed-note">&nbsp;</p>
+          <p class="pricing-card__tagline">Everything you need to get started with PDF editing.</p>
+        </div>
+        <a href="#get-started" class="btn btn--ghost btn--block">Get Started Free</a>
+        <ul class="pricing-card__list">
+          <li>Up to 3 PDFs per month</li>
+          <li>Basic text editing</li>
+          <li>Export to PDF</li>
+          <li>5 MB file size limit</li>
+          <li>Email support</li>
+        </ul>
+      </article>
+
+      <!-- Pro -->
+      <article class="pricing-card pricing-card--pro">
+        <div class="pricing-card__popular">Most Popular</div>
+        <div class="pricing-card__head">
+          <p class="pricing-card__name">Pro</p>
+          <div class="pricing-card__price">
+            <span class="pricing-card__dollar">$</span>
+            <span class="pricing-card__num" id="pro-price">3.99</span>
+            <span class="pricing-card__mo">/mo</span>
+          </div>
+          <p class="pricing-card__billed-note" id="pro-billed">Billed monthly</p>
+          <p class="pricing-card__tagline">Full AI power for freelancers and growing teams.</p>
+        </div>
+        <a href="#get-started" class="btn btn--primary btn--block">Start Pro — Free Trial</a>
+        <ul class="pricing-card__list">
+          <li>Unlimited PDFs</li>
+          <li>AI-powered editing</li>
+          <li>Advanced layout tools</li>
+          <li>100 MB file size limit</li>
+          <li>Priority support</li>
+          <li>Team collaboration</li>
+          <li>API access</li>
+          <li>30-day version history</li>
+        </ul>
+      </article>
+
+    </div>
+
+    <p class="pricing__footnote">No credit card required &nbsp;·&nbsp; Cancel anytime</p>
+
+    <!-- All plans include -->
+    <div class="pricing__all-include">
+      <p class="pricing__all-label">All plans include</p>
+      <ul class="pricing__all-list">
+        <li>Secure cloud storage</li>
+        <li>256-bit encryption</li>
+        <li>GDPR compliant</li>
+        <li>99.9% uptime SLA</li>
+      </ul>
+    </div>
+
+    <!-- Trust logos -->
+    <div class="pricing__trust">
+      <p class="pricing__trust-label">Trusted by teams at</p>
+      <div class="pricing__trust-logos">
+        <span class="pricing__logo">Notion</span>
+        <span class="pricing__logo">Stripe</span>
+        <span class="pricing__logo">Linear</span>
+        <span class="pricing__logo">Vercel</span>
+        <span class="pricing__logo">Figma</span>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ─────────── FOOTER ─────────── -->
+<footer class="footer">
+  <div class="footer__top">
+    <div class="footer__brand">
+      <a href="#" class="brand brand--lg">
+        <span class="brand__mark brand__mark--lg" aria-hidden="true"></span>
+        <span class="brand__name brand__name--lg">Redraft</span>
+      </a>
+      <p class="footer__blurb">
+        At Redraft, we are dedicated to simplifying your
+        professional journey by enhancing team collaboration and
+        driving business success, regardless of your company's scale.
+      </p>
+    </div>
+
+    <div class="footer__cols">
+      <div class="footer__col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#tools">Tools</a></li>
+          <li><a href="#pricing">Pricing</a></li>
+        </ul>
+      </div>
+      <div class="footer__col">
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="#privacy">Privacy Policy</a></li>
+          <li><a href="#terms">Terms of Service</a></li>
+          <li><a href="#cookies">Cookie Policy</a></li>
+        </ul>
+      </div>
+      <div class="footer__col">
+        <h4>Socials</h4>
+        <ul>
+          <li><a href="#twitter">Twitter</a></li>
+          <li><a href="#linkedin">LinkedIn</a></li>
+          <li><a href="#instagram">Instagram</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer__bottom">
+    <span>© 2024 Redraft. Powering the future of document intelligence.</span>
+    <span class="footer__credit">
+      Designed with
+      <span class="footer__credit-icon" aria-hidden="true"></span>
+      by Casablanca
+    </span>
+  </div>
+</footer>
+
+<!-- ── Auth modals ── -->
+<div class="auth-overlay" id="auth-overlay" aria-modal="true" role="dialog" aria-label="Authentication">
+
+  <!-- Top bar inside overlay -->
+  <div class="auth-overlay__nav">
+    <a href="#" class="brand" onclick="closeModal(); return false;">
+      <span class="brand__mark"></span>
+      <span class="brand__name">Redraft</span>
+    </a>
+    <button class="theme-toggle" id="modal-theme-toggle" aria-label="Toggle light/dark mode">
+      <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+    </button>
+  </div>
+
+  <!-- Sign In modal -->
+  <div class="auth-modal" id="modal-signin">
+    <button class="auth-modal__close" aria-label="Close" id="modal-close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+
+    <!-- Step: login -->
+    <div class="modal-step" data-step="login">
+      <h1 class="auth-heading">Welcome back</h1>
+      <p class="auth-sub">Sign in to your account to continue.</p>
+      <form class="auth-form" id="form-signin" novalidate>
+        <div class="auth-field">
+          <label class="auth-label" for="si-email">Email</label>
+          <div class="auth-input-wrap">
+            <input class="auth-input" id="si-email" type="email" placeholder="you@company.com" autocomplete="email" required />
+          </div>
+        </div>
+        <div class="auth-field">
+          <div class="auth-field__header">
+            <label class="auth-label" for="si-password">Password</label>
+            <button type="button" class="auth-forgot" data-goto="forgot">Forgot password?</button>
+          </div>
+          <div class="auth-input-wrap">
+            <input class="auth-input auth-input--has-eye" id="si-password" type="password" placeholder="••••••••" autocomplete="current-password" required />
+            <button type="button" class="auth-eye" aria-label="Show password" onclick="authTogglePw(this)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <button type="submit" class="auth-submit">Sign in</button>
+      </form>
+      <div class="auth-divider">or</div>
+      <button class="auth-google" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Continue with Google
+      </button>
+      <p class="auth-footer-link">No account? <button type="button" data-open-modal="signup">Sign up free</button></p>
+    </div>
+
+    <!-- Step: forgot password -->
+    <div class="modal-step" data-step="forgot" hidden>
+      <h1 class="auth-heading">Reset password</h1>
+      <p class="auth-sub">Enter your email and we'll send a reset link.</p>
+      <form class="auth-form" id="form-forgot" novalidate>
+        <div class="auth-field">
+          <label class="auth-label" for="fp-email">Email</label>
+          <div class="auth-input-wrap">
+            <input class="auth-input" id="fp-email" type="email" placeholder="you@company.com" autocomplete="email" required />
+          </div>
+        </div>
+        <button type="submit" class="auth-submit">Send reset link</button>
+      </form>
+      <p class="auth-footer-link" style="margin-top:16px;"><button type="button" data-goto="login">← Back to sign in</button></p>
+    </div>
+
+    <!-- Step: forgot sent -->
+    <div class="modal-step" data-step="forgot-sent" hidden>
+      <div class="auth-icon-block">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      </div>
+      <h1 class="auth-heading">Check your inbox</h1>
+      <p class="auth-sub">We sent a reset link to your email. It expires in 15 minutes.</p>
+      <p class="auth-footer-link"><button type="button" data-goto="login">← Back to sign in</button></p>
+    </div>
+  </div>
+
+  <!-- Sign Up modal -->
+  <div class="auth-modal" id="modal-signup" style="display:none;">
+    <button class="auth-modal__close" aria-label="Close" id="modal-close-2">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+
+    <!-- Step: signup -->
+    <div class="modal-step" data-step="signup">
+      <h1 class="auth-heading">Create your account</h1>
+      <p class="auth-sub">Start editing PDFs the way they should be.</p>
+      <button class="auth-google" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+        Continue with Google
+      </button>
+      <div class="auth-divider">or continue with email</div>
+      <form class="auth-form" id="form-signup" novalidate>
+        <div class="auth-field">
+          <label class="auth-label" for="su-name">Full name</label>
+          <div class="auth-input-wrap">
+            <input class="auth-input" id="su-name" type="text" placeholder="Alex Johnson" autocomplete="name" required />
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="su-email">Email</label>
+          <div class="auth-input-wrap">
+            <input class="auth-input" id="su-email" type="email" placeholder="you@company.com" autocomplete="email" required />
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="su-password">Password</label>
+          <div class="auth-input-wrap">
+            <input class="auth-input auth-input--has-eye" id="su-password" type="password" placeholder="Min. 8 characters" autocomplete="new-password" required />
+            <button type="button" class="auth-eye" aria-label="Show password" onclick="authTogglePw(this)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <button type="submit" class="auth-submit">Create account</button>
+        <p class="auth-terms">By signing up you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.</p>
+      </form>
+      <p class="auth-footer-link">Already have an account? <button type="button" data-open-modal="signin">Sign in</button></p>
+    </div>
+
+    <!-- Step: verify email -->
+    <div class="modal-step" data-step="verify" hidden>
+      <div class="auth-icon-block">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      </div>
+      <h1 class="auth-heading">Verify your email</h1>
+      <p class="auth-sub">We sent a verification link to your inbox. Click it to activate your account.</p>
+      <button type="button" class="auth-submit" id="resend-btn" onclick="authResend(this)">Resend verification email</button>
+      <p class="auth-footer-link" style="margin-top:12px;"><button type="button" data-open-modal="signin">Back to sign in</button></p>
+    </div>
+  </div>
+
+</div>
+<!-- ── /Auth modals ── -->
+
+<script src="app.js" defer></script>
+<script src="modal.js" defer></script>
+</body>
+</html>

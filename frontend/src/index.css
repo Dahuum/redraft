@@ -2,15 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ───────────────────────────────────────────────────────────────────────────
+   Theme tokens — every Tailwind color token reads `rgb(var(--c-*) / alpha)`.
+   Dark is the default (:root); light overrides via [data-theme="light"] on
+   <html>. Values are space-separated RGB channels so opacity utilities work.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
+  --c-page: 15 19 28; /* #0f131c */
+  --c-background: 19 19 20; /* #131314 */
+  --c-surface: 19 19 20;
+  --c-surface-variant: 53 52 53; /* #353435 */
+  --c-surface-dim: 19 19 20;
+  --c-surface-bright: 58 57 58; /* #3a393a */
+  --c-surface-container-lowest: 14 14 15; /* #0e0e0f */
+  --c-surface-container-low: 28 27 28; /* #1c1b1c */
+  --c-surface-container: 32 31 32; /* #201f20 */
+  --c-surface-container-high: 42 42 42; /* #2a2a2a */
+  --c-surface-container-highest: 53 52 53; /* #353435 */
+  --c-on-surface: 229 226 226; /* #e5e2e2 */
+  --c-on-surface-variant: 198 198 204; /* #c6c6cc */
+  --c-on-background: 229 226 226;
+  --c-outline: 144 144 150; /* #909096 */
+  --c-outline-variant: 69 71 75; /* #45474b */
+  --c-primary: 195 198 210; /* #c3c6d2 */
+  --c-on-primary: 44 48 57; /* #2c3039 */
+  --c-on-primary-container: 118 122 133; /* #767a85 */
+  --c-secondary: 180 197 255; /* #b4c5ff */
+  --c-secondary-container: 0 83 219; /* #0053db */
+  --c-on-secondary: 0 42 120; /* #002a78 */
+  --c-on-secondary-container: 205 215 255; /* #cdd7ff */
+  --c-error: 255 180 171; /* #ffb4ab */
+  --c-error-container: 147 0 10; /* #93000a */
+  --c-on-error: 105 0 5; /* #690005 */
+  --c-on-error-container: 255 218 214; /* #ffdad6 */
+  --c-accent-cyan: 0 245 255; /* #00f5ff */
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --c-page: 248 250 252; /* slate-50  #f8fafc */
+  --c-background: 248 250 252;
+  --c-surface: 255 255 255; /* #ffffff */
+  --c-surface-variant: 226 232 240; /* slate-200 */
+  --c-surface-dim: 238 242 247;
+  --c-surface-bright: 255 255 255;
+  --c-surface-container-lowest: 255 255 255;
+  --c-surface-container-low: 248 250 252; /* slate-50 */
+  --c-surface-container: 241 245 249; /* slate-100 */
+  --c-surface-container-high: 226 232 240; /* slate-200 */
+  --c-surface-container-highest: 219 226 234;
+  --c-on-surface: 15 23 42; /* slate-900 */
+  --c-on-surface-variant: 71 85 105; /* slate-600 */
+  --c-on-background: 15 23 42;
+  --c-outline: 148 163 184; /* slate-400 */
+  --c-outline-variant: 203 213 225; /* slate-300 */
+  --c-primary: 15 23 42; /* dark fill on light */
+  --c-on-primary: 255 255 255;
+  --c-on-primary-container: 100 116 139; /* slate-500 */
+  --c-secondary: 37 99 235; /* blue-600 */
+  --c-secondary-container: 37 99 235;
+  --c-on-secondary: 255 255 255;
+  --c-on-secondary-container: 239 246 255;
+  --c-error: 220 38 38; /* red-600 */
+  --c-error-container: 254 226 226; /* red-100 */
+  --c-on-error: 255 255 255;
+  --c-on-error-container: 153 27 27; /* red-800 */
+  --c-accent-cyan: 8 145 178; /* cyan-600 */
+}
+
 html,
 body,
 #root {
   min-height: 100%;
 }
 
-/* Home design sets this exact background */
 body {
-  background-color: #0f131c;
+  background-color: rgb(var(--c-page));
+}
+
+/* While toggling themes, ease the big color swap everywhere for ~0.3s. */
+html.theme-switching,
+html.theme-switching * {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease,
+    fill 0.3s ease, stroke 0.3s ease, box-shadow 0.3s ease !important;
 }
 
 .material-symbols-outlined {
@@ -26,16 +101,36 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #353435;
+  background: rgb(var(--c-outline-variant));
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #45474b;
+  background: rgb(var(--c-outline));
+}
+
+/* Theme-aware shadows — natural directional drop shadows (not flat glows). */
+:root {
+  --c-shadow: 0 0 0; /* black */
+  --shadow-soft: 0 2px 8px -2px rgb(var(--c-shadow) / 0.5);
+  --shadow-panel: 0 16px 40px -16px rgb(var(--c-shadow) / 0.55);
+  --shadow-paper: 0 12px 32px -10px rgb(var(--c-shadow) / 0.55);
+}
+[data-theme="light"] {
+  --c-shadow: 15 23 42; /* slate-900 — soft neutral shadow on light */
+  --shadow-soft: 0 1px 2px rgb(var(--c-shadow) / 0.06), 0 6px 16px -6px rgb(var(--c-shadow) / 0.12);
+  --shadow-panel: 0 14px 36px -14px rgb(var(--c-shadow) / 0.14);
+  --shadow-paper: 0 12px 32px -10px rgb(var(--c-shadow) / 0.18);
+}
+.shadow-soft {
+  box-shadow: var(--shadow-soft);
+}
+.shadow-panel {
+  box-shadow: var(--shadow-panel);
 }
 
 /* Document paper styles (editor view) */
 .paper-shadow {
-  box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-paper);
 }
 .editable-field {
   border-bottom: 1px dashed rgba(37, 99, 235, 0.4);

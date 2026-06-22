@@ -1,0 +1,326 @@
+/* ──────────────────────────────────────────────────────────────
+ * Light mode — token overrides + component overrides
+ * Activated by [data-theme="light"] on <html>.
+ * Dark mode is the default (no selector needed).
+ * ────────────────────────────────────────────────────────────── */
+
+/* ── Token overrides ── */
+[data-theme="light"] {
+  --bg:          #f8fafc;   /* slate-50  */
+  --surface:     #ffffff;
+  --surface-2:   #f1f5f9;   /* slate-100 */
+  --line:        rgba(0,0,0,0.08);
+  --line-soft:   rgba(0,0,0,0.04);
+  --text:        #0f172a;   /* slate-900 */
+  --muted:       #64748b;   /* slate-500 */
+  --accent:      #2563eb;   /* blue-600  */
+  --accent-2:    #1d4ed8;   /* blue-700  */
+  --success-bg:  rgba(220,252,231,0.55);
+  --success-bd:  rgba(22,101,52,0.22);
+  --success-fg:  #15803d;
+  --shadow-sm:   0 4px 6px -4px rgba(37,99,235,.10), 0 10px 15px -3px rgba(37,99,235,.06);
+  --shadow-card: 0 25px 50px -12px rgba(0,0,0,.10);
+}
+
+/* ── Navigation ── */
+[data-theme="light"] .nav {
+  background: rgba(255,255,255,0.55);
+  border-color: rgba(255,255,255,0.90);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.95) inset,
+    0 -1px 0 rgba(0,0,0,0.04) inset,
+    0 8px 32px -8px rgba(0,0,0,0.10),
+    0 2px 8px -2px rgba(0,0,0,0.06);
+  backdrop-filter: blur(40px) saturate(180%) brightness(1.04);
+  -webkit-backdrop-filter: blur(40px) saturate(180%) brightness(1.04);
+}
+[data-theme="light"] .nav::before {
+  background: linear-gradient(
+    160deg,
+    rgba(255,255,255,0.80) 0%,
+    rgba(255,255,255,0.20) 40%,
+    rgba(255,255,255,0.00) 60%,
+    rgba(37,99,235,0.03)  100%
+  );
+  z-index: 0;
+}
+/* Keep nav content above the glass shimmer */
+[data-theme="light"] .brand,
+[data-theme="light"] .nav__links,
+[data-theme="light"] .nav__cta {
+  position: relative;
+  z-index: 1;
+}
+[data-theme="light"] .nav-wrap--scrolled .nav {
+  background: rgba(255,255,255,0.75);
+  border-color: rgba(255,255,255,1);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,1) inset,
+    0 -1px 0 rgba(0,0,0,0.05) inset,
+    0 16px 48px -12px rgba(0,0,0,0.12),
+    0 4px 12px -4px rgba(0,0,0,0.07);
+}
+[data-theme="light"] .brand__name         { color: #0f172a; }
+[data-theme="light"] .nav__links a       { color: #475569; }
+[data-theme="light"] .nav__links a:hover { color: #0f172a; }
+[data-theme="light"] .nav__signin        { color: #475569; }
+[data-theme="light"] .nav__signin:hover  { color: #0f172a; }
+[data-theme="light"] .nav__burger span   { background: #0f172a; }
+
+/* ── Hero ── */
+[data-theme="light"] .hero {
+  background: var(--bg);
+}
+[data-theme="light"] .hero__glow {
+  background: radial-gradient(circle at 50% -20%, rgba(37,99,235,0.09) 0%, transparent 65%);
+}
+[data-theme="light"] .hero__title {
+  text-shadow: none;
+}
+/* Re-tune the gradient sub-line for a light background — darker
+ * stops keep it readable. */
+[data-theme="light"] .hero__title-gradient {
+  background: linear-gradient(90deg, #2563eb, #60a5fa);
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* ── Eyebrow badge (hero) ── */
+[data-theme="light"] .eyebrow--badge {
+  background: rgba(255,255,255,0.65);
+  border-color: rgba(255,255,255,0.90);
+  backdrop-filter: blur(20px) saturate(180%) brightness(1.04);
+  -webkit-backdrop-filter: blur(20px) saturate(180%) brightness(1.04);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.95) inset,
+    0 2px 8px rgba(0,0,0,0.07);
+}
+[data-theme="light"] .eyebrow--badge::before {
+  display: block;
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: linear-gradient(120deg, rgba(255,255,255,0.80) 0%, rgba(255,255,255,0) 55%);
+  pointer-events: none;
+}
+
+/* ── Floating doc-cards (hero) ── */
+[data-theme="light"] .doc-card {
+  background: rgba(255,255,255,0.65);
+  border-color: rgba(255,255,255,0.90);
+  backdrop-filter: blur(32px) saturate(200%) brightness(1.04);
+  -webkit-backdrop-filter: blur(32px) saturate(200%) brightness(1.04);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.95) inset,
+    0 -1px 0 rgba(0,0,0,0.04) inset,
+    0 20px 40px -12px rgba(0,0,0,0.10),
+    0 4px 12px -4px rgba(0,0,0,0.07);
+}
+[data-theme="light"] .doc-card::before {
+  display: block;
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0.80) 0%,
+    rgba(255,255,255,0.10) 50%,
+    rgba(37,99,235,0.02) 100%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+[data-theme="light"] .doc-card__title { color: #0f172a; }
+[data-theme="light"] .doc-card__body--grid span  { background: #e2e8f0; }
+[data-theme="light"] .input-stub {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.09);
+}
+
+/* ── Ghost button ── */
+[data-theme="light"] .btn--ghost {
+  background: #ffffff;
+  border-color: rgba(0,0,0,0.14);
+  color: #0f172a;
+}
+[data-theme="light"] .btn--ghost:hover { background: #f1f5f9; }
+
+/* ── Showcase intro text ── */
+/* .showcase__title is hardcoded color:#fff in tour.css — override for light bg */
+[data-theme="light"] .showcase__title { color: var(--text); }
+[data-theme="light"] .showcase__lede  { color: var(--muted); }
+
+/* ── Showcase frame ── */
+[data-theme="light"] .showcase__frame {
+  background: rgba(0,0,0,0.08);
+}
+[data-theme="light"] .showcase__halo::before {
+  background: rgba(37,99,235,0.30);
+}
+[data-theme="light"] .showcase__halo::after {
+  background: rgba(96,165,250,0.45);
+}
+[data-theme="light"] .showcase__fade {
+  background: linear-gradient(180deg, transparent 0%, #0f172a 90%);
+}
+
+/* The product window deliberately stays dark — it represents the
+   real editor UI and creates a clear "product inside a light page"
+   composition. Restore all dark-mode tokens as local custom props
+   so every descendant (sidebar labels, chips, text, borders) keeps
+   its correct dark appearance without individual overrides. */
+[data-theme="light"] .showcase__window {
+  background: #0f172a;
+  border-color: rgba(255,255,255,0.08);
+  --bg:        #020617;
+  --surface:   #0f172a;
+  --surface-2: #1e293b;
+  --text:      #ffffff;
+  --muted:     #94a3b8;
+  --line:      rgba(255,255,255,0.10);
+  --line-soft: rgba(255,255,255,0.05);
+  --accent:    #3b82f6;
+}
+
+/* ── Mission section — adapts to light theme ── */
+[data-theme="light"] .mission {
+  background: var(--bg);
+}
+/* In light mode the reveal-text needs INVERTED colors: dark active
+ * fill, light-grey resting. Specificity (0,3,0) safely beats the
+ * base .reveal-text rules in styles.css. */
+[data-theme="light"] .mission .reveal-text {
+  color: rgba(15,23,42,0.18);
+}
+[data-theme="light"] .mission .reveal-word {
+  background-image: linear-gradient(
+    to right,
+    #0f172a 0%,
+    #0f172a var(--reveal),
+    rgba(15,23,42,0.18) var(--reveal),
+    rgba(15,23,42,0.18) 100%
+  );
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* ── Bento cards ── */
+[data-theme="light"] .card__title  { color: var(--text); }
+[data-theme="light"] .chart__pill  { background: var(--text); color: var(--bg); }
+[data-theme="light"] .blob--right  { background: rgba(37,99,235,0.07); }
+[data-theme="light"] .blob--left   { background: rgba(37,99,235,0.04); }
+
+/* ── Footer ── */
+[data-theme="light"] .footer__col h4 { color: var(--text); }
+
+/* ────────────────────────────────────────────────────────────── */
+/* Theme-toggle button                                            */
+/* ────────────────────────────────────────────────────────────── */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background .18s ease, color .18s ease, border-color .18s ease;
+}
+.theme-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* Dark mode → show moon (invite switch to light) */
+.theme-toggle .icon-sun  { display: none;  }
+.theme-toggle .icon-moon { display: block; }
+
+/* Light mode → show sun (invite switch to dark) */
+[data-theme="light"] .theme-toggle .icon-sun  { display: block; }
+[data-theme="light"] .theme-toggle .icon-moon { display: none;  }
+
+/* ── Pricing ── */
+[data-theme="light"] .pricing-card {
+  background: rgba(255,255,255,0.60);
+  border-color: rgba(255,255,255,0.92);
+  backdrop-filter: blur(40px) saturate(180%) brightness(1.04);
+  -webkit-backdrop-filter: blur(40px) saturate(180%) brightness(1.04);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.98) inset,
+    0 -1px 0 rgba(0,0,0,0.04) inset,
+    0 24px 48px -16px rgba(0,0,0,0.10),
+    0 4px 12px -4px rgba(0,0,0,0.06);
+}
+[data-theme="light"] .pricing-card::before {
+  background: linear-gradient(
+    135deg,
+    rgba(255,255,255,0.85) 0%,
+    rgba(255,255,255,0.15) 45%,
+    rgba(255,255,255,0.00) 60%,
+    rgba(37,99,235,0.02) 100%
+  );
+}
+[data-theme="light"] .pricing-card--pro {
+  background: linear-gradient(150deg, rgba(37,99,235,0.05) 0%, var(--surface) 52%);
+  border-color: rgba(37,99,235,0.40);
+  box-shadow:
+    0 0 0 1px rgba(37,99,235,0.10) inset,
+    0 32px 64px -24px rgba(37,99,235,0.12),
+    var(--shadow-card);
+}
+[data-theme="light"] .pricing-card--pro .pricing-card__list li {
+  color: var(--text);
+}
+[data-theme="light"] .pricing-card--pro .pricing-card__name,
+[data-theme="light"] .pricing-card--pro .pricing-card__dollar,
+[data-theme="light"] .pricing-card--pro .pricing-card__num {
+  color: var(--text);
+}
+[data-theme="light"] .pricing__period--active {
+  background: var(--surface);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+}
+[data-theme="light"] .pricing__toggle {
+  background: var(--surface-2);
+}
+[data-theme="light"] .pricing__all-include {
+  background: var(--surface);
+}
+/* Ghost button inside pricing cards needs an explicit override —
+   var(--surface) doesn't cascade correctly in this context */
+[data-theme="light"] .pricing-card .btn--ghost {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.14);
+  color: #0f172a;
+}
+[data-theme="light"] .pricing-card .btn--ghost:hover {
+  background: #f1f5f9;
+}
+/* Checkmark mask auto-adapts via var(--accent) — no override needed */
+
+/* ── Smooth transition on toggle ── */
+.theme-transitioning,
+.theme-transitioning .nav,
+.theme-transitioning .hero,
+.theme-transitioning .doc-card,
+.theme-transitioning .card,
+.theme-transitioning .footer,
+.theme-transitioning .mission,
+.theme-transitioning .showcase,
+.theme-transitioning .bento {
+  transition:
+    background-color 0.28s ease,
+    color            0.28s ease,
+    border-color     0.28s ease !important;
+}
