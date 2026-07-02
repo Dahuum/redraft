@@ -7,12 +7,13 @@ export default function EditorWorkspace({ ed, onDownload }) {
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
   const {
-    file, fileData, spans, pages, pageIndex, selectedId, setSelectedId,
+    file, fileData, spans, pages, pageIndex, setPageIndex, selectedId, setSelectedId,
     edits, nEdits, editedIds, previewData, busy, error, zoom, setZoom,
     loadFile, setFieldValue, resetAll, preview, download,
   } = ed;
   const doDownload = onDownload || download;
 
+  const pageCount = (pages && pages.length) || 1;
   const pageSpans = spans.filter((s) => s.page === pageIndex);
 
   // Measure the document pane so the PDF fits its width (100% = fit-to-pane).
@@ -54,6 +55,28 @@ export default function EditorWorkspace({ ed, onDownload }) {
       <div className="flex-[0.65] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
         {/* Toolbar overlay */}
         <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
+          {pageCount > 1 && (
+            <>
+              <button
+                disabled={pageIndex === 0}
+                onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+                className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
+              >
+                <span className="material-symbols-outlined text-[18px]">chevron_left</span>
+              </button>
+              <span className="text-caption font-medium">
+                {pageIndex + 1} / {pageCount}
+              </span>
+              <button
+                disabled={pageIndex >= pageCount - 1}
+                onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
+                className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
+              >
+                <span className="material-symbols-outlined text-[18px]">chevron_right</span>
+              </button>
+              <div className="w-px h-4 bg-outline-variant"></div>
+            </>
+          )}
           <button
             className="text-on-surface-variant hover:text-primary transition-colors"
             onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
