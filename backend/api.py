@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
 from annex_model import (  # noqa: E402  — annex rules
-    build_model, plan_edits, plan_header_edits, parse_num,
+    build_model, plan_edits, plan_header_edits, parse_num, detect_template,
 )
 
 app = FastAPI(title="Redraft API", version="1.0")
@@ -571,24 +571,32 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...)):
 # value sets the quantity and recomputes the line amount + the Total HT.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _annex_spans_and_model(pdf_bytes: bytes):
-    """Extract spans (id == index) and build the annex model. Raises on bad PDF."""
+def _annex_spans_and_model(pdf_bytes: bytes, template: dict | None = None):
+    """Extract spans (id == index) and build the annex model, using *template*
+    (auto-detected via detect_template when None).
+
+    Returns (spans, model, template) so the caller can echo the template back to
+    the client to save (scan-once) or reuse it for width/erase geometry.
+    """
     spans = extract_spans(pdf_bytes)
     for i, s in enumerate(spans):
         s["id"] = i
-    return spans, build_model(spans)
+    tmpl = template or detect_template(spans)
+    return spans, build_model(spans, tmpl), tmpl
 
 
 # Numeric columns are right-aligned, and the engine shrinks any value wider than
 # its original cell (pdf_editor shrink-to-fit). Widening the cell leftward — right
 # edge fixed — lets a longer number (qty 9 → 5000) render full-size instead of
-# tiny. Floors sit in the gaps between columns so the erase never hits a neighbour.
-_COL_FLOOR = {"qty": 360.0, "amount": 478.0, "total": 472.0}
-
-
-def _relax_numeric(span: dict, col: str | None) -> dict:
-    """Return a copy of *span* with its cell widened leftward (for numeric cols)."""
-    floor = _COL_FLOOR.get(col or "")
+# tiny. The floor (a safe left edge in the inter-column gap) comes from the
+# template now, so it's correct for whatever annex was scanned — not hardcoded.
+def _relax_numeric(span: dict, col: str | None, template: dict) -> dict:
+    """Return a copy of *span* with its numeric cell widened leftward to the
+    template's floor for *col* (so a longer number renders full-size)."""
+    if col == "total":
+        floor = template.get("totalFloor")
+    else:
+        floor = (template.get("columns", {}).get(col or "") or {}).get("floor")
     if floor is None:
         return span
     x0, y0, x1, y1 = span["bbox"]
@@ -643,12 +651,9 @@ def _annex_colmap(model: dict) -> dict:
     return cm
 
 
-# Table left/right edges (PDF pt) for full-width band erases.
-_TABLE_X0, _TABLE_X1 = 23.0, 540.5
-
-
 def _annex_erase_bands(model: dict, spans: list,
-                       removed_items: set, removed_secs: list) -> list:
+                       removed_items: set, removed_secs: list,
+                       template: dict) -> list:
     """Synthetic blank spans that erase a whole removed row / section band.
 
     Per-cell blanks only cover text; a removed row/section can also carry vector
@@ -657,6 +662,8 @@ def _annex_erase_bands(model: dict, spans: list,
     (span, "") pairs ready to append to the replacement list.
     """
     out: list = []
+    edges = template.get("tableEdges") or {"x0": 23.0, "x1": 540.5}
+    tx0, tx1 = edges.get("x0", 23.0), edges.get("x1", 540.5)
 
     def band(ids: list, pad_bottom: float = 1.0):
         boxes = [spans[i]["bbox"] for i in ids if 0 <= i < len(spans)]
@@ -665,7 +672,7 @@ def _annex_erase_bands(model: dict, spans: list,
         y0 = min(b[1] for b in boxes) - 1.0
         y1 = max(b[3] for b in boxes) + pad_bottom
         s = dict(spans[ids[0]])
-        s["bbox"] = [_TABLE_X0, y0, _TABLE_X1, y1]
+        s["bbox"] = [tx0, y0, tx1, y1]
         s["text"] = ""
         return s
 
@@ -687,14 +694,25 @@ def _annex_erase_bands(model: dict, spans: list,
 
 
 @app.post("/annex/model")
-async def annex_model(file: UploadFile = File(...)):
-    """Upload an annex PDF → its detected line items, sections and total."""
+async def annex_model(file: UploadFile = File(...), template: str = Form(None)):
+    """Upload an annex PDF → its detected line items, sections and total.
+
+    Optional `template` (JSON) reuses a saved layout (scan-once); when omitted the
+    layout is auto-detected. The template actually used is echoed back so the
+    client can save it and skip re-detection next time.
+    """
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
     _ingest_embedded_fonts(data)
+    tmpl_in = None
+    if template:
+        try:
+            tmpl_in = json.loads(template)
+        except Exception:  # noqa: BLE001
+            raise HTTPException(400, "`template` must be valid JSON.")
     try:
-        _spans, model = _annex_spans_and_model(data)
+        _spans, model, tmpl = _annex_spans_and_model(data, tmpl_in)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
     def _flat_ids(it):
@@ -720,14 +738,27 @@ async def annex_model(file: UploadFile = File(...)):
             "items": items,
             "headers": headers,
             "total": model["total"],
-            "item_count": len(items)}
+            "item_count": len(items),
+            "template": tmpl}
+
+
+def _annex_filename(row: dict, col: str, data_headers: list, row_idx: int) -> str:
+    """Per-client output name from a data column (falls back to annex_NNNN.pdf)."""
+    if col and col in data_headers:
+        raw = str(row.get(col, "")).strip()
+        safe = "".join(c if (c.isalnum() or c in " -_.") else "_" for c in raw).strip()
+        if safe:
+            return safe if safe.lower().endswith(".pdf") else safe + ".pdf"
+    return f"annex_{row_idx + 1:04d}.pdf"
 
 
 @app.post("/annex/generate")
 async def annex_generate(template: UploadFile = File(...),
                          data: UploadFile = File(...),
                          mapping: str = Form(...),
-                         headers: str = Form("{}")):
+                         headers: str = Form("{}"),
+                         profile: str = Form(None),
+                         filename_col: str = Form("")):
     """One annex per data row → ZIP.
 
     `mapping` is a JSON object {"<item_index>": "<column_name>", …} linking each
@@ -735,6 +766,8 @@ async def annex_generate(template: UploadFile = File(...),
     removes the line; any other value sets it and recomputes amount + Total HT.
     `headers` (optional) is {"<field_key>": "<column_name>", …} for the document
     info fields (facture N°, client, ICE, période…).
+    `profile` (optional) is the saved layout template JSON (auto-detected if
+    omitted); `filename_col` names each output file from a data column.
     """
     tmpl_bytes = await template.read()
     data_bytes = await data.read()
@@ -764,8 +797,14 @@ async def annex_generate(template: UploadFile = File(...),
     if not rows:
         raise HTTPException(400, "The data file has no rows.")
 
+    prof_in = None
+    if profile:
+        try:
+            prof_in = json.loads(profile)
+        except Exception:  # noqa: BLE001
+            raise HTTPException(400, "`profile` must be valid JSON.")
     try:
-        spans, model = _annex_spans_and_model(tmpl_bytes)
+        spans, model, prof = _annex_spans_and_model(tmpl_bytes, prof_in)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Couldn't read the template ({type(exc).__name__}).")
     if not model["items"] and not model.get("headers"):
@@ -780,6 +819,7 @@ async def annex_generate(template: UploadFile = File(...),
     colmap = _annex_colmap(model)
     zip_buf = io.BytesIO()
     made = failed = 0
+    used_names: set = set()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for row_idx, row in enumerate(rows):
             spec: dict = {}
@@ -788,14 +828,14 @@ async def annex_generate(template: UploadFile = File(...),
                     continue
                 qv = parse_num(str(row.get(col, "")))
                 spec[idx] = {"remove": True} if not qv else {"qty": qv}
-            reps = [(_relax_numeric(spans[sid], colmap.get(sid)) if txt else spans[sid], txt)
+            reps = [(_relax_numeric(spans[sid], colmap.get(sid), prof) if txt else spans[sid], txt)
                     for sid, txt in plan_edits(model, spec)
                     if 0 <= sid < len(spans)]
             removed_items = {idx for idx, a in spec.items() if a.get("remove")}
             removed_secs = [si for si, sec in enumerate(model["sections"])
                             if sec.get("itemIdx")
                             and all(k in removed_items for k in sec["itemIdx"])]
-            reps += _annex_erase_bands(model, spans, removed_items, removed_secs)
+            reps += _annex_erase_bands(model, spans, removed_items, removed_secs, prof)
             if hmap:
                 hspec = {key: row.get(col, "") for key, col in hmap.items()}
                 for sid, txt in plan_header_edits(model.get("headers", []), hspec):
@@ -803,7 +843,11 @@ async def annex_generate(template: UploadFile = File(...),
                         reps += _header_edits(spans[sid], txt)
             try:
                 out, _ = apply_replacements(tmpl_bytes, reps)
-                zf.writestr(f"annex_{row_idx + 1:04d}.pdf", out)
+                name = _annex_filename(row, filename_col, data_headers, row_idx)
+                if name in used_names:                       # avoid overwrite
+                    name = f"{name[:-4]}_{row_idx + 1}.pdf"
+                used_names.add(name)
+                zf.writestr(name, out)
                 made += 1
             except Exception:  # noqa: BLE001 — skip the bad row, keep going
                 failed += 1
