@@ -599,17 +599,35 @@ def _relax_numeric(span: dict, col: str | None) -> dict:
     return widened
 
 
-def _relax_header(span: dict) -> dict:
-    """Header fields are left-aligned 'label value'; widen the cell to the RIGHT so
-    a longer value isn't shrunk. Left column → up to x=400 (before the right
-    column); right column → page edge."""
+def _measure_text(span: dict, text: str) -> float:
+    """Width (pt) the engine will render *text* at, using the font it will use."""
+    raw = None
+    try:
+        raw = resolve_full_font(span["font"])
+    except Exception:  # noqa: BLE001
+        raw = None
+    try:
+        fobj = fitz.Font(fontbuffer=raw) if raw else fitz.Font("helv")
+    except Exception:  # noqa: BLE001
+        fobj = fitz.Font("helv")
+    return fobj.text_length(text, span["size"])
+
+
+def _header_edits(span: dict, text: str) -> list:
+    """A header field is label+value in ONE span, and the engine sometimes
+    mis-detects its alignment as center/right — which makes the text drift when the
+    value's length changes. Fix it positionally: erase the whole original, then
+    stamp the new value in a cell sized to fit it exactly from the original left
+    edge, so for left/center/right alignment the engine re-anchors it at x0.
+    Returns [(erase_span, ""), (stamp_span, text)].
+    """
     x0, y0, x1, y1 = span["bbox"]
-    right = 400.0 if x0 < 300 else 545.0
-    if x1 >= right:
-        return span
-    widened = dict(span)
-    widened["bbox"] = [x0, y0, right, y1]
-    return widened
+    tw = _measure_text(span, text)
+    erase = dict(span)
+    erase["bbox"] = [x0 - 1.0, y0, max(x1, x0 + tw) + 2.0, y1]
+    stamp = dict(span)
+    stamp["bbox"] = [x0, y0, x0 + tw + 1.0, y1]
+    return [(erase, ""), (stamp, text)]
 
 
 def _annex_colmap(model: dict) -> dict:
@@ -782,7 +800,7 @@ async def annex_generate(template: UploadFile = File(...),
                 hspec = {key: row.get(col, "") for key, col in hmap.items()}
                 for sid, txt in plan_header_edits(model.get("headers", []), hspec):
                     if 0 <= sid < len(spans):
-                        reps.append((_relax_header(spans[sid]), txt))
+                        reps += _header_edits(spans[sid], txt)
             try:
                 out, _ = apply_replacements(tmpl_bytes, reps)
                 zf.writestr(f"annex_{row_idx + 1:04d}.pdf", out)

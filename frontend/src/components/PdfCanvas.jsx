@@ -16,6 +16,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
  *   editedIds   Set of edited span ids (green outline)
  *   onSelect    (spanId|null) => void  — fired on click
  *   maxWidth    optional cap on rendered width (px)
+ *   highlightRects  array of { key, x0,y0,x1,y1, page, variant } in PDF points —
+ *                   full-area highlights (e.g. a whole table row), drawn over the page
  */
 export default function PdfCanvas({
   data,
@@ -25,6 +27,7 @@ export default function PdfCanvas({
   editedIds = new Set(),
   onSelect = () => {},
   maxWidth = 900,
+  highlightRects = [],
 }) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -121,6 +124,32 @@ export default function PdfCanvas({
 
         {/* Highlight overlay — pointer-events are passed through to the wrapper */}
         <div className="absolute inset-0 pointer-events-none">
+          {/* Full-area band highlights (whole rows / sections) */}
+          {highlightRects
+            .filter((r) => (r.page ?? 0) === pageIndex)
+            .map((r) => {
+              const styles = {
+                faint: { border: "1px solid rgba(37,99,235,.30)", background: "transparent" },
+                strong: { border: "2px solid #2563eb", background: "rgba(37,99,235,.12)" },
+                parent: { border: "2px dashed #06b6d4", background: "rgba(6,182,212,.07)" },
+              };
+              const st = styles[r.variant] || styles.faint;
+              return (
+                <div
+                  key={r.key}
+                  className="absolute rounded-[4px]"
+                  style={{
+                    left: r.x0 * scale,
+                    top: r.y0 * scale,
+                    width: (r.x1 - r.x0) * scale,
+                    height: (r.y1 - r.y0) * scale,
+                    ...st,
+                    transition: "background-color .15s ease, border-color .15s ease",
+                  }}
+                />
+              );
+            })}
+
           {pageSpans.map((s) => {
             const [x0, y0, x1, y1] = s.bbox;
             const isSel = s.id === selectedId;

@@ -58,6 +58,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   const [headerMapping, setHeaderMapping] = useState({}); // { headerKey: column }
   const [hoverLine, setHoverLine] = useState(null); // item index highlighted
   const [hoverHeader, setHoverHeader] = useState(null); // header key highlighted
+  const [hoverSection, setHoverSection] = useState(null); // section group index highlighted
 
   const [showImport, setShowImport] = useState(false);
   const [impTab, setImpTab] = useState("upload"); // upload | paste
@@ -121,9 +122,9 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     for (const h of headerFields) m.set(h.spanId, h);
     return m;
   }, [headerFields]);
-  const allIds = useMemo(
-    () => [...items.flatMap((it) => it.ids || []), ...headerFields.map((h) => h.spanId)],
-    [items, headerFields]
+  const spanById = useMemo(
+    () => new Map((spans || []).map((s) => [s.id, s])),
+    [spans]
   );
 
   // Group lines by section for display.
@@ -140,18 +141,54 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     return out;
   }, [items]);
 
-  // Highlight: the hovered line/field if any, else every detected field (faint).
-  const highlightSet = useMemo(() => {
-    if (hoverLine != null) {
-      const it = items.find((i) => i.index === hoverLine);
-      return new Set(it?.ids || []);
+  // Full-row band (spans the whole table width) for a set of span ids.
+  const TABLE_L = 22;
+  const TABLE_R = 543;
+  function bandOf(ids) {
+    const boxes = (ids || []).map((id) => spanById.get(id)?.bbox).filter(Boolean);
+    if (!boxes.length) return null;
+    return {
+      x0: TABLE_L,
+      x1: TABLE_R,
+      y0: Math.min(...boxes.map((b) => b[1])) - 2,
+      y1: Math.max(...boxes.map((b) => b[3])) + 2,
+      page: spanById.get(ids[0])?.page ?? 0,
+    };
+  }
+
+  // What lights up on the PDF: every line faint; the hovered line/section/field strong.
+  const highlightRects = useMemo(() => {
+    const rects = [];
+    for (const it of items) {
+      const b = bandOf(it.ids);
+      if (b)
+        rects.push({
+          key: `line-${it.index}`,
+          ...b,
+          variant: hoverLine === it.index ? "strong" : "faint",
+        });
+    }
+    if (hoverSection != null && groups[hoverSection]) {
+      const b = bandOf(groups[hoverSection].items.flatMap((it) => it.ids));
+      if (b) rects.push({ key: `sec-${hoverSection}`, ...b, variant: "parent" });
     }
     if (hoverHeader != null) {
       const h = headerFields.find((x) => x.key === hoverHeader);
-      return new Set(h ? [h.spanId] : []);
+      const sp = h && spanById.get(h.spanId);
+      if (sp)
+        rects.push({
+          key: `hdr-${h.key}`,
+          x0: sp.bbox[0] - 3,
+          y0: sp.bbox[1] - 2,
+          x1: sp.bbox[2] + 3,
+          y1: sp.bbox[3] + 2,
+          page: sp.page ?? 0,
+          variant: "strong",
+        });
     }
-    return new Set(allIds);
-  }, [hoverLine, hoverHeader, items, headerFields, allIds]);
+    return rects;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, groups, hoverLine, hoverSection, hoverHeader, headerFields, spanById]);
 
   const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
   const mappedCount = Object.values(mapping).filter(Boolean).length;
@@ -286,7 +323,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                 data={data}
                 pageIndex={pageIndex}
                 spans={spans}
-                editedIds={highlightSet}
+                highlightRects={highlightRects}
                 onSelect={onCanvasSelect}
                 maxWidth={pdfWidth}
               />
@@ -481,54 +518,75 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
               )}
 
               {items.length > 0 && (
-                <div className="px-3 pt-3 pb-1 text-label-md font-semibold text-on-surface-variant italic">
+                <div className="px-3 pt-3 pb-1 text-caption uppercase tracking-wide text-on-surface-variant/70">
                   Lines
                 </div>
               )}
               {groups.map((g, gi) => (
-                <div key={gi}>
-                  <div className="px-3 pt-3 pb-1 text-label-md font-semibold text-on-surface-variant italic">
-                    {g.section || "—"}
+                <div key={gi} className="mb-1">
+                  {/* Parent: section */}
+                  <div
+                    onMouseEnter={() => setHoverSection(gi)}
+                    onMouseLeave={() => setHoverSection((s) => (s === gi ? null : s))}
+                    className={`flex items-center gap-2 px-3 py-1.5 cursor-default transition-colors ${
+                      hoverSection === gi ? "text-secondary" : "text-on-surface-variant"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[18px] opacity-70">
+                      {hoverSection === gi ? "folder_open" : "folder"}
+                    </span>
+                    <span className="text-label-md font-semibold italic truncate" title={g.section}>
+                      {g.section || "—"}
+                    </span>
+                    <span className="text-caption opacity-60 shrink-0">
+                      · {g.items.length} line{g.items.length === 1 ? "" : "s"}
+                    </span>
                   </div>
-                  {g.items.map((it) => (
-                    <div
-                      key={it.index}
-                      onMouseEnter={() => setHoverLine(it.index)}
-                      onMouseLeave={() => setHoverLine((h) => (h === it.index ? null : h))}
-                      className={`flex items-center gap-2 px-3 py-2 border-b border-outline-variant/10 transition-colors ${
-                        hoverLine === it.index ? "bg-surface-container-high/50" : ""
-                      }`}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="text-body-md text-on-surface truncate" title={it.label}>
-                          {it.label}
-                        </p>
-                        <p className="text-caption text-on-surface-variant">
-                          PU {it.unitPrice || "—"} · {it.unit || ""}
-                        </p>
-                      </div>
-                      <select
-                        disabled={!dataLoaded}
-                        value={mapping[it.index] || ""}
-                        onChange={(e) =>
-                          setMapping((m) => {
-                            const n = { ...m };
-                            if (e.target.value) n[it.index] = e.target.value;
-                            else delete n[it.index];
-                            return n;
-                          })
-                        }
-                        className="w-[44%] shrink-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container disabled:opacity-40"
+
+                  {/* Children: lines, indented under the section */}
+                  <div className="ml-4 border-l-2 border-outline-variant/25">
+                    {g.items.map((it) => (
+                      <div
+                        key={it.index}
+                        onMouseEnter={() => setHoverLine(it.index)}
+                        onMouseLeave={() => setHoverLine((h) => (h === it.index ? null : h))}
+                        className={`flex items-center gap-2 pl-3 pr-3 py-2 border-l-2 -ml-0.5 transition-colors ${
+                          hoverLine === it.index
+                            ? "bg-secondary-container/10 border-secondary-container"
+                            : "border-transparent"
+                        }`}
                       >
-                        <option value="">keep as-is</option>
-                        {impHeaders.map((h) => (
-                          <option key={h} value={h}>
-                            {h}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-body-md text-on-surface truncate" title={it.label}>
+                            {it.label}
+                          </p>
+                          <p className="text-caption text-on-surface-variant">
+                            PU {it.unitPrice || "—"} · {it.unit || ""}
+                          </p>
+                        </div>
+                        <select
+                          disabled={!dataLoaded}
+                          value={mapping[it.index] || ""}
+                          onChange={(e) =>
+                            setMapping((m) => {
+                              const n = { ...m };
+                              if (e.target.value) n[it.index] = e.target.value;
+                              else delete n[it.index];
+                              return n;
+                            })
+                          }
+                          className="w-[44%] shrink-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container disabled:opacity-40"
+                        >
+                          <option value="">keep as-is</option>
+                          {impHeaders.map((h) => (
+                            <option key={h} value={h}>
+                              {h}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
