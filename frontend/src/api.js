@@ -71,22 +71,30 @@ export async function uploadFont(fontname, file) {
   return res.json();
 }
 
-// POST /annex/model → { filename, sections, items:[{index,section,label,unit,qty,unitPrice,amount,ids}], total, item_count }
-export async function annexModel(file) {
+// POST /annex/model → { filename, sections, items[], headers[], total, item_count, template }
+// Pass a saved `profile` (layout template) to reuse it and skip re-detection.
+export async function annexModel(file, profile = null) {
   const fd = new FormData();
   fd.append("file", file);
+  if (profile) fd.append("template", JSON.stringify(profile));
   const res = await fetch(`${API_BASE}/annex/model`, { method: "POST", body: fd });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
 
-// POST /annex/generate → { blob, generated, failed } — one annex per data row
-export async function annexGenerate(template, dataFile, mapping, headers = {}) {
+// POST /annex/generate → { blob, generated, failed } — one annex per data row.
+// `profile` = saved layout template (auto-detected if null); `filenameCol` names
+// each output file from a data column.
+export async function annexGenerate(
+  template, dataFile, mapping, headers = {}, profile = null, filenameCol = "",
+) {
   const fd = new FormData();
   fd.append("template", template);
   fd.append("data", dataFile);
   fd.append("mapping", JSON.stringify(mapping));
   fd.append("headers", JSON.stringify(headers));
+  if (profile) fd.append("profile", JSON.stringify(profile));
+  if (filenameCol) fd.append("filename_col", filenameCol);
   const res = await fetch(`${API_BASE}/annex/generate`, { method: "POST", body: fd });
   if (!res.ok) throw await asError(res);
   return {

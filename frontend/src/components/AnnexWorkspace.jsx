@@ -9,6 +9,25 @@ import { annexModel, annexGenerate } from "../api.js";
 const norm = (s) =>
   (s || "").toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, "");
 
+// fr / Morocco number format ('.' groups, ',' decimals) — mirrors the backend so
+// the client-side "review before download" preview matches the generated PDFs.
+const parseNum = (t) => {
+  const s = String(t ?? "").replace(/\s/g, "").trim();
+  if (!s) return null;
+  const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+};
+const fmtNum = (v, d = 2) =>
+  v
+    .toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d })
+    .replace(/,/g, "\x00")
+    .replace(/\./g, ",")
+    .replace(/\x00/g, ".");
+
+// Where the scanned layout template is remembered (device storage now; Supabase
+// later). Keyed by annex file name → "scan once, reuse every month".
+const tplKey = (name) => `redraft:annexTemplate:${name || "annex"}`;
+
 function matchColumn(label, columns) {
   const L = norm(label);
   if (!L) return null;
@@ -53,6 +72,10 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   const [model, setModel] = useState(null);
   const [modelStatus, setModelStatus] = useState("idle"); // idle|loading|ready|error
   const [modelError, setModelError] = useState(null);
+  const [template, setTemplate] = useState(null); // saved layout (scan-once)
+  const [reused, setReused] = useState(false);    // template came from storage
+  const [filenameCol, setFilenameCol] = useState(""); // data column → output filename
+  const [showReview, setShowReview] = useState(false);
 
   const [mapping, setMapping] = useState({}); // { itemIndex: column }
   const [headerMapping, setHeaderMapping] = useState({}); // { headerKey: column }
@@ -83,10 +106,24 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     let cancelled = false;
     setModelStatus("loading");
     setModelError(null);
-    annexModel(file)
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(tplKey(file.name)) || "null");
+    } catch {
+      saved = null;
+    }
+    annexModel(file, saved)
       .then((m) => {
         if (cancelled) return;
         setModel(m);
+        setTemplate(m.template || saved || null);
+        setReused(Boolean(saved));
+        try {
+          if (m.template)
+            localStorage.setItem(tplKey(file.name), JSON.stringify(m.template));
+        } catch {
+          /* storage blocked/full — reuse just won't persist */
+        }
         setModelStatus("ready");
       })
       .catch((e) => {
@@ -194,6 +231,48 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   const mappedCount = Object.values(mapping).filter(Boolean).length;
   const headerMappedCount = Object.values(headerMapping).filter(Boolean).length;
 
+  // Master Total HT (before) — same for every client; the per-client "after" is
+  // recomputed below.
+  const masterTotal = useMemo(() => {
+    const t = parseNum(model?.total?.value);
+    return t != null
+      ? t
+      : items.reduce((a, it) => a + (parseNum(it.amount) || 0), 0);
+  }, [model, items]);
+
+  // Verify-before-download: compute each client's result the same way the backend
+  // will (0/empty qty removes a line; Total HT recomputed) so the user can trust
+  // the batch before generating a single PDF.
+  const preview = useMemo(() => {
+    if (!items.length || !impRows.length) return [];
+    const nameCol = filenameCol || headerMapping.clientName || null;
+    return impRows.map((row, ri) => {
+      let kept = 0;
+      let removed = 0;
+      let after = 0;
+      for (const it of items) {
+        const col = mapping[it.index];
+        if (col) {
+          const q = parseNum(row[col]);
+          if (!q) {
+            removed += 1;
+            continue;
+          }
+          after += Math.round(q * (parseNum(it.unitPrice) || 0) * 100) / 100;
+          kept += 1;
+        } else {
+          after += parseNum(it.amount) || 0;
+          kept += 1;
+        }
+      }
+      const name =
+        nameCol && String(row[nameCol] ?? "").trim()
+          ? String(row[nameCol]).trim()
+          : `Client ${ri + 1}`;
+      return { name, kept, removed, after: Math.round(after * 100) / 100 };
+    });
+  }, [items, impRows, mapping, filenameCol, headerMapping]);
+
   function onCanvasSelect(spanId) {
     if (spanId == null) {
       setHoverLine(null);
@@ -255,7 +334,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     setBusy(true);
     const csv = Papa.unparse({ fields: impHeaders, data: impRows });
     const csvFile = new File([csv], "clients.csv", { type: "text/csv" });
-    annexGenerate(file, csvFile, map, hmap)
+    annexGenerate(file, csvFile, map, hmap, template, filenameCol)
       .then(({ blob, generated, failed }) => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -310,9 +389,13 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
         </div>
 
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
-          <span className="material-symbols-outlined text-[14px] text-accent-cyan">rule</span>
+          <span className="material-symbols-outlined text-[14px] text-accent-cyan">
+            {reused ? "bookmark" : "rule"}
+          </span>
           {modelStatus === "ready"
-            ? `${items.length} line${items.length === 1 ? "" : "s"} detected — hover a row to find it`
+            ? `${items.length} line${items.length === 1 ? "" : "s"} detected${
+                reused ? " · saved layout" : ""
+              } — hover a row to find it`
             : "Reading the annex…"}
         </div>
 
@@ -615,10 +698,77 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
             </div>
           )}
           {modelStatus === "ready" && dataLoaded && (
-            <div className="text-caption text-on-surface-variant px-0.5">
-              {mappedCount}/{items.length} lines · {headerMappedCount}/{headerFields.length} fields
-              linked · {impRows.length} client{impRows.length === 1 ? "" : "s"}
-            </div>
+            <>
+              {/* Name each output file by a data column (e.g. client / Facture N°) */}
+              <div className="flex items-center gap-2 text-caption">
+                <span className="material-symbols-outlined text-[15px] text-on-surface-variant">
+                  sell
+                </span>
+                <span className="text-on-surface-variant shrink-0">Name files by</span>
+                <select
+                  value={filenameCol}
+                  onChange={(e) => setFilenameCol(e.target.value)}
+                  className="flex-1 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                >
+                  <option value="">annex_0001.pdf …</option>
+                  {impHeaders.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Verify before download */}
+              <button
+                onClick={() => setShowReview((v) => !v)}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-lg border border-outline-variant/40 text-label-md text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                <span className="flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-accent-cyan">
+                    fact_check
+                  </span>
+                  Review {preview.length} client{preview.length === 1 ? "" : "s"} before download
+                </span>
+                <span className="material-symbols-outlined text-[18px]">
+                  {showReview ? "expand_less" : "expand_more"}
+                </span>
+              </button>
+              {showReview && (
+                <div className="max-h-48 overflow-auto rounded-lg border border-outline-variant/30 bg-surface-container-lowest animate-drop">
+                  <div className="px-3 py-1.5 text-caption text-on-surface-variant sticky top-0 bg-surface-container-low border-b border-outline-variant/20">
+                    Total HT before: <b className="text-on-surface">{fmtNum(masterTotal)}</b> — each
+                    client recomputed
+                  </div>
+                  {preview.slice(0, 80).map((p, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2 px-3 py-1.5 text-caption border-b border-outline-variant/10 last:border-0"
+                    >
+                      <span className="flex-1 truncate text-on-surface" title={p.name}>
+                        {p.name}
+                      </span>
+                      <span className="shrink-0 text-on-surface-variant">
+                        {p.kept} kept{p.removed ? ` · ${p.removed} removed` : ""}
+                      </span>
+                      <span className="shrink-0 tabular-nums font-semibold text-secondary w-20 text-right">
+                        {fmtNum(p.after)}
+                      </span>
+                    </div>
+                  ))}
+                  {preview.length > 80 && (
+                    <div className="px-3 py-1.5 text-caption text-on-surface-variant">
+                      +{preview.length - 80} more…
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="text-caption text-on-surface-variant px-0.5">
+                {mappedCount}/{items.length} lines · {headerMappedCount}/{headerFields.length} fields
+                linked · {impRows.length} client{impRows.length === 1 ? "" : "s"}
+              </div>
+            </>
           )}
           <button
             onClick={generate}
