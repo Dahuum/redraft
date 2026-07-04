@@ -105,11 +105,15 @@ export async function annexGenerate(
 }
 
 // POST /bulk → { blob, generated, failed }
-export async function bulkGenerate(template, dataFile, mapping) {
+// `filenameCol` (optional) names each output file from a data column.
+// `output` = "zip" (one file per row) or "merged" (one combined PDF).
+export async function bulkGenerate(template, dataFile, mapping, filenameCol = "", output = "zip") {
   const fd = new FormData();
   fd.append("template", template);
   fd.append("data", dataFile);
   fd.append("mapping", JSON.stringify(mapping));
+  if (filenameCol) fd.append("filename_col", filenameCol);
+  if (output && output !== "zip") fd.append("output", output);
   const res = await fetch(`${API_BASE}/bulk`, { method: "POST", body: fd });
   if (!res.ok) throw await asError(res);
   return {

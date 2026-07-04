@@ -152,7 +152,8 @@ export default function HomeScreen({ onUpload, onOpen, busy, error, onSignOut })
                 {busy ? "Reading PDF…" : "Drop PDF here"}
               </h2>
               <p className="font-body-md text-sm text-on-surface-variant mb-md text-center max-w-sm">
-                Securely upload your document for AI-assisted redaction and structural formatting.
+                Edit values in place, generate hundreds of documents from a spreadsheet, or
+                automate billing annexes — all from one PDF.
               </p>
               <button
                 onClick={(e) => {

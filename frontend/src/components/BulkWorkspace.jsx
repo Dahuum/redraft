@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
-import { bulkGenerate } from "../api.js";
+import { bulkGenerate, editPdf } from "../api.js";
 
 // Make a list of column names unique by suffixing duplicates: a, a (2), a (3).
 function uniquify(names) {
@@ -29,6 +29,8 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const [picked, setPicked] = useState([]); // span ids, in pick order
   const [rows, setRows] = useState([]); // [{ [spanId]: value }]  — one per document
   const [hoverId, setHoverId] = useState(null); // field highlighted on the doc
+  const [filenameId, setFilenameId] = useState(null); // picked field that names the files
+  const [outputMode, setOutputMode] = useState("zip"); // "zip" | "merged"
 
   // CSV/paste import (optional, scoped to the picked fields)
   const [showImport, setShowImport] = useState(false);
@@ -44,9 +46,15 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
+  // Verify-before-download: render one generated document (reuses /edit).
+  const [previewIdx, setPreviewIdx] = useState(null); // row being previewed, or null
+  const [previewData, setPreviewData] = useState(null); // rendered ArrayBuffer
+  const [previewBusy, setPreviewBusy] = useState(false);
+
   const pageCount = (pages && pages.length) || 1;
   const spanById = useMemo(() => new Map(spans.map((s) => [s.id, s])), [spans]);
   const pickedSpans = picked.map((id) => spanById.get(id)).filter(Boolean);
+  const filenameValid = filenameId != null && picked.includes(filenameId);
 
   const label = (s) => {
     const t = (s.text || "").trim();
@@ -76,7 +84,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
 
   useEffect(() => {
     if (!storeKey) return;
-    let p = [], r = [], m = {};
+    let p = [], r = [], m = {}, f = null;
     try {
       const raw = localStorage.getItem(storeKey);
       if (raw) {
@@ -84,6 +92,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
         p = (s.picked || []).filter((id) => spanById.has(id));
         r = Array.isArray(s.rows) ? s.rows : [];
         m = s.impMap || {};
+        f = p.includes(s.filenameId) ? s.filenameId : null;
       }
     } catch {
       /* ignore corrupt cache */
@@ -92,6 +101,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setPicked(p);
     setRows(r);
     setImpMap(m);
+    setFilenameId(f);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeKey]);
 
@@ -102,11 +112,17 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       return;
     }
     try {
-      localStorage.setItem(storeKey, JSON.stringify({ picked, rows, impMap }));
+      localStorage.setItem(storeKey, JSON.stringify({ picked, rows, impMap, filenameId }));
     } catch {
       /* storage full / unavailable — non-fatal */
     }
-  }, [storeKey, picked, rows, impMap]);
+  }, [storeKey, picked, rows, impMap, filenameId]);
+
+  // Any change to the fields or their values invalidates a shown preview.
+  useEffect(() => {
+    setPreviewIdx(null);
+    setPreviewData(null);
+  }, [picked, rows]);
 
   const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
 
@@ -219,19 +235,48 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     const data2D = rows.map((r) => pickedSpans.map((s) => r[s.id] ?? ""));
     const csv = Papa.unparse({ fields: headers, data: data2D });
     const csvFile = new File([csv], "data.csv", { type: "text/csv" });
+    // Name files by the chosen field's column (its uniquified header), if any.
+    const fnIdx = filenameValid ? pickedSpans.findIndex((s) => s.id === filenameId) : -1;
+    const filenameCol = fnIdx >= 0 ? headers[fnIdx] : "";
 
-    bulkGenerate(file, csvFile, mapping)
+    bulkGenerate(file, csvFile, mapping, filenameCol, outputMode)
       .then(({ blob, generated, failed }) => {
+        const ext = outputMode === "merged" ? "pdf" : "zip";
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${(file.name || "template").replace(/\.pdf$/i, "")}_bulk.zip`;
+        a.download = `${(file.name || "template").replace(/\.pdf$/i, "")}_bulk.${ext}`;
         a.click();
         URL.revokeObjectURL(url);
-        setResult({ generated, failed });
+        setResult({ generated, failed, merged: outputMode === "merged" });
       })
       .catch((e) => setError(e.message || "Generation failed."))
       .finally(() => setBusy(false));
+  }
+
+  // ---- Preview one generated document (reuses /edit for a single row) ----
+  async function showPreview(idx) {
+    if (!file || !rows.length) return;
+    const i = Math.max(0, Math.min(rows.length - 1, idx));
+    const edits = pickedSpans
+      .map((s) => ({ index: s.id, new_text: String(rows[i][s.id] ?? "") }))
+      .filter((e) => e.new_text !== "");
+    setPreviewBusy(true);
+    setError(null);
+    try {
+      const { blob } = await editPdf(file, edits);
+      setPreviewData(await blob.arrayBuffer());
+      setPreviewIdx(i);
+      if (pickedSpans[0]) setPageIndex(pickedSpans[0].page);
+    } catch (e) {
+      setError(e.message || "Couldn't render the preview.");
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
+  function exitPreview() {
+    setPreviewIdx(null);
+    setPreviewData(null);
   }
 
   // One-tap demo so the flow is obvious: pick the first field, make 2 copies.
@@ -252,6 +297,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setPicked([]);
     setRows([]);
     setImpMap({});
+    setFilenameId(null);
     setShowImport(false);
     setResult(null);
     setError(null);
@@ -310,24 +356,52 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
           </button>
         </div>
 
+        {/* Preview banner — step through generated documents */}
+        {previewIdx != null && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-20 bg-secondary-container text-white rounded-full px-3 py-1.5 flex items-center gap-2 shadow-xl text-caption">
+            <span className="material-symbols-outlined text-[16px]">visibility</span>
+            Preview · document {previewIdx + 1} / {rows.length}
+            <div className="w-px h-4 bg-white/30 mx-0.5"></div>
+            <button
+              disabled={previewIdx === 0 || previewBusy}
+              onClick={() => showPreview(previewIdx - 1)}
+              className="disabled:opacity-30 hover:opacity-80 transition-opacity"
+            >
+              <span className="material-symbols-outlined text-[16px]">chevron_left</span>
+            </button>
+            <button
+              disabled={previewIdx >= rows.length - 1 || previewBusy}
+              onClick={() => showPreview(previewIdx + 1)}
+              className="disabled:opacity-30 hover:opacity-80 transition-opacity"
+            >
+              <span className="material-symbols-outlined text-[16px]">chevron_right</span>
+            </button>
+            <button onClick={exitPreview} title="Exit preview" className="ml-0.5 hover:opacity-80 transition-opacity">
+              <span className="material-symbols-outlined text-[16px]">close</span>
+            </button>
+          </div>
+        )}
+
         {/* Hint */}
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
-          <span className="material-symbols-outlined text-[14px] text-accent-cyan">ads_click</span>
-          {pickedSpans.length
-            ? `${pickedSpans.length} selected — click text to add, click again to remove`
-            : "Click any text or number you want to change"}
-        </div>
+        {previewIdx == null && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-[14px] text-accent-cyan">ads_click</span>
+            {pickedSpans.length
+              ? `${pickedSpans.length} selected — click text to add, click again to remove`
+              : "Click any text or number you want to change"}
+          </div>
+        )}
 
         <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-on-surface/[0.04]">
           {file && data ? (
             <div className="paper-shadow rounded-sm mt-12 mb-10 h-fit">
               <PdfCanvas
-                data={data}
+                data={previewIdx != null ? previewData : data}
                 pageIndex={pageIndex}
                 spans={spans}
-                selectedId={hoverId}
-                editedIds={new Set(picked)}
-                onSelect={togglePick}
+                selectedId={previewIdx != null ? null : hoverId}
+                editedIds={previewIdx != null ? new Set() : new Set(picked)}
+                onSelect={previewIdx != null ? () => {} : togglePick}
                 maxWidth={pdfWidth}
               />
             </div>
@@ -638,8 +712,58 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                 ? error
                 : `Generated ${result.generated} PDF(s)${
                     result.failed ? ` · ${result.failed} skipped` : ""
-                  } — ZIP downloaded.`}
+                  } — ${result.merged ? "merged PDF" : "ZIP"} downloaded.`}
             </div>
+          )}
+          {picked.length > 0 && (
+            <div className="flex items-center gap-2 px-0.5 text-caption text-on-surface-variant">
+              <span className="flex items-center gap-1.5 shrink-0">
+                <span className="material-symbols-outlined text-[14px]">folder_zip</span>
+                Output
+              </span>
+              <div className="flex items-center gap-1 bg-surface-container-low rounded-lg p-0.5 border border-outline-variant/20">
+                <button
+                  onClick={() => setOutputMode("zip")}
+                  className={`px-2.5 py-1 rounded-md text-[12px] transition-all ${
+                    outputMode === "zip"
+                      ? "bg-surface-variant text-on-surface shadow-sm"
+                      : "text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  Separate files
+                </button>
+                <button
+                  onClick={() => setOutputMode("merged")}
+                  className={`px-2.5 py-1 rounded-md text-[12px] transition-all ${
+                    outputMode === "merged"
+                      ? "bg-surface-variant text-on-surface shadow-sm"
+                      : "text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  One PDF
+                </button>
+              </div>
+            </div>
+          )}
+          {picked.length > 0 && outputMode === "zip" && (
+            <label className="flex items-center gap-2 px-0.5 text-caption text-on-surface-variant">
+              <span className="flex items-center gap-1.5 shrink-0">
+                <span className="material-symbols-outlined text-[14px]">sell</span>
+                Name files by
+              </span>
+              <select
+                value={filenameValid ? filenameId : ""}
+                onChange={(e) => setFilenameId(e.target.value ? Number(e.target.value) : null)}
+                className="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+              >
+                <option value="">Row number — row_0001.pdf</option>
+                {pickedSpans.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {label(s)}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
           {picked.length > 0 && (
             <div className="flex items-center justify-between px-0.5">
@@ -655,16 +779,27 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
               </button>
             </div>
           )}
-          <button
-            onClick={process}
-            disabled={busy || !picked.length || !rows.length}
-            className="w-full bg-secondary-container hover:bg-[#003ea8] text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
-          >
-            <span className="material-symbols-outlined text-[18px]">bolt</span>
-            {busy
-              ? "Generating…"
-              : `Generate ${rows.length || ""} PDF${rows.length === 1 ? "" : "s"}`}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => showPreview(previewIdx ?? 0)}
+              disabled={previewBusy || busy || !picked.length || !rows.length}
+              title="See what one generated document looks like"
+              className="shrink-0 px-3 py-2.5 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors font-label-md text-sm flex items-center gap-1.5 disabled:opacity-40"
+            >
+              <span className="material-symbols-outlined text-[18px]">visibility</span>
+              {previewBusy ? "…" : "Preview"}
+            </button>
+            <button
+              onClick={process}
+              disabled={busy || !picked.length || !rows.length}
+              className="flex-1 bg-secondary-container hover:bg-[#003ea8] text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
+            >
+              <span className="material-symbols-outlined text-[18px]">bolt</span>
+              {busy
+                ? "Generating…"
+                : `Generate ${rows.length || ""} PDF${rows.length === 1 ? "" : "s"}`}
+            </button>
+          </div>
         </div>
       </div>
     </div>

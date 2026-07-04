@@ -52,8 +52,43 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Redraft-Font-Report"],
+    expose_headers=["X-Redraft-Font-Report", "X-Redraft-Generated", "X-Redraft-Failed"],
 )
+
+
+# ── Upload limits — protect the free-tier server from OOM / abuse ──
+MAX_TEMPLATE_BYTES = 20 * 1024 * 1024   # 20 MB template PDF
+MAX_DATA_BYTES     = 10 * 1024 * 1024   # 10 MB data file (CSV/XLSX)
+MAX_ROWS           = 500                # rows per bulk / annex run
+
+
+def _check_size(label: str, data: bytes, limit: int) -> None:
+    if len(data) > limit:
+        raise HTTPException(
+            413, f"{label} is too large ({len(data) // (1024 * 1024)} MB). "
+                 f"The limit is {limit // (1024 * 1024)} MB.")
+
+
+def _check_rows(rows: list) -> None:
+    if len(rows) > MAX_ROWS:
+        raise HTTPException(
+            413, f"Too many rows ({len(rows)}). The limit is {MAX_ROWS} per run — "
+                 f"split your data into smaller batches.")
+
+
+def _merge_pdfs(pdfs: list) -> bytes:
+    """Concatenate PDF byte-strings into a single PDF (PyMuPDF)."""
+    merged = fitz.open()
+    try:
+        for pdf in pdfs:
+            src = fitz.open(stream=pdf, filetype="pdf")
+            try:
+                merged.insert_pdf(src)
+            finally:
+                src.close()
+        return merged.tobytes()
+    finally:
+        merged.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -443,16 +478,23 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...)):
 @app.post("/bulk")
 async def bulk(template: UploadFile = File(...),
                data: UploadFile = File(...),
-               mapping: str = Form(...)):
-    """Generate one PDF per data row → a ZIP.
+               mapping: str = Form(...),
+               filename_col: str = Form(""),
+               output: str = Form("zip")):
+    """Generate one PDF per data row → a ZIP (or one merged PDF).
 
     `mapping` is a JSON object {"<span_index>": "<column_name>", …}. Each mapped
-    field is replaced by that column's value for the row.
+    field is replaced by that column's value for the row. `filename_col`
+    (optional) names each output file from a data column (falls back to
+    row_NNNN.pdf). `output` = "zip" (default, one file per row) or "merged"
+    (all rows concatenated into a single PDF).
     """
     tmpl_bytes = await template.read()
     data_bytes = await data.read()
     if not tmpl_bytes or not data_bytes:
         raise HTTPException(400, "Both a template PDF and a data file are required.")
+    _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
+    _check_size("The data file", data_bytes, MAX_DATA_BYTES)
     _ingest_embedded_fonts(tmpl_bytes)  # use the template's own embedded fonts
 
     try:
@@ -470,6 +512,7 @@ async def bulk(template: UploadFile = File(...),
         raise HTTPException(400, str(exc))
     if not rows:
         raise HTTPException(400, "The data file has no rows.")
+    _check_rows(rows)
 
     try:
         spans = extract_spans(tmpl_bytes)
@@ -481,31 +524,41 @@ async def bulk(template: UploadFile = File(...),
         raise HTTPException(400, f"Column(s) not found in data file: "
                                  f"{', '.join(sorted(set(unknown)))}.")
 
-    zip_buf = io.BytesIO()
+    files: list = []       # [(name, pdf_bytes)]
     failed = 0
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for row_idx, row in enumerate(rows):
-            reps = [(spans[i], str(row.get(col, "")))
-                    for i, col in mp.items()
-                    if 0 <= i < len(spans) and str(row.get(col, ""))]
-            try:
-                out, _ = apply_replacements(tmpl_bytes, reps)
-                zf.writestr(f"row_{row_idx + 1:04d}.pdf", out)
-            except Exception:  # noqa: BLE001 — skip the bad row, keep going
-                failed += 1
+    used_names: set = set()
+    for row_idx, row in enumerate(rows):
+        reps = [(spans[i], str(row.get(col, "")))
+                for i, col in mp.items()
+                if 0 <= i < len(spans) and str(row.get(col, ""))]
+        try:
+            out, _ = apply_replacements(tmpl_bytes, reps)
+            name = _row_filename(row, filename_col, headers, row_idx, "row")
+            if name in used_names:                       # avoid overwrite
+                name = f"{name[:-4]}_{row_idx + 1}.pdf"
+            used_names.add(name)
+            files.append((name, out))
+        except Exception:  # noqa: BLE001 — skip the bad row, keep going
+            failed += 1
 
-    if failed == len(rows):
+    if not files:
         raise HTTPException(500, "Every row failed to generate.")
 
     stem = Path(template.filename or "template").stem
+    hdrs = {"X-Redraft-Generated": str(len(files)), "X-Redraft-Failed": str(failed)}
+    if output == "merged":
+        return Response(
+            content=_merge_pdfs([b for _n, b in files]), media_type="application/pdf",
+            headers={**hdrs,
+                     "Content-Disposition": f'attachment; filename="{stem}_bulk.pdf"'})
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, pdf in files:
+            zf.writestr(name, pdf)
     return Response(
         content=zip_buf.getvalue(), media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{stem}_bulk.zip"',
-            "X-Redraft-Generated": str(len(rows) - failed),
-            "X-Redraft-Failed": str(failed),
-        },
-    )
+        headers={**hdrs,
+                 "Content-Disposition": f'attachment; filename="{stem}_bulk.zip"'})
 
 
 @app.post("/fonts")
@@ -742,14 +795,15 @@ async def annex_model(file: UploadFile = File(...), template: str = Form(None)):
             "template": tmpl}
 
 
-def _annex_filename(row: dict, col: str, data_headers: list, row_idx: int) -> str:
-    """Per-client output name from a data column (falls back to annex_NNNN.pdf)."""
+def _row_filename(row: dict, col: str, data_headers: list, row_idx: int,
+                  prefix: str = "doc") -> str:
+    """Per-row output name from a data column (falls back to <prefix>_NNNN.pdf)."""
     if col and col in data_headers:
         raw = str(row.get(col, "")).strip()
         safe = "".join(c if (c.isalnum() or c in " -_.") else "_" for c in raw).strip()
         if safe:
             return safe if safe.lower().endswith(".pdf") else safe + ".pdf"
-    return f"annex_{row_idx + 1:04d}.pdf"
+    return f"{prefix}_{row_idx + 1:04d}.pdf"
 
 
 @app.post("/annex/generate")
@@ -773,6 +827,8 @@ async def annex_generate(template: UploadFile = File(...),
     data_bytes = await data.read()
     if not tmpl_bytes or not data_bytes:
         raise HTTPException(400, "Both a template PDF and a data file are required.")
+    _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
+    _check_size("The data file", data_bytes, MAX_DATA_BYTES)
     _ingest_embedded_fonts(tmpl_bytes)
 
     try:
@@ -796,6 +852,7 @@ async def annex_generate(template: UploadFile = File(...),
         raise HTTPException(400, str(exc))
     if not rows:
         raise HTTPException(400, "The data file has no rows.")
+    _check_rows(rows)
 
     prof_in = None
     if profile:
@@ -843,7 +900,7 @@ async def annex_generate(template: UploadFile = File(...),
                         reps += _header_edits(spans[sid], txt)
             try:
                 out, _ = apply_replacements(tmpl_bytes, reps)
-                name = _annex_filename(row, filename_col, data_headers, row_idx)
+                name = _row_filename(row, filename_col, data_headers, row_idx, "annex")
                 if name in used_names:                       # avoid overwrite
                     name = f"{name[:-4]}_{row_idx + 1}.pdf"
                 used_names.add(name)

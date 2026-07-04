@@ -3,6 +3,7 @@ import Papa from "papaparse";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
 import { annexModel, annexGenerate } from "../api.js";
+import { getTemplate, saveTemplate } from "../lib/templates.js";
 
 // NFD decomposes accents (é → e + ◌́); stripping non-alphanumerics then drops the
 // mark, so "Période" ≈ "Periode" and "Référence" ≈ "Reference".
@@ -24,8 +25,10 @@ const fmtNum = (v, d = 2) =>
     .replace(/\./g, ",")
     .replace(/\x00/g, ".");
 
-// Where the scanned layout template is remembered (device storage now; Supabase
-// later). Keyed by annex file name → "scan once, reuse every month".
+// Local cache key for the scanned layout template. The source of truth is the
+// per-account Supabase store (see lib/templates.js); this localStorage copy is
+// the offline / not-signed-in fallback. Keyed by annex file name →
+// "scan once, reuse every month".
 const tplKey = (name) => `redraft:annexTemplate:${name || "annex"}`;
 
 function matchColumn(label, columns) {
@@ -106,31 +109,43 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     let cancelled = false;
     setModelStatus("loading");
     setModelError(null);
-    let saved = null;
-    try {
-      saved = JSON.parse(localStorage.getItem(tplKey(file.name)) || "null");
-    } catch {
-      saved = null;
-    }
-    annexModel(file, saved)
-      .then((m) => {
-        if (cancelled) return;
-        setModel(m);
-        setTemplate(m.template || saved || null);
-        setReused(Boolean(saved));
+    (async () => {
+      // Prefer the per-account saved layout (Supabase, cross-device); fall back
+      // to this device's localStorage cache when offline / not signed in.
+      let saved = await getTemplate(file.name);
+      const fromAccount = Boolean(saved);
+      if (!saved) {
         try {
-          if (m.template)
-            localStorage.setItem(tplKey(file.name), JSON.stringify(m.template));
+          saved = JSON.parse(localStorage.getItem(tplKey(file.name)) || "null");
         } catch {
-          /* storage blocked/full — reuse just won't persist */
+          saved = null;
         }
+      }
+      if (cancelled) return;
+      try {
+        const m = await annexModel(file, saved);
+        if (cancelled) return;
+        const tmpl = m.template || saved || null;
+        setModel(m);
+        setTemplate(tmpl);
+        setReused(Boolean(saved));
         setModelStatus("ready");
-      })
-      .catch((e) => {
+        // Persist the layout for next month: local cache + account (so it
+        // syncs across devices). Migrates a local-only template up on reuse.
+        if (tmpl) {
+          try {
+            localStorage.setItem(tplKey(file.name), JSON.stringify(tmpl));
+          } catch {
+            /* storage blocked/full — reuse just won't persist locally */
+          }
+          if (!fromAccount) saveTemplate(file.name, tmpl); // best-effort
+        }
+      } catch (e) {
         if (cancelled) return;
         setModelError(e.message || "Couldn't read this annex.");
         setModelStatus("error");
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
