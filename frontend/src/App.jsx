@@ -8,12 +8,20 @@ import EditorWorkspace from "./components/EditorWorkspace.jsx";
 import BulkWorkspace from "./components/BulkWorkspace.jsx";
 import AnnexWorkspace from "./components/AnnexWorkspace.jsx";
 import ThemeToggle from "./components/ThemeToggle.jsx";
+import { useAuth } from "./lib/useAuth.js";
 
 export default function App() {
   const route = parseRoute(usePath());
   const { view, mode, docId } = route;
   const ed = useEditor();
+  const auth = useAuth();
   const loadedDocIdRef = useRef(null); // which history doc is currently in `ed`
+
+  // Gate the app behind a Supabase session — no session → back to the landing.
+  // (If Supabase isn't configured, auth.enabled is false and the app runs open.)
+  useEffect(() => {
+    if (auth.enabled && auth.ready && !auth.user) window.location.replace("/");
+  }, [auth.enabled, auth.ready, auth.user]);
 
   // One-time backfill: give any pre-existing history docs a thumbnail.
   useEffect(() => {
@@ -113,6 +121,15 @@ export default function App() {
     if (docId && docId !== "memory") patchDoc(docId, { status: "Final" });
   }
 
+  // While auth is resolving (or redirecting an unauthenticated user), hold a loader.
+  if (auth.enabled && (!auth.ready || !auth.user)) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-background text-on-surface-variant">
+        <span className="material-symbols-outlined animate-spin text-[28px]">progress_activity</span>
+      </div>
+    );
+  }
+
   if (view === "home") {
     return (
       <HomeScreen
@@ -120,6 +137,7 @@ export default function App() {
         onOpen={openFromHistory}
         busy={ed.busy}
         error={ed.error}
+        onSignOut={auth.enabled ? auth.signOut : null}
       />
     );
   }
@@ -149,13 +167,16 @@ export default function App() {
             <span className="material-symbols-outlined text-[18px]">download</span>
             Export PDF
           </button>
-          <div className="w-7 h-7 rounded-full bg-surface-container-highest overflow-hidden border border-outline-variant ml-1">
-            <img
-              alt="User Avatar"
-              className="w-full h-full object-cover"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuBKVjGU7TawQrZNbtZK_FZFyKW-qgcmLhj-wGGes2yje-4Liy13EVs9sYq-o4Pt-6zqFIOTtyTNOcSXeeQKu-9ftXai-hTAhTkbUBeOMFn57lrU8hd71wlosWAQ5YvZcmWLmKkXWYx2V_hjJ7kudTglvCj-dcJPIijuHvKRhYpWEGcU7Q64UrLCGC1bAPpX1dOMPZmessdR2y5QYV1Fc0FelSvPbYZGo9RsKe1sVJx78dJnaZOc3Ide2ZZdQKwei9PvNxmNErQvMInN"
-            />
-          </div>
+          {auth.enabled && (
+            <button
+              onClick={auth.signOut}
+              title="Sign out"
+              className="ml-1 px-3 py-1.5 rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100 flex items-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[18px]">logout</span>
+              Sign out
+            </button>
+          )}
         </div>
       </header>
 

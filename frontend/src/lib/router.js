@@ -20,12 +20,25 @@ const subscribe = (cb) => {
   listeners.add(cb);
   return () => listeners.delete(cb);
 };
-const getPath = () => window.location.pathname;
+
+// The app is mounted under /app in production (the landing owns /). All routes
+// are stored with the /app prefix in the URL but the router works in unprefixed
+// paths ("/annex/x"), so add/strip the base at the boundary.
+const BASE = "/app";
+const stripBase = (p) => {
+  if (p === BASE) return "/";
+  if (p.startsWith(BASE + "/")) return p.slice(BASE.length) || "/";
+  return p;
+};
+const withBase = (to) => (to.startsWith(BASE) ? to : BASE + (to === "/" ? "" : to));
+
+const getPath = () => stripBase(window.location.pathname);
 
 export function navigate(to, { replace = false } = {}) {
-  if (to === window.location.pathname) return;
-  if (replace) history.replaceState({}, "", to);
-  else history.pushState({}, "", to);
+  const target = withBase(to);
+  if (target === window.location.pathname) return;
+  if (replace) history.replaceState({}, "", target);
+  else history.pushState({}, "", target);
 }
 
 export function usePath() {
