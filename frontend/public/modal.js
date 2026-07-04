@@ -186,8 +186,25 @@
       btn.addEventListener('click', function () {
         var c = getSb();
         if (!c) return;
+        btn.disabled = true;
         c.auth.signInWithOAuth({ provider: 'google',
-          options: { redirectTo: window.location.origin + APP_URL } });
+          options: { redirectTo: window.location.origin + APP_URL } })
+          .then(function (r) {
+            // On success the browser redirects to Google; only surface errors.
+            if (r && r.error) {
+              var step = btn.closest('.modal-step') || btn.parentElement;
+              var box = step.querySelector('.auth-error');
+              if (!box) {
+                box = document.createElement('p');
+                box.className = 'auth-error';
+                box.style.cssText = 'color:#f87171;font-size:13px;margin:10px 0 0;text-align:center;line-height:1.4;';
+                step.appendChild(box);
+              }
+              box.textContent = (r.error.message || 'Google sign-in is not enabled yet.') +
+                ' Use email for now.';
+            }
+          })
+          .finally(function () { btn.disabled = false; });
       });
     });
 
