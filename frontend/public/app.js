@@ -235,7 +235,6 @@ if (revealEls.length) {
   if (!('IntersectionObserver' in window)) return;
 
   const groups = [
-    { sel: '.showcase',             delay: 0                           },
     { sel: '.bento .card',          stagger: 110                       },
     { sel: '.pricing__header',      delay: 0                           },
     { sel: '.pricing__toggle',      delay: 80                          },
