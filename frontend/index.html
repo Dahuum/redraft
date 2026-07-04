@@ -16,6 +16,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css" />
+<link rel="stylesheet" href="/tour.css" />
 <link rel="stylesheet" href="/theme.css" />
 <link rel="stylesheet" href="/modal.css" />
 <!-- Supabase (auth) -->
@@ -122,10 +123,63 @@
   </div>
 </section>
 
+<!-- ─────────── PRODUCT SHOWCASE ─────────── -->
+<section class="showcase" id="product" aria-label="Product preview">
+  <div class="showcase__intro">
+    <h2 class="showcase__title">Your PDF, fully editable.</h2>
+    <p class="showcase__lede">Click any field on the page and change it — text, numbers, layout — with the original fonts matched automatically.</p>
+  </div>
+  <figure class="showcase__frame">
+    <div class="showcase__window">
+      <div class="showcase__chrome">
+        <span class="showcase__dot"></span><span class="showcase__dot"></span><span class="showcase__dot"></span>
+        <span class="showcase__urlbar">redraft.app/editor</span>
+        <span class="showcase__chrome-spacer"></span>
+      </div>
+      <div class="showcase__screen">
+        <aside class="showcase__sidebar">
+          <p class="showcase__sb-label">Pages</p>
+          <ul class="showcase__pages">
+            <li><span>01</span> Invoice</li>
+            <li class="is-current"><span>02</span> Annex</li>
+            <li><span>03</span> Summary</li>
+          </ul>
+          <p class="showcase__sb-label showcase__sb-label--mt">Fonts</p>
+          <ul class="showcase__chips"><li>Arial</li><li>Inter</li><li>Calibri</li></ul>
+        </aside>
+        <div class="showcase__main">
+          <div class="showcase__toolbar">
+            <span class="showcase__tool">Text</span>
+            <span class="showcase__tool-sep"></span>
+            <span class="showcase__tool"><em>B</em></span>
+            <span class="showcase__tool"><em>i</em></span>
+            <span class="showcase__tool-sep"></span>
+            <span class="showcase__tool showcase__tool--accent">Edit field</span>
+          </div>
+          <div class="showcase__page">
+            <h3 class="showcase__doc-title">Annexe à la facture N° W/2026/06/073</h3>
+            <p class="showcase__doc-p">Client <span class="showcase__chip">Wana Money</span> &nbsp;·&nbsp; ICE <span class="showcase__chip">001957412000035</span></p>
+            <p class="showcase__doc-p">Enrôlement — quantité <span class="showcase__chip showcase__chip--active">6.281<span class="showcase__caret"></span></span> × 0,30 = <span class="showcase__chip">1.884,30</span></p>
+            <p class="showcase__doc-p showcase__doc-p--muted">The Total HT recomputes automatically as you edit each line — no formulas, no re-typing.</p>
+          </div>
+        </div>
+        <aside class="showcase__inspector">
+          <p class="showcase__sb-label">Field</p>
+          <div class="showcase__field"><span>Font</span><em>Arial</em></div>
+          <div class="showcase__field"><span>Size</span><em>9 pt</em></div>
+          <div class="showcase__field"><span>Align</span><em>Right</em></div>
+          <div class="showcase__field showcase__field--ok"><span>Font match</span><em>Matched ✓</em></div>
+        </aside>
+      </div>
+    </div>
+    <div class="showcase__fade"></div>
+  </figure>
+</section>
+
 <!-- ─────────── MISSION ─────────── -->
-<section class="mission" id="product">
+<section class="mission">
   <p class="eyebrow">OUR MISSION</p>
-  <p class="mission__copy sr">We think AI integration is the way of the future for document management. Our goal is to build strong tools and infrastructure that enable teams to fully utilize intelligent PDF technology.</p>
+  <p class="mission__copy reveal-text">We think AI integration is the way of the future for document management. Our goal is to build strong tools and infrastructure that enable teams to fully utilize intelligent PDF technology.</p>
 </section>
 
 <!-- ─────────── BENTO FEATURES ─────────── -->
