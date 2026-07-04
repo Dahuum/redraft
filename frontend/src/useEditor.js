@@ -17,9 +17,12 @@ export function useEditor() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [zoom, setZoom] = useState(1);
+  const [overlays, setOverlays] = useState([]); // added text + signature stamps
 
   const nEdits = Object.keys(edits).length;
   const editedIds = useMemo(() => new Set(Object.keys(edits).map(Number)), [edits]);
+  const fonts = useMemo(() => [...new Set(spans.map((s) => s.font))].filter(Boolean), [spans]);
+  const hasChanges = nEdits > 0 || overlays.length > 0;
 
   const resetPreview = useCallback(() => {
     setPreviewUrl((u) => {
@@ -44,6 +47,7 @@ export function useEditor() {
         setPages(res.pages);
         setPageIndex(0);
         setEdits({});
+        setOverlays([]);
         resetPreview();
         setSelectedId(res.spans[0] ? res.spans[0].id : null);
         return res;
@@ -76,6 +80,23 @@ export function useEditor() {
 
   const resetAll = useCallback(() => {
     setEdits({});
+    setOverlays([]);
+    resetPreview();
+  }, [resetPreview]);
+
+  // ---- Added-content overlays (free text + signatures) ----
+  const addOverlay = useCallback((o) => {
+    const id = `ov${Date.now()}${Math.round(Math.random() * 1e4)}`;
+    setOverlays((v) => [...v, { id, ...o }]);
+    resetPreview();
+    return id;
+  }, [resetPreview]);
+  const updateOverlay = useCallback((id, patch) => {
+    setOverlays((v) => v.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+    resetPreview();
+  }, [resetPreview]);
+  const removeOverlay = useCallback((id) => {
+    setOverlays((v) => v.filter((o) => o.id !== id));
     resetPreview();
   }, [resetPreview]);
 
@@ -106,22 +127,37 @@ export function useEditor() {
     }
   }, [file, edits]);
 
+  // Always bakes the current edits AND overlays fresh (overlays are live on the
+  // canvas, never in the text-only preview, so we can't reuse previewUrl here).
   const download = useCallback(async () => {
-    const url = previewUrl || (await preview());
-    if (!url) return;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `edited_${file?.name || "document.pdf"}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }, [previewUrl, preview, file]);
+    if (!file) return;
+    const arr = Object.entries(edits).map(([id, t]) => ({ index: Number(id), new_text: t }));
+    if (arr.length === 0 && overlays.length === 0) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const { blob } = await editPdf(file, arr, overlays);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `edited_${file?.name || "document.pdf"}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e.message || "Couldn't export the PDF.");
+    } finally {
+      setBusy(false);
+    }
+  }, [file, edits, overlays]);
 
   return {
     file, fileData, spans, pages, pageIndex, setPageIndex,
     selectedId, setSelectedId, edits, nEdits, editedIds,
     previewData, previewUrl, fontReport, busy, error,
     zoom, setZoom,
+    overlays, addOverlay, updateOverlay, removeOverlay, fonts, hasChanges,
     loadFile, setFieldValue, resetAll, preview, download,
   };
 }

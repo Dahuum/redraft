@@ -34,10 +34,12 @@ export async function extractSpans(file) {
 }
 
 // POST /edit → { blob, fontReport }
-export async function editPdf(file, edits) {
+// `stamps` (optional) = added text / signature overlays to bake into the PDF.
+export async function editPdf(file, edits, stamps = []) {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("edits", JSON.stringify(edits));
+  if (stamps && stamps.length) fd.append("stamps", JSON.stringify(stamps));
   const res = await fetch(`${API_BASE}/edit`, { method: "POST", body: fd });
   if (!res.ok) throw await asError(res);
   let fontReport = null;

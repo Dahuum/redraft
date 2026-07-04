@@ -1,17 +1,48 @@
 import { useEffect, useRef, useState } from "react";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
+import SignaturePanel from "./SignaturePanel.jsx";
 
 export default function EditorWorkspace({ ed, onDownload }) {
   const inputRef = useRef(null);
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
+  const [panel, setPanel] = useState("fields"); // "fields" | "sign"
   const {
     file, fileData, spans, pages, pageIndex, setPageIndex, selectedId, setSelectedId,
     edits, nEdits, editedIds, previewData, busy, error, zoom, setZoom,
+    overlays, addOverlay, updateOverlay, removeOverlay, fonts, hasChanges,
     loadFile, setFieldValue, resetAll, preview, download,
   } = ed;
   const doDownload = onDownload || download;
+
+  const [overlaySel, setOverlaySel] = useState(null);
+  const [placement, setPlacement] = useState(null); // null | {kind:'text'} | {kind:'sign', data, ratio}
+
+  // Drop a new text box or signature where the user clicks the page.
+  function handlePlace(x, y) {
+    if (!placement) return;
+    if (placement.kind === "text") {
+      setOverlaySel(
+        addOverlay({ kind: "text", page: pageIndex, x, y, text: "", size: 16, color: "#111827", font: fonts[0] || "" })
+      );
+    } else if (placement.kind === "sign") {
+      const w = 150;
+      setOverlaySel(
+        addOverlay({ kind: "sign", page: pageIndex, x, y, w, h: w / (placement.ratio || 3), data: placement.data })
+      );
+    }
+    setPlacement(null);
+  }
+
+  // Selecting away from an empty text box discards it (no stray "Text" ghosts).
+  function selectOverlay(id) {
+    if (overlaySel && overlaySel !== id) {
+      const prev = overlays.find((o) => o.id === overlaySel);
+      if (prev && prev.kind === "text" && !String(prev.text).trim()) removeOverlay(overlaySel);
+    }
+    setOverlaySel(id);
+  }
 
   const pageCount = (pages && pages.length) || 1;
   const pageSpans = spans.filter((s) => s.page === pageIndex);
@@ -112,6 +143,17 @@ export default function EditorWorkspace({ ed, onDownload }) {
                 editedIds={editedIds}
                 onSelect={(id) => id != null && setSelectedId(id)}
                 maxWidth={pdfWidth}
+                overlays={overlays}
+                overlaySelectedId={overlaySel}
+                onOverlaySelect={selectOverlay}
+                onOverlayChange={updateOverlay}
+                onOverlayDelete={(id) => {
+                  removeOverlay(id);
+                  setOverlaySel(null);
+                }}
+                fonts={fonts}
+                placement={placement}
+                onPlace={handlePlace}
               />
             </div>
           ) : (
@@ -139,17 +181,55 @@ export default function EditorWorkspace({ ed, onDownload }) {
 
       {/* Right Pane: Text Fields Sidebar (35%) */}
       <div className="flex-[0.35] bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden relative">
-        {/* Header */}
-        <div className="p-5 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md sticky top-0 z-10">
-          <h2 className="font-display-md text-xl font-bold mb-0.5 tracking-tight">Text Fields</h2>
-          <p className="text-caption text-on-surface-variant flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-secondary-container inline-block"></span>
-            {pageSpans.length} field(s) on page {pageIndex + 1}
-          </p>
+        {/* Header: Text / Sign toggle */}
+        <div className="p-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md sticky top-0 z-10">
+          <div className="bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
+            <button
+              onClick={() => setPanel("fields")}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+                panel === "fields"
+                  ? "bg-secondary-container text-white shadow-lg"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">text_fields</span>
+              Text
+            </button>
+            <button
+              onClick={() => setPanel("sign")}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+                panel === "sign"
+                  ? "bg-secondary-container text-white shadow-lg"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">draw</span>
+              Sign
+            </button>
+          </div>
         </div>
 
-        {/* Scrollable Fields List */}
+        {/* Body: text fields OR the signature workspace */}
+        {panel === "sign" ? (
+          <div className="flex-1 overflow-y-auto">
+            <SignaturePanel onPlace={(data, ratio) => setPlacement({ kind: "sign", data, ratio })} />
+          </div>
+        ) : (
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <button
+            onClick={() => setPlacement(placement?.kind === "text" ? null : { kind: "text" })}
+            disabled={!file}
+            className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg border text-label-md text-sm transition-colors disabled:opacity-40 ${
+              placement?.kind === "text"
+                ? "border-accent-cyan/40 bg-accent-cyan/10 text-accent-cyan"
+                : "border-outline-variant/50 text-on-surface hover:bg-surface-container-high"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[18px]">
+              {placement?.kind === "text" ? "ads_click" : "add"}
+            </span>
+            {placement?.kind === "text" ? "Click on the document…" : "Add text"}
+          </button>
           {file && <FontPanel file={file} onChanged={() => nEdits > 0 && preview()} />}
           {pageSpans.length === 0 && (
             <p className="text-caption text-on-surface-variant">
@@ -187,6 +267,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
             </span>
           </div>
         </div>
+        )}
 
         {/* Footer Controls */}
         <div className="p-5 border-t border-outline-variant/30 bg-surface/80 backdrop-blur-xl flex flex-col gap-3 sticky bottom-0">
@@ -209,7 +290,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
           </div>
           <button
             onClick={doDownload}
-            disabled={nEdits === 0 || busy}
+            disabled={!hasChanges || busy}
             className="w-full bg-transparent border border-outline-variant hover:bg-surface-container-high text-on-surface py-2.5 rounded-lg font-label-md text-sm transition-all flex justify-center items-center gap-2 disabled:opacity-40"
           >
             <span className="material-symbols-outlined text-[18px]">file_download</span>

@@ -91,6 +91,81 @@ def _merge_pdfs(pdfs: list) -> bytes:
         merged.close()
 
 
+def _hex_to_rgb(hex_str: str):
+    """'#RRGGBB' → (r,g,b) floats 0..1 for fitz; defaults to near-black."""
+    s = (hex_str or "").lstrip("#")
+    if len(s) != 6:
+        return (0.07, 0.09, 0.15)
+    try:
+        return tuple(int(s[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return (0.07, 0.09, 0.15)
+
+
+def _apply_stamps(pdf_bytes: bytes, stamps: list) -> bytes:
+    """Bake added text + signature-image overlays onto the PDF (PyMuPDF).
+
+    Each stamp is in top-left PDF points:
+      text: {kind:'text', page, x, y, text, size, color, font}
+      sign: {kind:'sign', page, x, y, w, h, data}   (data = PNG data-URL)
+    Failures on a single stamp are skipped, never fatal.
+    """
+    if not stamps:
+        return pdf_bytes
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for i, st in enumerate(stamps):
+            try:
+                page = doc[int(st.get("page", 0))]
+            except Exception:  # noqa: BLE001 — page out of range
+                continue
+            kind = st.get("kind")
+            if kind == "text":
+                text = str(st.get("text", "")).rstrip("\n")
+                if not text.strip():
+                    continue
+                size = float(st.get("size") or 14)
+                color = _hex_to_rgb(st.get("color"))
+                x = float(st.get("x") or 0)
+                y = float(st.get("y") or 0) + size * 0.82   # box-top → baseline
+                try:
+                    raw = resolve_full_font(str(st.get("font") or ""))
+                except Exception:  # noqa: BLE001
+                    raw = None
+                try:
+                    if raw:
+                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
+                                         color=color, fontname=f"inj{i}", fontbuffer=raw)
+                    else:
+                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
+                                         color=color, fontname="helv")
+                except Exception:  # noqa: BLE001 — safe builtin fallback
+                    try:
+                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
+                                         color=color, fontname="helv")
+                    except Exception:  # noqa: BLE001
+                        continue
+            elif kind == "sign":
+                blob = str(st.get("data") or "")
+                if "," in blob:
+                    blob = blob.split(",", 1)[1]
+                try:
+                    img = base64.b64decode(blob)
+                except Exception:  # noqa: BLE001
+                    continue
+                x = float(st.get("x") or 0); y = float(st.get("y") or 0)
+                w = float(st.get("w") or 0); h = float(st.get("h") or 0)
+                if w <= 0 or h <= 0:
+                    continue
+                try:
+                    page.insert_image(fitz.Rect(x, y, x + w, y + h), stream=img)
+                except Exception:  # noqa: BLE001
+                    continue
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Engine glue (ported verbatim from the proven Streamlit path; engine untouched)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -423,11 +498,14 @@ async def extract(file: UploadFile = File(...)):
 
 
 @app.post("/edit")
-async def edit(file: UploadFile = File(...), edits: str = Form(...)):
-    """Apply replacements and return the edited PDF bytes.
+async def edit(file: UploadFile = File(...), edits: str = Form(...),
+               stamps: str = Form("[]")):
+    """Apply replacements + baked overlays and return the edited PDF bytes.
 
     `edits` is a JSON array: [{"index": <span_id>, "new_text": "..."}].
-    Spans are re-extracted server-side; index references the /extract ordering.
+    `stamps` (optional) is a JSON array of added text / signature overlays in
+    top-left PDF points — see _apply_stamps. Spans are re-extracted server-side;
+    index references the /extract ordering.
     """
     data = await file.read()
     if not data:
@@ -439,6 +517,11 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...)):
     except Exception:  # noqa: BLE001
         raise HTTPException(400, "`edits` must be a JSON array of "
                                  "{index, new_text} objects.")
+    try:
+        stamp_list = json.loads(stamps)
+        assert isinstance(stamp_list, list)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "`stamps` must be a JSON array.")
     try:
         spans = extract_spans(data)
     except Exception as exc:  # noqa: BLE001
@@ -455,11 +538,15 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...)):
         if 0 <= i < len(spans):
             replacements.append((spans[i], nt))
 
-    if not replacements:
-        raise HTTPException(400, "No valid edits to apply.")
+    if not replacements and not stamp_list:
+        raise HTTPException(400, "Nothing to apply — no edits or added items.")
 
     try:
-        edited, report = apply_replacements(data, replacements)
+        if replacements:
+            edited, report = apply_replacements(data, replacements)
+        else:
+            edited, report = data, {"fonts": [], "warnings": []}
+        edited = _apply_stamps(edited, stamp_list)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"Failed to apply edits "
                                  f"({type(exc).__name__}: {exc}).")
