@@ -83,15 +83,15 @@ export default function SignaturePanel({ onPlace }) {
       backgroundColor: "rgba(0,0,0,0)", // transparent → clean PNG
     });
     pad.addEventListener("endStroke", () => {
-      // Auto-refine when the pen lifts: iron out tremor, keep the pen feel.
+      // Auto-refine ONLY the stroke that just finished. Re-smoothing the earlier
+      // ones every time would compound and turn the whole signature to mush — a
+      // dot or a t-cross should refine itself, not re-blur everything before it.
       const d = pad.toData();
-      let changed = false;
-      for (const g of d)
-        if (g.points && g.points.length > 3) {
-          g.points = smoothStroke(g.points);
-          changed = true;
-        }
-      if (changed) pad.fromData(d);
+      const last = d[d.length - 1];
+      if (last && last.points && last.points.length > 3) {
+        last.points = smoothStroke(last.points);
+        pad.fromData(d);
+      }
       setHasInk(!pad.isEmpty());
     });
     padRef.current = pad;
