@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useHistory, removeDoc, ago } from "../lib/history.js";
 import ThemeToggle from "./ThemeToggle.jsx";
 
@@ -13,11 +13,23 @@ const STATUS = {
  * Drop Zone + Browse Files perform the real upload (`onUpload`); Recent Activity
  * is the real, persistent history (`onOpen` reopens a doc).
  */
-export default function HomeScreen({ onUpload, onOpen, busy, error }) {
+export default function HomeScreen({ onUpload, onOpen, busy, error, onSignOut }) {
   const inputRef = useRef(null);
+  const menuRef = useRef(null);
   const [drag, setDrag] = useState(false);
   const [tab, setTab] = useState("editor"); // "editor" | "history"
+  const [menuOpen, setMenuOpen] = useState(false);
   const docs = useHistory();
+
+  // Close the account menu on any outside click.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuOpen]);
 
   const pick = (f) => f && onUpload(f);
 
@@ -72,18 +84,34 @@ export default function HomeScreen({ onUpload, onOpen, busy, error }) {
         {/* Trailing Actions */}
         <div className="flex items-center gap-sm">
           <ThemeToggle />
-          <button className="font-label-md text-[13px] px-md py-1.5 rounded-md border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors active:scale-95">
-            Share
-          </button>
-          <button className="font-label-md text-[13px] px-md py-1.5 rounded-md bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20 hover:bg-accent-cyan/20 transition-colors active:scale-95">
-            Export
-          </button>
-          <div className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 overflow-hidden cursor-pointer hover:border-accent-cyan/50 transition-colors ml-xs">
-            <img
-              alt="User avatar"
-              className="w-full h-full object-cover"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
-            />
+          <div className="relative ml-xs" ref={menuRef}>
+            <button
+              onClick={() => setMenuOpen((v) => !v)}
+              title="Account"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 overflow-hidden cursor-pointer hover:border-accent-cyan/50 transition-colors flex items-center justify-center"
+            >
+              <img
+                alt="User avatar"
+                className="w-full h-full object-cover"
+                src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
+              />
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 mt-2 w-40 rounded-lg bg-surface-container border border-outline-variant/40 shadow-panel py-1 z-50 animate-drop">
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onSignOut?.();
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left font-label-md text-[13px] text-on-surface hover:bg-surface-container-high transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[18px]">logout</span>
+                  Log out
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </nav>
