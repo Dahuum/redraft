@@ -667,15 +667,16 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
 
               {impHeaders.length > 0 && (
                 <div className="space-y-2">
+                  {/* Auto-detect is the primary path — big and obvious. */}
                   <button
                     onClick={autoDetect}
                     disabled={autoBusy}
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-gradient-to-r from-accent-cyan/15 to-secondary-container/15 border border-accent-cyan/40 text-accent-cyan font-label-md text-sm hover:from-accent-cyan/25 hover:to-secondary-container/25 transition-all disabled:opacity-50"
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-lg bg-secondary-container text-white font-label-md text-sm hover:bg-[#003ea8] transition-all shadow-[0_0_20px_rgba(0,83,219,0.3)] disabled:opacity-50"
                   >
                     <span className={`material-symbols-outlined text-[18px] ${autoBusy ? "animate-spin" : ""}`}>
                       {autoBusy ? "progress_activity" : "auto_awesome"}
                     </span>
-                    {autoBusy ? "Detecting fields…" : "Auto-detect fields from this data (AI)"}
+                    {autoBusy ? "Detecting fields…" : `Auto-detect fields from ${impRows.length} rows (AI)`}
                   </button>
                   {autoNote && (
                     <div
@@ -691,9 +692,16 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                       <span>{autoNote.text}</span>
                     </div>
                   )}
-                  <p className="text-caption text-on-surface-variant">
-                    Match each field to a column ({impRows.length} rows found):
-                  </p>
+                  {pickedSpans.length === 0 && !autoBusy && (
+                    <p className="text-caption text-on-surface-variant text-center pt-1">
+                      or click fields on the document, then match them here.
+                    </p>
+                  )}
+                  {pickedSpans.length > 0 && (
+                    <p className="text-caption text-on-surface-variant pt-1">
+                      Match each field to a column ({impRows.length} rows):
+                    </p>
+                  )}
                   {pickedSpans.map((s) => (
                     <div key={s.id} className="flex items-center gap-2">
                       <span className="flex-1 text-body-md text-on-surface truncate" title={s.text}>
@@ -723,13 +731,15 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                       </select>
                     </div>
                   ))}
-                  <button
-                    onClick={impApply}
-                    className="w-full mt-2 bg-secondary-container text-white py-2 rounded-lg font-label-md flex items-center justify-center gap-2"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">done</span>
-                    Create {impRows.length} document{impRows.length === 1 ? "" : "s"}
-                  </button>
+                  {pickedSpans.length > 0 && (
+                    <button
+                      onClick={impApply}
+                      className="w-full mt-2 border border-outline-variant/50 text-on-surface py-2 rounded-lg font-label-md flex items-center justify-center gap-2 hover:bg-surface-container-high transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">done</span>
+                      Fill {impRows.length} document{impRows.length === 1 ? "" : "s"} from these
+                    </button>
+                  )}
                 </div>
               )}
             </div>
