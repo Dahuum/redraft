@@ -245,7 +245,9 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setResult(null);
   }
 
-  // ---- AI auto-detect: match CSV columns → the PDF's fields, and pick them ----
+  // ---- AI auto-detect: match CSV columns → the PDF's fields, pick+split them,
+  // and build every row straight from the CSV (mapped fields get the column's
+  // value with the label kept; everything else keeps the template value). ----
   async function autoDetect() {
     if (!impHeaders.length) return;
     setAutoBusy(true);
@@ -268,22 +270,50 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
         setError("Couldn't auto-detect fields — map them manually below.");
         return;
       }
-      const newIds = [];
-      const nextMap = {};
-      const nextSplits = {};
+
+      // Build the detected setup from the FRESH mapping (not via state, so there's
+      // no timing gap): span → column, span → split index, and the picked list.
+      const map = { ...impMap }; // keep any manual mappings the user already set
+      const sp = { ...splits };
+      const detected = [];
       for (const [col, sid] of entries) {
-        if (spanById.has(sid)) {
-          newIds.push(sid);
-          nextMap[sid] = col;
-          // These template fields glue label+value ("Nom Client : ACME"); auto-
-          // split so only the value is replaced and the label is kept intact.
-          const sp = smartSplit(spanById.get(sid).text || "");
-          if (sp != null) nextSplits[sid] = sp;
-        }
+        if (!spanById.has(sid)) continue;
+        detected.push(sid);
+        map[sid] = col;
+        // Template fields glue label+value ("Nom Client : ACME"); split so only
+        // the value is replaced and the label stays.
+        const s = smartSplit(spanById.get(sid).text || "");
+        if (s != null) sp[sid] = s;
       }
-      setPicked((prev) => [...new Set([...prev, ...newIds])]);
-      setImpMap((prev) => ({ ...prev, ...nextMap }));
-      setSplits((prev) => ({ ...prev, ...nextSplits }));
+      const allIds = [...new Set([...picked, ...detected])];
+
+      // Fill one row per CSV line: mapped field → label(if split) + CSV value;
+      // unmapped picked field → keep its full original template text.
+      const colIndex = {};
+      impHeaders.forEach((h, i) => (colIndex[h] = i));
+      const newRows = impRows.map((r) => {
+        const o = {};
+        for (const sid of allIds) {
+          const col = map[sid];
+          const ci = col != null ? colIndex[col] : -1;
+          if (ci >= 0) {
+            const value = String(r[ci] ?? "");
+            const idx = sp[sid];
+            const label =
+              idx != null && idx >= 0 ? (spanById.get(sid).text || "").slice(0, idx) : "";
+            o[sid] = label + value;
+          } else {
+            o[sid] = spanById.get(sid)?.text ?? ""; // unmapped → full original
+          }
+        }
+        return o;
+      });
+
+      setPicked(allIds);
+      setImpMap(map);
+      setSplits(sp);
+      setRows(newRows);
+      setShowImport(false);
       setResult(null);
     } catch (e) {
       setError(e.message || "Auto-detect failed.");
