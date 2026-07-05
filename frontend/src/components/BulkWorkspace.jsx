@@ -3,6 +3,8 @@ import Papa from "papaparse";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
 import { bulkGenerate, editPdf } from "../api.js";
+import { effectiveSplit } from "../lib/split.js";
+import SplitPicker from "./SplitPicker.jsx";
 
 // Make a list of column names unique by suffixing duplicates: a, a (2), a (3).
 function uniquify(names) {
@@ -31,6 +33,8 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const [hoverId, setHoverId] = useState(null); // field highlighted on the doc
   const [filenameId, setFilenameId] = useState(null); // picked field that names the files
   const [outputMode, setOutputMode] = useState("zip"); // "zip" | "merged"
+  const [splits, setSplits] = useState({}); // { [spanId]: -1|index } — value-split overrides
+  const [splitEditId, setSplitEditId] = useState(null); // column currently in split mode
 
   // CSV/paste import (optional, scoped to the picked fields)
   const [showImport, setShowImport] = useState(false);
@@ -67,6 +71,22 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const original = (id) => spanById.get(id)?.text ?? "";
   const makeRow = (ids) => Object.fromEntries(ids.map((id) => [id, original(id)]));
 
+  // Split lens: the locked label is span.text[:split]; only the value is edited.
+  // Rows always store the FULL text, so generate/preview stay correct as-is.
+  const splitOf = (id) => effectiveSplit(splits[id], spanById.get(id)?.text || "");
+  const labelOf = (id) => {
+    const sp = splitOf(id);
+    return sp != null ? (spanById.get(id)?.text || "").slice(0, sp) : "";
+  };
+  const valueOf = (id, full) => {
+    const sp = splitOf(id);
+    return sp != null ? String(full ?? "").slice(sp) : String(full ?? "");
+  };
+  const withLabel = (id, value) => {
+    const sp = splitOf(id);
+    return sp != null ? labelOf(id) + value : value;
+  };
+
   // Measure the pane so the PDF fits its width (100% = fit-to-pane).
   useEffect(() => {
     const el = canvasBoxRef.current;
@@ -84,7 +104,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
 
   useEffect(() => {
     if (!storeKey) return;
-    let p = [], r = [], m = {}, f = null;
+    let p = [], r = [], m = {}, f = null, sp = {};
     try {
       const raw = localStorage.getItem(storeKey);
       if (raw) {
@@ -93,6 +113,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
         r = Array.isArray(s.rows) ? s.rows : [];
         m = s.impMap || {};
         f = p.includes(s.filenameId) ? s.filenameId : null;
+        sp = s.splits && typeof s.splits === "object" ? s.splits : {};
       }
     } catch {
       /* ignore corrupt cache */
@@ -102,6 +123,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setRows(r);
     setImpMap(m);
     setFilenameId(f);
+    setSplits(sp);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeKey]);
 
@@ -112,11 +134,11 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       return;
     }
     try {
-      localStorage.setItem(storeKey, JSON.stringify({ picked, rows, impMap, filenameId }));
+      localStorage.setItem(storeKey, JSON.stringify({ picked, rows, impMap, filenameId, splits }));
     } catch {
       /* storage full / unavailable — non-fatal */
     }
-  }, [storeKey, picked, rows, impMap, filenameId]);
+  }, [storeKey, picked, rows, impMap, filenameId, splits]);
 
   // Any change to the fields or their values invalidates a shown preview.
   useEffect(() => {
@@ -208,7 +230,9 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       for (const s of pickedSpans) {
         const h = impMap[s.id];
         const ci = h != null ? impHeaders.indexOf(h) : -1;
-        o[s.id] = ci >= 0 ? r[ci] ?? original(s.id) : original(s.id);
+        // A split column maps the CSV value into just the VALUE part, keeping
+        // the locked label (e.g. "Client: " + "INWI"). Unmapped → keep original.
+        o[s.id] = ci >= 0 ? withLabel(s.id, r[ci] ?? "") : original(s.id);
       }
       return o;
     });
@@ -298,6 +322,8 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setRows([]);
     setImpMap({});
     setFilenameId(null);
+    setSplits({});
+    setSplitEditId(null);
     setShowImport(false);
     setResult(null);
     setError(null);
@@ -594,9 +620,26 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
           ) : (
             /* ---- Copies table (only the picked fields) ---- */
             <div className="flex flex-col h-full">
-              <div className="px-3 py-2 text-caption text-on-surface-variant bg-surface-container-low border-b border-outline-variant/20 shrink-0">
-                Each row = one PDF. Edit only what changes.
-              </div>
+              {splitEditId != null && spanById.has(splitEditId) ? (
+                <SplitPicker
+                  text={spanById.get(splitEditId).text}
+                  split={splitOf(splitEditId)}
+                  title={label(spanById.get(splitEditId))}
+                  onSet={(i) => {
+                    setSplits((m) => ({ ...m, [splitEditId]: i }));
+                    setSplitEditId(null);
+                  }}
+                  onWhole={() => {
+                    setSplits((m) => ({ ...m, [splitEditId]: -1 }));
+                    setSplitEditId(null);
+                  }}
+                  onClose={() => setSplitEditId(null)}
+                />
+              ) : (
+                <div className="px-3 py-2 text-caption text-on-surface-variant bg-surface-container-low border-b border-outline-variant/20 shrink-0">
+                  Each row = one PDF. Edit only what changes. Hover a column, click ⋯ to edit only part of it.
+                </div>
+              )}
               <div className="overflow-auto flex-1">
               <table className="w-full border-collapse text-left">
                 <thead className="sticky top-0 z-10 bg-surface-container-high">
@@ -617,7 +660,23 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                             title={`${s.text || ""}  ·  page ${s.page + 1}`}
                           >
                             {label(s)}
+                            {splitOf(s.id) != null && labelOf(s.id).trim() && (
+                              <span className="ml-1 text-[10px] text-accent-cyan align-middle" title={`Editing only the value after "${labelOf(s.id)}"`}>
+                                ✂
+                              </span>
+                            )}
                           </span>
+                          <button
+                            onClick={() => setSplitEditId(splitEditId === s.id ? null : s.id)}
+                            title="Split — edit only part of this field"
+                            className={`transition-all ${
+                              splitEditId === s.id
+                                ? "text-secondary-container"
+                                : "opacity-0 group-hover:opacity-100 text-on-surface-variant hover:text-secondary-container"
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-[16px]">more_horiz</span>
+                          </button>
                           <button
                             onClick={() => togglePick(s.id)}
                             title="Remove this field"
@@ -640,17 +699,28 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                       {pickedSpans.map((s) => {
                         const val = row[s.id] ?? "";
                         const changed = val !== original(s.id);
+                        const lbl = labelOf(s.id);
                         return (
                           <td key={s.id} className="border-b border-outline-variant/10 p-0">
-                            <input
-                              value={val}
-                              onChange={(e) => setCell(r, s.id, e.target.value)}
-                              onFocus={() => setHoverId(s.id)}
-                              placeholder={original(s.id)}
-                              className={`w-full bg-transparent px-3 py-2 text-body-md text-on-surface focus:outline-none focus:bg-surface-container-lowest focus:ring-1 focus:ring-inset focus:ring-secondary-container ${
-                                changed ? "text-accent-cyan" : ""
-                              }`}
-                            />
+                            <div className="flex items-stretch">
+                              {lbl && (
+                                <span
+                                  title={lbl}
+                                  className="shrink-0 max-w-[42%] truncate px-2 py-2 text-body-md text-on-surface-variant/60 bg-surface-container-high/40 border-r border-outline-variant/20 select-none flex items-center"
+                                >
+                                  {lbl}
+                                </span>
+                              )}
+                              <input
+                                value={valueOf(s.id, val)}
+                                onChange={(e) => setCell(r, s.id, withLabel(s.id, e.target.value))}
+                                onFocus={() => setHoverId(s.id)}
+                                placeholder={valueOf(s.id, original(s.id))}
+                                className={`flex-1 min-w-0 bg-transparent px-3 py-2 text-body-md text-on-surface focus:outline-none focus:bg-surface-container-lowest focus:ring-1 focus:ring-inset focus:ring-secondary-container ${
+                                  changed ? "text-accent-cyan" : ""
+                                }`}
+                              />
+                            </div>
                           </td>
                         );
                       })}
