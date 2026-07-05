@@ -25,6 +25,7 @@ export default function FontPanel({ file, onChanged }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(null); // raw_font currently uploading
+  const [open, setOpen] = useState(false); // fonts list collapsed by default
   const inputs = useRef({});
 
   useEffect(() => {
@@ -68,20 +69,33 @@ export default function FontPanel({ file, onChanged }) {
 
   return (
     <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 animate-rise">
-      <div className="flex items-center justify-between gap-2">
+      <button
+        type="button"
+        onClick={() => attention.length && setOpen((v) => !v)}
+        className={`w-full flex items-center justify-between gap-2 text-left ${
+          attention.length ? "cursor-pointer" : "cursor-default"
+        }`}
+      >
         <span className="text-label-md text-on-surface flex items-center gap-1.5">
           <span className="material-symbols-outlined text-[16px]">font_download</span>
           Fonts
         </span>
-        {loading ? (
-          <span className="text-caption text-on-surface-variant">checking…</span>
-        ) : fonts ? (
-          <span className="text-caption text-on-surface-variant">
-            {okCount} matched
-            {attention.length ? ` · ${attention.length} need the real file` : ""}
-          </span>
-        ) : null}
-      </div>
+        <span className="flex items-center gap-1.5">
+          {loading ? (
+            <span className="text-caption text-on-surface-variant">checking…</span>
+          ) : fonts ? (
+            <span className="text-caption text-on-surface-variant">
+              {okCount} matched
+              {attention.length ? ` · ${attention.length} need the real file` : ""}
+            </span>
+          ) : null}
+          {attention.length > 0 && (
+            <span className="material-symbols-outlined text-[18px] text-on-surface-variant">
+              {open ? "expand_less" : "expand_more"}
+            </span>
+          )}
+        </span>
+      </button>
 
       {err && <p className="mt-2 text-caption text-error">{err}</p>}
 
@@ -92,9 +106,9 @@ export default function FontPanel({ file, onChanged }) {
         </p>
       )}
 
-      {attention.length > 0 && (
-        <div className="mt-2">
-          {/* Fixed height + scroll so a font-heavy PDF (e.g. LaTeX) never
+      {open && attention.length > 0 && (
+        <div className="mt-2 animate-drop">
+          {/* Collapsible + capped height so a font-heavy PDF (e.g. LaTeX) never
               pushes the rest of the panel off-screen. */}
           <div className="space-y-2 max-h-48 overflow-y-auto pr-1 -mr-1">
             {attention.map((f) => (
