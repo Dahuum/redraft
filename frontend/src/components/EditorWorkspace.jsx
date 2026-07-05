@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
 import SignaturePanel from "./SignaturePanel.jsx";
+import SplitField from "./SplitField.jsx";
 
 export default function EditorWorkspace({ ed, onDownload }) {
   const inputRef = useRef(null);
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
   const [panel, setPanel] = useState("fields"); // "fields" | "sign"
+  const [splits, setSplits] = useState({}); // { [spanId]: -1|index } — value-split overrides
+  const [splitEditingId, setSplitEditingId] = useState(null);
   const {
     file, fileData, spans, pages, pageIndex, setPageIndex, selectedId, setSelectedId,
     edits, nEdits, editedIds, previewData, busy, error, zoom, setZoom,
@@ -237,26 +240,27 @@ export default function EditorWorkspace({ ed, onDownload }) {
             </p>
           )}
           {pageSpans.map((s) => (
-            <div className="space-y-1.5 group" key={s.id}>
-              <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant group-focus-within:text-secondary-container transition-colors">
-                <label htmlFor={`field-${s.id}`} className="truncate">{fieldLabel(s)}</label>
-                <span className="material-symbols-outlined text-[16px] opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
-                  help
-                </span>
-              </div>
-              <input
-                className={`w-full bg-surface-container-lowest border rounded-lg py-2 px-3 text-sm text-on-surface focus:outline-none focus:border-secondary-container focus:ring-1 focus:ring-secondary-container transition-all hover:bg-surface-container-high shadow-sm ${
-                  selectedId === s.id
-                    ? "border-secondary-container ring-1 ring-secondary-container"
-                    : "border-outline-variant/50"
-                }`}
-                id={`field-${s.id}`}
-                type="text"
-                value={edits[s.id] ?? s.text}
-                onFocus={() => setSelectedId(s.id)}
-                onChange={(e) => setFieldValue(s.id, e.target.value)}
-              />
-            </div>
+            <SplitField
+              key={s.id}
+              span={s}
+              label={fieldLabel(s)}
+              fullValue={edits[s.id] ?? s.text}
+              selected={selectedId === s.id}
+              onFocus={() => setSelectedId(s.id)}
+              onChange={(val) => setFieldValue(s.id, val)}
+              override={splits[s.id]}
+              editing={splitEditingId === s.id}
+              onEnterSplit={() => setSplitEditingId(s.id)}
+              onSetSplit={(i) => {
+                setSplits((m) => ({ ...m, [s.id]: i }));
+                setSplitEditingId(null);
+              }}
+              onWholeField={() => {
+                setSplits((m) => ({ ...m, [s.id]: -1 }));
+                setSplitEditingId(null);
+              }}
+              onCloseSplit={() => setSplitEditingId(null)}
+            />
           ))}
 
           {/* Status Chip */}
