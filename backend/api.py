@@ -181,93 +181,6 @@ def _meter_add(uid: str, n: int):
                    "updated_at": _now_iso()})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AI field auto-mapping. Matches spreadsheet columns → the PDF's text fields.
-# Uses DeepSeek (OpenAI-compatible) when DEEPSEEK_API_KEY is set; otherwise falls
-# back to free value/name matching so the feature still works without a key.
-# The key is read from the environment ONLY — never committed or sent to clients.
-# ─────────────────────────────────────────────────────────────────────────────
-DEEPSEEK_KEY   = os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-DEEPSEEK_URL   = "https://api.deepseek.com/chat/completions"
-
-
-def _norm(s: str) -> str:
-    return "".join(ch for ch in (s or "").lower() if ch.isalnum())
-
-
-def _value_map(fields, columns, samples):
-    """Free fallback: match a column to a field by example value, then by
-    column-name / field-text similarity. One field per column."""
-    out, used = {}, set()
-    for c in columns:
-        v = _norm(str(samples.get(c, "")))
-        cn = _norm(c)
-        best = None
-        if v:  # 1) value match
-            for f in fields:
-                if f["id"] in used:
-                    continue
-                ft = _norm(f["text"])
-                if ft and (ft == v or v in ft or ft in v):
-                    best = f["id"]; break
-        if best is None and cn:  # 2) name/text similarity
-            for f in fields:
-                if f["id"] in used:
-                    continue
-                ft = _norm(f["text"])
-                if ft and (cn in ft or ft in cn):
-                    best = f["id"]; break
-        if best is not None:
-            out[c] = best; used.add(best)
-    return out
-
-
-def _deepseek_map(fields, columns, samples):
-    """Ask DeepSeek to match each column to the field id whose VALUE fits."""
-    field_lines = "\n".join(f'{f["id"]}: "{f["text"]}"' for f in fields)
-    col_lines = "\n".join(f'- {c} — {samples.get(c, "") or "(no example)"}'
-                          for c in columns)
-    prompt = (
-        "You are mapping spreadsheet COLUMNS onto the fill-in TEXT FIELDS of a "
-        "document template (e.g. an invoice). The template is ONE already-filled "
-        "example: every field below currently shows that example's value and "
-        "will be OVERWRITTEN by a column's values when documents are generated.\n\n"
-        "For each column, choose the single field whose CURRENT VALUE is the "
-        "SAME KIND of information as the column's example values.\n\n"
-        "Rules:\n"
-        "- Match by the KIND of data, not exact text: a name column → the field "
-        "showing a company/person name; an amount/total column → a money value "
-        "like \"3.560,00\"; a date column → a date like \"14/04/2026\"; an "
-        "ICE/RC/registration column → the long digit-only id; an invoice-number "
-        "column → the invoice reference.\n"
-        "- Fields often glue a LABEL and its value together, e.g. "
-        "\"Nom Client : Attijariwafa Bank\", \"ICE N° : 001648789000071\", "
-        "\"Banque : ATTIJARIWAFABANK\". These ARE the fields to map — match the "
-        "column to the field whose VALUE part (after the label) fits.\n"
-        "- Use the EXAMPLE VALUES to disambiguate fields that look alike (a date "
-        "vs an amount vs an ICE are all digits — match the format). Prefer the "
-        "field in the client/header section over the same kind of value in the "
-        "page footer (the footer holds the ISSUER's own details, not the client's).\n"
-        "- Skip pure headings/titles with no value (a table header \"Description\", "
-        "the title \"FACTURE\", a bare \"Total HT\" with no number).\n"
-        "- Use each field id for AT MOST ONE column.\n"
-        "- If no field genuinely fits a column, use null. Do not force a match.\n\n"
-        f"TEXT FIELDS (id: current value):\n{field_lines}\n\n"
-        f"COLUMNS (name — example values):\n{col_lines}\n\n"
-        'Respond ONLY with a JSON object mapping every column name to a field id '
-        'or null, e.g. {"client_name": 12, "montant_ht": 15, "note": null}.'
-    )
-    body = {"model": DEEPSEEK_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0, "response_format": {"type": "json_object"}}
-    req = urllib.request.Request(
-        DEEPSEEK_URL, data=json.dumps(body).encode(), method="POST",
-        headers={"Authorization": f"Bearer {DEEPSEEK_KEY}",
-                 "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        resp = json.loads(r.read().decode())
-    return json.loads(resp["choices"][0]["message"]["content"])
 
 
 # ── Upload limits — protect the free-tier server from OOM / abuse ──
@@ -687,11 +600,8 @@ def parse_table(filename: str, data: bytes) -> tuple:
 
 @app.get("/")
 def root():
-    # `ai` / `auth` are booleans only (never the keys) — lets us confirm the
-    # DeepSeek key + Supabase secrets actually reached the running container.
     return {"app": "Redraft API", "version": "1.0",
-            "endpoints": ["/extract", "/edit", "/bulk"],
-            "ai": bool(DEEPSEEK_KEY), "auth": AUTH_ON}
+            "endpoints": ["/extract", "/edit", "/bulk"], "auth": AUTH_ON}
 
 
 @app.get("/me")
@@ -797,56 +707,6 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
             "X-Redraft-Font-Report": hdr,
         },
     )
-
-
-@app.post("/automap")
-async def automap(spans: str = Form(...), columns: str = Form(...),
-                  samples: str = Form("{}"), user: str = Depends(require_user)):
-    """Match spreadsheet columns → the PDF's text fields. DeepSeek when a key is
-    configured, else free value/name matching. Returns {column: span_id}."""
-    try:
-        raw_fields = json.loads(spans)
-        cols = [str(c) for c in json.loads(columns)]
-        samp = {str(k): str(v) for k, v in json.loads(samples).items()}
-    except Exception:  # noqa: BLE001
-        raise HTTPException(400, "spans/columns/samples must be valid JSON.")
-    fields = [{"id": int(f["id"]), "text": str(f.get("text", "")).strip()}
-              for f in raw_fields
-              if isinstance(f, dict) and f.get("id") is not None
-              and str(f.get("text", "")).strip()][:400]
-    if not fields or not cols:
-        return {"mapping": {}, "source": "none"}
-
-    mapping, source = {}, "values"
-    if DEEPSEEK_KEY:
-        try:
-            mapping = await run_in_threadpool(_deepseek_map, fields, cols, samp)
-            source = "ai"
-        except Exception:  # noqa: BLE001 — any AI failure → free fallback
-            mapping, source = {}, "values"
-    if not mapping:
-        mapping = await run_in_threadpool(_value_map, fields, cols, samp)
-        source = "values"
-
-    # Reconcile the model's answer with what we asked for:
-    #  • map returned keys back to the EXACT column names (lenient: the model may
-    #    return "montant ht" for "montant_ht") so near-matches aren't dropped;
-    #  • one field per column (drop a span already claimed by an earlier column).
-    valid = {f["id"] for f in fields}
-    by_norm = {_norm(c): c for c in cols}
-    clean, used = {}, set()
-    for raw_c, i in (mapping or {}).items():
-        c = raw_c if raw_c in cols else by_norm.get(_norm(str(raw_c)))
-        if not c or c in clean:
-            continue
-        try:
-            iv = int(i)
-        except (TypeError, ValueError):
-            continue
-        if iv in valid and iv not in used:
-            clean[c] = iv
-            used.add(iv)
-    return {"mapping": clean, "source": source}
 
 
 @app.post("/bulk")

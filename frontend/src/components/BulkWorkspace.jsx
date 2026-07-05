@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
-import { bulkGenerate, editPdf, autoMapFields } from "../api.js";
-import { effectiveSplit, smartSplit } from "../lib/split.js";
+import { bulkGenerate, editPdf } from "../api.js";
+import { effectiveSplit } from "../lib/split.js";
 import SplitPicker from "./SplitPicker.jsx";
 
 // Make a list of column names unique by suffixing duplicates: a, a (2), a (3).
@@ -49,8 +49,6 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const [autoBusy, setAutoBusy] = useState(false); // AI auto-detect in progress
-  const [autoNote, setAutoNote] = useState(null); // { ok, text } shown under the button
 
   // Verify-before-download: render one generated document (reuses /edit).
   const [previewIdx, setPreviewIdx] = useState(null); // row being previewed, or null
@@ -246,89 +244,6 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setResult(null);
   }
 
-  // ---- AI auto-detect: match CSV columns → the PDF's fields, pick+split them,
-  // and build every row straight from the CSV (mapped fields get the column's
-  // value with the label kept; everything else keeps the template value). ----
-  async function autoDetect() {
-    if (!impHeaders.length) return;
-    setAutoBusy(true);
-    setError(null);
-    setAutoNote(null);
-    try {
-      // Send up to 3 example values per column so the AI can tell a date from
-      // an amount from an ICE number (all just digits with one example).
-      const samples = {};
-      impHeaders.forEach((h, i) => {
-        const vals = [];
-        for (let r = 0; r < impRows.length && vals.length < 3; r++) {
-          const v = String(impRows[r]?.[i] ?? "").trim();
-          if (v) vals.push(v);
-        }
-        samples[h] = vals.join(" | ");
-      });
-      if (!spans || !spans.length) {
-        setAutoNote({ ok: false, text: `No PDF fields found (spans=${spans ? spans.length : "none"}). Reload the bill in the PDF Editor tab, then come back.` });
-        return;
-      }
-      const { mapping, source } = await autoMapFields(spans, impHeaders, samples);
-      const entries = Object.entries(mapping); // [ [column, spanId], … ]
-      if (!entries.length) {
-        setAutoNote({ ok: false, text: `AI returned 0 matches (source: ${source}). ${spans.length} fields, ${impHeaders.length} columns sent. Map by hand below, or tell me this message.` });
-        return;
-      }
-
-      // Build the detected setup from the FRESH mapping (not via state, so there's
-      // no timing gap): span → column, span → split index, and the picked list.
-      const map = { ...impMap }; // keep any manual mappings the user already set
-      const sp = { ...splits };
-      const detected = [];
-      for (const [col, sid] of entries) {
-        if (!spanById.has(sid)) continue;
-        detected.push(sid);
-        map[sid] = col;
-        // Template fields glue label+value ("Nom Client : ACME"); split so only
-        // the value is replaced and the label stays.
-        const s = smartSplit(spanById.get(sid).text || "");
-        if (s != null) sp[sid] = s;
-      }
-      const allIds = [...new Set([...picked, ...detected])];
-
-      // Fill one row per CSV line: mapped field → label(if split) + CSV value;
-      // unmapped picked field → keep its full original template text.
-      const colIndex = {};
-      impHeaders.forEach((h, i) => (colIndex[h] = i));
-      const newRows = impRows.map((r) => {
-        const o = {};
-        for (const sid of allIds) {
-          const col = map[sid];
-          const ci = col != null ? colIndex[col] : -1;
-          if (ci >= 0) {
-            const value = String(r[ci] ?? "");
-            const idx = sp[sid];
-            const label =
-              idx != null && idx >= 0 ? (spanById.get(sid).text || "").slice(0, idx) : "";
-            o[sid] = label + value;
-          } else {
-            o[sid] = spanById.get(sid)?.text ?? ""; // unmapped → full original
-          }
-        }
-        return o;
-      });
-
-      setPicked(allIds);
-      setImpMap(map);
-      setSplits(sp);
-      setRows(newRows);
-      setAutoNote({ ok: true, text: `Detected ${detected.length} field(s) — showing the table.` });
-      setShowImport(false);
-      setResult({ detected: detected.length, rows: newRows.length, source });
-    } catch (e) {
-      setAutoNote({ ok: false, text: `Error: ${e.status ? `HTTP ${e.status} — ` : ""}${e.message || "auto-detect failed"}` });
-    } finally {
-      setAutoBusy(false);
-    }
-  }
-
   // ---- Generate ----
   function process() {
     setError(null);
@@ -425,7 +340,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const currentStep = picked.length === 0 ? 1 : 2;
   const stepHint =
     picked.length === 0
-      ? "Upload your data and auto-detect the fields — or click text on the document"
+      ? "Click the text on the document you want to change"
       : "Type the new values — each row makes one PDF, then press Generate";
 
   return (
@@ -533,7 +448,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
             <div className="min-w-0">
               <h2 className="font-display-md text-xl font-bold tracking-tight">Bulk generator</h2>
             </div>
-            {file && (
+            {picked.length > 0 && (
               <button
                 onClick={() => {
                   setShowImport((v) => !v);
@@ -546,7 +461,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                 }`}
               >
                 <span className="material-symbols-outlined text-[16px]">upload</span>
-                {showImport ? "Close" : "Import list"}
+                Import list
               </button>
             )}
           </div>
@@ -562,34 +477,27 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
 
         {/* Body */}
         <div className="flex-1 overflow-auto">
-          {!showImport && picked.length === 0 ? (
+          {picked.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 text-on-surface-variant animate-fade">
-              <span className="material-symbols-outlined text-[44px] text-accent-cyan/70">table_view</span>
+              <span className="material-symbols-outlined text-[44px] text-accent-cyan/70">ads_click</span>
               <p className="mt-3 text-body-lg text-on-surface font-semibold">
-                Start from your spreadsheet
+                Click on the document to start
               </p>
-              <p className="mt-1 text-body-md max-w-[290px]">
-                Upload your CSV/Excel and let AI auto-detect which spots on the document to fill —
-                or click any text on the PDF to pick fields yourself.
+              <p className="mt-1 text-body-md max-w-[270px]">
+                Tap any text or number on the PDF — a client name, a date, a price. It appears here
+                so you can type a new value. Everything you don't touch stays the same.
               </p>
-              <button
-                onClick={() => {
-                  setShowImport(true);
-                  setError(null);
-                }}
-                disabled={!file}
-                className="mt-5 px-5 py-2.5 rounded-lg bg-secondary-container text-white hover:bg-[#003ea8] transition-colors text-label-md flex items-center gap-2 shadow-[0_0_20px_rgba(0,83,219,0.3)] disabled:opacity-40"
-              >
-                <span className="material-symbols-outlined text-[18px]">upload</span>
-                Upload your data
-              </button>
+              <div className="mt-3 flex items-center gap-1.5 text-accent-cyan text-label-md">
+                <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+                the document is right here
+              </div>
               {spans.length > 0 && (
                 <button
                   onClick={runExample}
-                  className="mt-3 text-caption text-on-surface-variant hover:text-accent-cyan transition-colors flex items-center gap-1.5"
+                  className="mt-5 px-4 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors text-label-md flex items-center gap-2"
                 >
-                  <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
-                  or show me an example
+                  <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+                  Show me an example
                 </button>
               )}
             </div>
@@ -667,41 +575,9 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
 
               {impHeaders.length > 0 && (
                 <div className="space-y-2">
-                  {/* Auto-detect is the primary path — big and obvious. */}
-                  <button
-                    onClick={autoDetect}
-                    disabled={autoBusy}
-                    className="w-full flex items-center justify-center gap-2 py-3 rounded-lg bg-secondary-container text-white font-label-md text-sm hover:bg-[#003ea8] transition-all shadow-[0_0_20px_rgba(0,83,219,0.3)] disabled:opacity-50"
-                  >
-                    <span className={`material-symbols-outlined text-[18px] ${autoBusy ? "animate-spin" : ""}`}>
-                      {autoBusy ? "progress_activity" : "auto_awesome"}
-                    </span>
-                    {autoBusy ? "Detecting fields…" : `Auto-detect fields from ${impRows.length} rows (AI)`}
-                  </button>
-                  {autoNote && (
-                    <div
-                      className={`rounded-lg px-3 py-2 text-caption flex items-start gap-2 border ${
-                        autoNote.ok
-                          ? "border-secondary-container/30 bg-secondary-container/10 text-secondary"
-                          : "border-error/40 bg-error/10 text-error"
-                      }`}
-                    >
-                      <span className="material-symbols-outlined text-[16px] shrink-0">
-                        {autoNote.ok ? "check_circle" : "warning"}
-                      </span>
-                      <span>{autoNote.text}</span>
-                    </div>
-                  )}
-                  {pickedSpans.length === 0 && !autoBusy && (
-                    <p className="text-caption text-on-surface-variant text-center pt-1">
-                      or click fields on the document, then match them here.
-                    </p>
-                  )}
-                  {pickedSpans.length > 0 && (
-                    <p className="text-caption text-on-surface-variant pt-1">
-                      Match each field to a column ({impRows.length} rows):
-                    </p>
-                  )}
+                  <p className="text-caption text-on-surface-variant">
+                    Match each field to a column ({impRows.length} rows found):
+                  </p>
                   {pickedSpans.map((s) => (
                     <div key={s.id} className="flex items-center gap-2">
                       <span className="flex-1 text-body-md text-on-surface truncate" title={s.text}>
@@ -731,15 +607,13 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                       </select>
                     </div>
                   ))}
-                  {pickedSpans.length > 0 && (
-                    <button
-                      onClick={impApply}
-                      className="w-full mt-2 border border-outline-variant/50 text-on-surface py-2 rounded-lg font-label-md flex items-center justify-center gap-2 hover:bg-surface-container-high transition-colors"
-                    >
-                      <span className="material-symbols-outlined text-[18px]">done</span>
-                      Fill {impRows.length} document{impRows.length === 1 ? "" : "s"} from these
-                    </button>
-                  )}
+                  <button
+                    onClick={impApply}
+                    className="w-full mt-2 bg-secondary-container text-white py-2 rounded-lg font-label-md flex items-center justify-center gap-2"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">done</span>
+                    Create {impRows.length} document{impRows.length === 1 ? "" : "s"}
+                  </button>
                 </div>
               )}
             </div>
@@ -906,9 +780,6 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
               </span>
               {error
                 ? error
-                : result.detected != null
-                ? `Detected ${result.detected} field(s) and filled ${result.rows} row(s)` +
-                  `${result.source === "ai" ? " (AI)" : ""} — review below, then Generate.`
                 : `Generated ${result.generated} PDF(s)${
                     result.failed ? ` · ${result.failed} skipped` : ""
                   } — ${result.merged ? "merged PDF" : "ZIP"} downloaded.`}
