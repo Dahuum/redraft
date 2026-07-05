@@ -93,37 +93,41 @@ export default function FontPanel({ file, onChanged }) {
       )}
 
       {attention.length > 0 && (
-        <div className="mt-2 space-y-2">
-          {attention.map((f) => (
-            <div key={f.raw_font} className="flex items-center gap-2">
-              <span
-                className="flex-1 min-w-0 text-body-md text-on-surface truncate"
-                title={f.source}
-              >
-                {f.font}
-              </span>
-              <span
-                className={`shrink-0 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wide ${CHIP[f.status]}`}
-              >
-                {LABEL[f.status]}
-              </span>
-              <button
-                onClick={() => inputs.current[f.raw_font]?.click()}
-                disabled={busy === f.raw_font}
-                className="shrink-0 text-caption px-2 py-1 rounded border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors disabled:opacity-50"
-              >
-                {busy === f.raw_font ? "uploading…" : "Upload .ttf"}
-              </button>
-              <input
-                ref={(el) => (inputs.current[f.raw_font] = el)}
-                type="file"
-                accept=".ttf,.otf"
-                className="hidden"
-                onChange={(e) => onPick(f.raw_font, e.target.files?.[0])}
-              />
-            </div>
-          ))}
-          <p className="text-caption text-on-surface-variant">
+        <div className="mt-2">
+          {/* Fixed height + scroll so a font-heavy PDF (e.g. LaTeX) never
+              pushes the rest of the panel off-screen. */}
+          <div className="space-y-2 max-h-48 overflow-y-auto pr-1 -mr-1">
+            {attention.map((f) => (
+              <div key={f.raw_font} className="flex items-center gap-2">
+                <span
+                  className="flex-1 min-w-0 text-body-md text-on-surface truncate"
+                  title={f.source}
+                >
+                  {f.font}
+                </span>
+                <span
+                  className={`shrink-0 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wide ${CHIP[f.status]}`}
+                >
+                  {LABEL[f.status]}
+                </span>
+                <button
+                  onClick={() => inputs.current[f.raw_font]?.click()}
+                  disabled={busy === f.raw_font}
+                  className="shrink-0 text-caption px-2 py-1 rounded border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors disabled:opacity-50"
+                >
+                  {busy === f.raw_font ? "uploading…" : "Upload .ttf"}
+                </button>
+                <input
+                  ref={(el) => (inputs.current[f.raw_font] = el)}
+                  type="file"
+                  accept=".ttf,.otf"
+                  className="hidden"
+                  onChange={(e) => onPick(f.raw_font, e.target.files?.[0])}
+                />
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-caption text-on-surface-variant">
             Upload the real font for a pixel-perfect match — <b>missing</b> = some characters
             won't render, <b>lookalike</b> = a close substitute. It applies to bulk too.
           </p>
