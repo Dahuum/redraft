@@ -224,20 +224,33 @@ def _value_map(fields, columns, samples):
 
 
 def _deepseek_map(fields, columns, samples):
-    """Ask DeepSeek to match each column to the field id whose ROLE fits."""
+    """Ask DeepSeek to match each column to the field id whose VALUE fits."""
     field_lines = "\n".join(f'{f["id"]}: "{f["text"]}"' for f in fields)
-    col_lines = "\n".join(f'- {c}: "{samples.get(c, "")}"' for c in columns)
+    col_lines = "\n".join(f'- {c} — {samples.get(c, "") or "(no example)"}'
+                          for c in columns)
     prompt = (
-        "You match spreadsheet COLUMNS to editable TEXT FIELDS in a document "
-        "template. The document is one example filled-in copy; each field holds "
-        "an example value. For each column, pick the ONE field id whose ROLE "
-        "matches (a client-name field for a client_name column, an amount field "
-        "for an amount column, a date field for a date, etc.) — even if the "
-        "example values differ. If no field fits, use null.\n\n"
-        f"TEXT FIELDS (id: current text):\n{field_lines}\n\n"
-        f"COLUMNS (name: example value):\n{col_lines}\n\n"
-        'Respond ONLY with a JSON object mapping column name to field id or '
-        'null, e.g. {"client_name": 12, "montant_ht": 15, "note": null}.'
+        "You are mapping spreadsheet COLUMNS onto the fill-in TEXT FIELDS of a "
+        "document template (e.g. an invoice). The template is ONE already-filled "
+        "example: every field below currently shows that example's value and "
+        "will be OVERWRITTEN by a column's values when documents are generated.\n\n"
+        "For each column, choose the single field whose CURRENT VALUE is the "
+        "SAME KIND of information as the column's example values.\n\n"
+        "Rules:\n"
+        "- Match by the KIND of data, not exact text: a name column → the field "
+        "showing a company/person name; an amount/total column → a money value "
+        "like \"3.560,00\"; a date column → a date like \"14/04/2026\"; an "
+        "ICE/RC/registration column → the long digit-only id; an invoice-number "
+        "column → the invoice reference.\n"
+        "- Use the EXAMPLE VALUES to disambiguate fields that look alike (a date "
+        "vs an amount vs an ICE are all digits — match the format).\n"
+        "- Always pick the field holding the actual VALUE, NEVER a static "
+        "label, caption, heading or currency word.\n"
+        "- Use each field id for AT MOST ONE column.\n"
+        "- If no field genuinely fits a column, use null. Do not force a match.\n\n"
+        f"TEXT FIELDS (id: current value):\n{field_lines}\n\n"
+        f"COLUMNS (name — example values):\n{col_lines}\n\n"
+        'Respond ONLY with a JSON object mapping every column name to a field id '
+        'or null, e.g. {"client_name": 12, "montant_ht": 15, "note": null}.'
     )
     body = {"model": DEEPSEEK_MODEL,
             "messages": [{"role": "user", "content": prompt}],

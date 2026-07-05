@@ -251,8 +251,17 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setAutoBusy(true);
     setError(null);
     try {
+      // Send up to 3 example values per column so the AI can tell a date from
+      // an amount from an ICE number (all just digits with one example).
       const samples = {};
-      impHeaders.forEach((h, i) => (samples[h] = String(impRows[0]?.[i] ?? "")));
+      impHeaders.forEach((h, i) => {
+        const vals = [];
+        for (let r = 0; r < impRows.length && vals.length < 3; r++) {
+          const v = String(impRows[r]?.[i] ?? "").trim();
+          if (v) vals.push(v);
+        }
+        samples[h] = vals.join(" | ");
+      });
       const { mapping } = await autoMapFields(spans, impHeaders, samples);
       const entries = Object.entries(mapping); // [ [column, spanId], … ]
       if (!entries.length) {
