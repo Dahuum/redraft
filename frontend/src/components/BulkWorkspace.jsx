@@ -264,10 +264,17 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
         }
         samples[h] = vals.join(" | ");
       });
-      const { mapping } = await autoMapFields(spans, impHeaders, samples);
+      if (!spans.length) {
+        setError("No PDF fields to detect — load the template in the PDF Editor tab first.");
+        return;
+      }
+      const { mapping, source } = await autoMapFields(spans, impHeaders, samples);
       const entries = Object.entries(mapping); // [ [column, spanId], … ]
       if (!entries.length) {
-        setError("Couldn't auto-detect fields — map them manually below.");
+        setError(
+          "The AI didn't match any fields to your columns. Map them by hand below, " +
+            "or check the field names in your CSV."
+        );
         return;
       }
 
@@ -314,7 +321,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       setSplits(sp);
       setRows(newRows);
       setShowImport(false);
-      setResult(null);
+      setResult({ detected: detected.length, rows: newRows.length, source });
     } catch (e) {
       setError(e.message || "Auto-detect failed.");
     } finally {
@@ -868,6 +875,9 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
               </span>
               {error
                 ? error
+                : result.detected != null
+                ? `Detected ${result.detected} field(s) and filled ${result.rows} row(s)` +
+                  `${result.source === "ai" ? " (AI)" : ""} — review below, then Generate.`
                 : `Generated ${result.generated} PDF(s)${
                     result.failed ? ` · ${result.failed} skipped` : ""
                   } — ${result.merged ? "merged PDF" : "ZIP"} downloaded.`}
