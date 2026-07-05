@@ -3,7 +3,7 @@ import Papa from "papaparse";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
 import { bulkGenerate, editPdf, autoMapFields } from "../api.js";
-import { effectiveSplit } from "../lib/split.js";
+import { effectiveSplit, smartSplit } from "../lib/split.js";
 import SplitPicker from "./SplitPicker.jsx";
 
 // Make a list of column names unique by suffixing duplicates: a, a (2), a (3).
@@ -270,14 +270,20 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       }
       const newIds = [];
       const nextMap = {};
+      const nextSplits = {};
       for (const [col, sid] of entries) {
         if (spanById.has(sid)) {
           newIds.push(sid);
           nextMap[sid] = col;
+          // These template fields glue label+value ("Nom Client : ACME"); auto-
+          // split so only the value is replaced and the label is kept intact.
+          const sp = smartSplit(spanById.get(sid).text || "");
+          if (sp != null) nextSplits[sid] = sp;
         }
       }
       setPicked((prev) => [...new Set([...prev, ...newIds])]);
       setImpMap((prev) => ({ ...prev, ...nextMap }));
+      setSplits((prev) => ({ ...prev, ...nextSplits }));
       setResult(null);
     } catch (e) {
       setError(e.message || "Auto-detect failed.");
