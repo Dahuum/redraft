@@ -687,8 +687,11 @@ def parse_table(filename: str, data: bytes) -> tuple:
 
 @app.get("/")
 def root():
+    # `ai` / `auth` are booleans only (never the keys) — lets us confirm the
+    # DeepSeek key + Supabase secrets actually reached the running container.
     return {"app": "Redraft API", "version": "1.0",
-            "endpoints": ["/extract", "/edit", "/bulk"]}
+            "endpoints": ["/extract", "/edit", "/bulk"],
+            "ai": bool(DEEPSEEK_KEY), "auth": AUTH_ON}
 
 
 @app.get("/me")
