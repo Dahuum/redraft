@@ -4,6 +4,7 @@ import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
 import { bulkGenerate, editPdf } from "../api.js";
 import { effectiveSplit } from "../lib/split.js";
+import { cloudEnabled, saveProject } from "../lib/cloud.js";
 import SplitPicker from "./SplitPicker.jsx";
 
 // Make a list of column names unique by suffixing duplicates: a, a (2), a (3).
@@ -54,6 +55,10 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const [previewIdx, setPreviewIdx] = useState(null); // row being previewed, or null
   const [previewData, setPreviewData] = useState(null); // rendered ArrayBuffer
   const [previewBusy, setPreviewBusy] = useState(false);
+
+  // Cloud save (template PDF + this setup → your account)
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveNote, setSaveNote] = useState(null); // { ok, text }
 
   const pageCount = (pages && pages.length) || 1;
   const spanById = useMemo(() => new Map(spans.map((s) => [s.id, s])), [spans]);
@@ -301,6 +306,26 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   function exitPreview() {
     setPreviewIdx(null);
     setPreviewData(null);
+  }
+
+  // Save this template PDF + its field setup to the account (max 3 on free).
+  // Data rows are NOT saved — only the reusable structure — so next time you
+  // just paste fresh CSV. The DB trigger surfaces the friendly limit message.
+  async function saveToCloud() {
+    if (!file || !picked.length) return;
+    const name = (window.prompt("Name this template", file.name.replace(/\.pdf$/i, "")) || "").trim();
+    if (!name) return;
+    setSaveBusy(true);
+    setSaveNote(null);
+    try {
+      const setup = { picked, impMap, filenameId, splits };
+      await saveProject(file, { name, kind: "bulk", setup, pages: pageCount });
+      setSaveNote({ ok: true, text: `Saved “${name}” to your account.` });
+    } catch (e) {
+      setSaveNote({ ok: false, text: e.message || "Couldn't save." });
+    } finally {
+      setSaveBusy(false);
+    }
   }
 
   // One-tap demo so the flow is obvious: pick the first field, make 2 copies.
@@ -837,16 +862,44 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
           )}
           {picked.length > 0 && (
             <div className="flex items-center justify-between px-0.5">
-              <span className="text-caption text-on-surface-variant flex items-center gap-1">
-                <span className="material-symbols-outlined text-[14px]">cloud_done</span>
-                Saved automatically
-              </span>
+              {cloudEnabled ? (
+                <button
+                  onClick={saveToCloud}
+                  disabled={saveBusy}
+                  title="Keep this template + setup in your account (any device)"
+                  className="text-caption text-secondary hover:underline flex items-center gap-1 disabled:opacity-50"
+                >
+                  <span className={`material-symbols-outlined text-[14px] ${saveBusy ? "animate-spin" : ""}`}>
+                    {saveBusy ? "progress_activity" : "cloud_upload"}
+                  </span>
+                  {saveBusy ? "Saving…" : "Save to account"}
+                </button>
+              ) : (
+                <span className="text-caption text-on-surface-variant flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[14px]">cloud_done</span>
+                  Saved on this device
+                </span>
+              )}
               <button
                 onClick={startOver}
                 className="text-caption text-on-surface-variant hover:text-error transition-colors"
               >
                 Start over
               </button>
+            </div>
+          )}
+          {saveNote && (
+            <div
+              className={`rounded-lg px-3 py-2 text-caption flex items-start gap-2 border ${
+                saveNote.ok
+                  ? "border-secondary-container/30 bg-secondary-container/10 text-secondary"
+                  : "border-error/40 bg-error/10 text-error"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px] shrink-0">
+                {saveNote.ok ? "cloud_done" : "warning"}
+              </span>
+              <span>{saveNote.text}</span>
             </div>
           )}
           <div className="flex gap-2">

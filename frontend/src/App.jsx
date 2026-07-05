@@ -10,6 +10,7 @@ import AnnexWorkspace from "./components/AnnexWorkspace.jsx";
 import ThemeToggle from "./components/ThemeToggle.jsx";
 import { useAuth } from "./lib/useAuth.js";
 import { usePlan } from "./lib/usePlan.js";
+import { openProjectFile } from "./lib/cloud.js";
 
 export default function App() {
   const route = parseRoute(usePath());
@@ -118,6 +119,51 @@ export default function App() {
     navigate(`/editor/${meta.id}`);
   }
 
+  // Open a cloud-saved template: download the PDF, seed its saved bulk setup so
+  // BulkWorkspace applies it, then open the Bulk tab (rows start empty — paste
+  // fresh data each time).
+  async function openCloudProject(project) {
+    try {
+      const file = await openProjectFile(project);
+      const res = await ed.loadFile(file);
+      if (!res) return;
+      const s = project.setup || {};
+      try {
+        localStorage.setItem(
+          `redraft:bulk:${file.name}:${res.spans.length}`,
+          JSON.stringify({
+            picked: s.picked || [],
+            rows: [],
+            impMap: s.impMap || {},
+            filenameId: s.filenameId ?? null,
+            splits: s.splits || {},
+          })
+        );
+      } catch {
+        /* non-fatal */
+      }
+      const buf = await file.arrayBuffer();
+      let id = null;
+      try {
+        id = await addDoc({
+          name: file.name, bytes: buf, pages: res.pages.length, fields: res.spans.length,
+        });
+      } catch {
+        /* history best-effort */
+      }
+      if (id) {
+        loadedDocIdRef.current = id;
+        navigate(`/bulk/${id}`);
+        renderThumb(buf).then((thumb) => thumb && patchDoc(id, { thumb }));
+      } else {
+        loadedDocIdRef.current = "memory";
+        navigate(`/bulk/memory`);
+      }
+    } catch (e) {
+      window.alert(e.message || "Couldn't open this template.");
+    }
+  }
+
   async function handleDownload() {
     await ed.download();
     if (docId && docId !== "memory") patchDoc(docId, { status: "Final" });
@@ -138,6 +184,7 @@ export default function App() {
       <HomeScreen
         onUpload={handleUpload}
         onOpen={openFromHistory}
+        onOpenCloud={openCloudProject}
         busy={ed.busy}
         error={ed.error}
         onSignOut={auth.enabled ? auth.signOut : null}

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useHistory, removeDoc, ago } from "../lib/history.js";
+import { cloudEnabled, listProjects, deleteProject } from "../lib/cloud.js";
 import ThemeToggle from "./ThemeToggle.jsx";
 
 const STATUS = {
@@ -13,13 +14,34 @@ const STATUS = {
  * Drop Zone + Browse Files perform the real upload (`onUpload`); Recent Activity
  * is the real, persistent history (`onOpen` reopens a doc).
  */
-export default function HomeScreen({ onUpload, onOpen, busy, error, onSignOut }) {
+export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error, onSignOut }) {
   const inputRef = useRef(null);
   const menuRef = useRef(null);
   const [drag, setDrag] = useState(false);
   const [tab, setTab] = useState("editor"); // "editor" | "history"
   const [menuOpen, setMenuOpen] = useState(false);
   const docs = useHistory();
+
+  // Cloud-saved templates (your account, max 3 on free).
+  const [projects, setProjects] = useState([]);
+  const [openingId, setOpeningId] = useState(null);
+  const loadProjects = useCallback(() => {
+    if (cloudEnabled) listProjects().then(setProjects).catch(() => {});
+  }, []);
+  useEffect(() => loadProjects(), [loadProjects]);
+
+  async function openProject(p) {
+    setOpeningId(p.id);
+    try {
+      await onOpenCloud?.(p);
+    } finally {
+      setOpeningId(null);
+    }
+  }
+  async function removeProject(p) {
+    await deleteProject(p);
+    loadProjects();
+  }
 
   // Close the account menu on any outside click.
   useEffect(() => {
@@ -173,6 +195,57 @@ export default function HomeScreen({ onUpload, onOpen, busy, error, onSignOut })
                 <p className="mt-md text-sm text-error text-center max-w-sm">{error}</p>
               )}
             </div>
+          )}
+
+          {/* My templates (cloud) */}
+          {cloudEnabled && projects.length > 0 && (
+            <section className="mt-2 mb-lg">
+              <div className="flex items-center justify-between mb-md border-b border-outline-variant/30 pb-sm">
+                <h3 className="font-label-md text-sm text-on-surface font-medium flex items-center gap-sm">
+                  <span className="material-symbols-outlined text-[18px] text-secondary">cloud_done</span>
+                  My templates
+                </h3>
+                <span className="text-on-surface-variant font-caption text-[11px]">
+                  {projects.length} of 3 saved
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-md">
+                {projects.map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => openingId == null && openProject(p)}
+                    className="group relative rounded-xl bg-surface-container-low border border-secondary-container/30 p-4 hover:border-secondary-container/60 transition-all cursor-pointer hover:-translate-y-0.5 shadow-sm"
+                  >
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeProject(p);
+                      }}
+                      title="Remove from account"
+                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
+                    </button>
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-secondary-container/15 flex items-center justify-center shrink-0">
+                        <span className="material-symbols-outlined text-[20px] text-secondary">
+                          {openingId === p.id ? "progress_activity" : "description"}
+                        </span>
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-body-md text-sm text-on-surface font-medium truncate">
+                          {p.name}
+                        </h4>
+                        <p className="text-on-surface-variant font-caption text-[11px] flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px]">layers</span>
+                          Bulk template · {(p.setup?.picked?.length) || 0} fields
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
 
           {/* Recent Activity Section */}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import SignaturePad from "signature_pad";
+import { cloudEnabled, listSignatures, saveSignature, deleteSignature } from "../lib/cloud.js";
 
 // Real signature-style script fonts (loaded in app.html) — not casual handwriting.
 const SIG_FONTS = [
@@ -54,7 +55,20 @@ export default function SignaturePanel({ onPlace }) {
   const [mode, setMode] = useState(() => (saved.length ? "saved" : "draw"));
   const [note, setNote] = useState(null);
 
+  // Cloud sync: when signed in, the account is the source of truth (cross-device,
+  // capped at 3). Otherwise fall back to this device's localStorage.
   useEffect(() => {
+    if (cloudEnabled) {
+      listSignatures().then((sigs) => {
+        if (!sigs) return; // cloud unavailable → keep whatever's loaded locally
+        setSaved(sigs);
+        if (sigs.length) setMode("saved");
+      }).catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (cloudEnabled) return; // cloud is authoritative; don't shadow it locally
     try {
       localStorage.setItem(SIG_STORE, JSON.stringify(saved));
     } catch {
@@ -199,17 +213,30 @@ export default function SignaturePanel({ onPlace }) {
   }
 
   // ---- Shared ----
-  function addSig(url, ratio) {
+  async function addSig(url, ratio) {
+    setNote(null);
+    if (cloudEnabled) {
+      try {
+        const sig = await saveSignature({ url, ratio: ratio || 3 });
+        setSaved((s) => [sig, ...s]);
+        setMode("saved");
+      } catch (e) {
+        setNote(e.message || "Couldn't save the signature."); // e.g. 3/3 limit
+      }
+      return;
+    }
     const id = `${Date.now()}${Math.round(Math.random() * 1e4)}`;
     setSaved((s) => [{ id, url, ratio: ratio || 3 }, ...s].slice(0, 24));
     setMode("saved");
-    setNote(null);
   }
   function place(url, ratio) {
     if (onPlace) onPlace(url, ratio);
     else setNote("Signature ready — placing it on the PDF is the next step.");
   }
-  const removeSig = (id) => setSaved((s) => s.filter((x) => x.id !== id));
+  function removeSig(id) {
+    setSaved((s) => s.filter((x) => x.id !== id));
+    if (cloudEnabled) deleteSignature(id).catch(() => {});
+  }
 
   const TABS = [
     ["draw", "gesture", "Draw"],
