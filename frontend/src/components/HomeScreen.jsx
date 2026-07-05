@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useHistory, removeDoc, ago } from "../lib/history.js";
-import { cloudEnabled, listProjects, deleteProject } from "../lib/cloud.js";
+import { cloudEnabled, listProjects, deleteProject, openProjectFile } from "../lib/cloud.js";
+import { renderThumb } from "../lib/thumb.js";
 import ThemeToggle from "./ThemeToggle.jsx";
 
 const STATUS = {
@@ -25,10 +26,49 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
   // Cloud-saved templates (your account, max 3 on free).
   const [projects, setProjects] = useState([]);
   const [openingId, setOpeningId] = useState(null);
+  const [thumbs, setThumbs] = useState({}); // projectId → data-URL preview
   const loadProjects = useCallback(() => {
     if (cloudEnabled) listProjects().then(setProjects).catch(() => {});
   }, []);
   useEffect(() => loadProjects(), [loadProjects]);
+
+  // Mini first-page preview per saved template. Cached per device (the PDF never
+  // changes for a saved template), so it downloads + renders only once.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const p of projects) {
+        if (cancelled) break;
+        if (thumbs[p.id]) continue;
+        const cacheKey = `redraft:ct:${p.id}`;
+        let url = null;
+        try {
+          url = localStorage.getItem(cacheKey);
+        } catch {
+          /* ignore */
+        }
+        if (!url) {
+          try {
+            const file = await openProjectFile(p);
+            url = await renderThumb(await file.arrayBuffer(), 220);
+            if (url) {
+              try {
+                localStorage.setItem(cacheKey, url);
+              } catch {
+                /* cache full — skip */
+              }
+            }
+          } catch {
+            /* leave the icon fallback */
+          }
+        }
+        if (url && !cancelled) setThumbs((t) => ({ ...t, [p.id]: url }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function openProject(p) {
     setOpeningId(p.id);
@@ -227,10 +267,22 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                       <span className="material-symbols-outlined text-[16px]">delete</span>
                     </button>
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-secondary-container/15 flex items-center justify-center shrink-0">
-                        <span className="material-symbols-outlined text-[20px] text-secondary">
-                          {openingId === p.id ? "progress_activity" : "description"}
-                        </span>
+                      <div className="w-12 h-16 rounded-md bg-white border border-outline-variant/40 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
+                        {openingId === p.id ? (
+                          <span className="material-symbols-outlined text-[18px] text-secondary animate-spin">
+                            progress_activity
+                          </span>
+                        ) : thumbs[p.id] ? (
+                          <img
+                            src={thumbs[p.id]}
+                            alt=""
+                            className="w-full h-full object-cover object-top"
+                          />
+                        ) : (
+                          <span className="material-symbols-outlined text-[22px] text-secondary/50">
+                            description
+                          </span>
+                        )}
                       </div>
                       <div className="min-w-0">
                         <h4 className="font-body-md text-sm text-on-surface font-medium truncate">
