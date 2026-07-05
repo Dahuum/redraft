@@ -5,13 +5,20 @@ import { supabase, hasSupabase } from "./lib/supabase.js";
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 // Attach the signed-in user's Supabase token so the backend can authorize +
-// meter the request. No session (or Supabase not configured) → no header, and
-// the backend runs open.
+// meter the request. Proactively refreshes an expired / near-expiry access token
+// (getSession alone can hand back a stale one → 401 on every call). No session
+// (or Supabase not configured) → no header, and the backend runs open.
 async function authHeaders() {
   if (!hasSupabase) return {};
   try {
-    const { data } = await supabase.auth.getSession();
-    const t = data?.session?.access_token;
+    let session = (await supabase.auth.getSession()).data?.session;
+    const expMs = session?.expires_at ? session.expires_at * 1000 : 0;
+    if (session && expMs && expMs < Date.now() + 60_000) {
+      // token gone/expiring within 60s → refresh so the call isn't rejected
+      const refreshed = (await supabase.auth.refreshSession()).data?.session;
+      if (refreshed) session = refreshed;
+    }
+    const t = session?.access_token;
     return t ? { Authorization: `Bearer ${t}` } : {};
   } catch {
     return {};
