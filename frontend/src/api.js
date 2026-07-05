@@ -132,6 +132,18 @@ export async function annexGenerate(
   };
 }
 
+// POST /automap → { mapping: {column: spanId}, source: "ai"|"values"|"none" }
+// Matches spreadsheet columns to the PDF's text fields (AI when configured).
+export async function autoMapFields(spans, columns, samples) {
+  const fd = new FormData();
+  fd.append("spans", JSON.stringify(spans.map((s) => ({ id: s.id, text: s.text }))));
+  fd.append("columns", JSON.stringify(columns));
+  fd.append("samples", JSON.stringify(samples));
+  const res = await fetch(`${API_BASE}/automap`, { method: "POST", body: fd, headers: await authHeaders() });
+  if (!res.ok) throw await asError(res);
+  return res.json();
+}
+
 // POST /bulk → { blob, generated, failed }
 // `filenameCol` (optional) names each output file from a data column.
 // `output` = "zip" (one file per row) or "merged" (one combined PDF).

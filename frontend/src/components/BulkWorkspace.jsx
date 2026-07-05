@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
-import { bulkGenerate, editPdf } from "../api.js";
+import { bulkGenerate, editPdf, autoMapFields } from "../api.js";
 import { effectiveSplit } from "../lib/split.js";
 import SplitPicker from "./SplitPicker.jsx";
 
@@ -49,6 +49,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [autoBusy, setAutoBusy] = useState(false); // AI auto-detect in progress
 
   // Verify-before-download: render one generated document (reuses /edit).
   const [previewIdx, setPreviewIdx] = useState(null); // row being previewed, or null
@@ -242,6 +243,38 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setImpRows([]);
     setImpText("");
     setResult(null);
+  }
+
+  // ---- AI auto-detect: match CSV columns → the PDF's fields, and pick them ----
+  async function autoDetect() {
+    if (!impHeaders.length) return;
+    setAutoBusy(true);
+    setError(null);
+    try {
+      const samples = {};
+      impHeaders.forEach((h, i) => (samples[h] = String(impRows[0]?.[i] ?? "")));
+      const { mapping } = await autoMapFields(spans, impHeaders, samples);
+      const entries = Object.entries(mapping); // [ [column, spanId], … ]
+      if (!entries.length) {
+        setError("Couldn't auto-detect fields — map them manually below.");
+        return;
+      }
+      const newIds = [];
+      const nextMap = {};
+      for (const [col, sid] of entries) {
+        if (spanById.has(sid)) {
+          newIds.push(sid);
+          nextMap[sid] = col;
+        }
+      }
+      setPicked((prev) => [...new Set([...prev, ...newIds])]);
+      setImpMap((prev) => ({ ...prev, ...nextMap }));
+      setResult(null);
+    } catch (e) {
+      setError(e.message || "Auto-detect failed.");
+    } finally {
+      setAutoBusy(false);
+    }
   }
 
   // ---- Generate ----
@@ -575,6 +608,16 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
 
               {impHeaders.length > 0 && (
                 <div className="space-y-2">
+                  <button
+                    onClick={autoDetect}
+                    disabled={autoBusy}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-gradient-to-r from-accent-cyan/15 to-secondary-container/15 border border-accent-cyan/40 text-accent-cyan font-label-md text-sm hover:from-accent-cyan/25 hover:to-secondary-container/25 transition-all disabled:opacity-50"
+                  >
+                    <span className={`material-symbols-outlined text-[18px] ${autoBusy ? "animate-spin" : ""}`}>
+                      {autoBusy ? "progress_activity" : "auto_awesome"}
+                    </span>
+                    {autoBusy ? "Detecting fields…" : "Auto-detect fields from this data (AI)"}
+                  </button>
                   <p className="text-caption text-on-surface-variant">
                     Match each field to a column ({impRows.length} rows found):
                   </p>

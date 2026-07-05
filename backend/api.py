@@ -181,6 +181,76 @@ def _meter_add(uid: str, n: int):
                    "updated_at": _now_iso()})
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AI field auto-mapping. Matches spreadsheet columns → the PDF's text fields.
+# Uses DeepSeek (OpenAI-compatible) when DEEPSEEK_API_KEY is set; otherwise falls
+# back to free value/name matching so the feature still works without a key.
+# The key is read from the environment ONLY — never committed or sent to clients.
+# ─────────────────────────────────────────────────────────────────────────────
+DEEPSEEK_KEY   = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_URL   = "https://api.deepseek.com/chat/completions"
+
+
+def _norm(s: str) -> str:
+    return "".join(ch for ch in (s or "").lower() if ch.isalnum())
+
+
+def _value_map(fields, columns, samples):
+    """Free fallback: match a column to a field by example value, then by
+    column-name / field-text similarity. One field per column."""
+    out, used = {}, set()
+    for c in columns:
+        v = _norm(str(samples.get(c, "")))
+        cn = _norm(c)
+        best = None
+        if v:  # 1) value match
+            for f in fields:
+                if f["id"] in used:
+                    continue
+                ft = _norm(f["text"])
+                if ft and (ft == v or v in ft or ft in v):
+                    best = f["id"]; break
+        if best is None and cn:  # 2) name/text similarity
+            for f in fields:
+                if f["id"] in used:
+                    continue
+                ft = _norm(f["text"])
+                if ft and (cn in ft or ft in cn):
+                    best = f["id"]; break
+        if best is not None:
+            out[c] = best; used.add(best)
+    return out
+
+
+def _deepseek_map(fields, columns, samples):
+    """Ask DeepSeek to match each column to the field id whose ROLE fits."""
+    field_lines = "\n".join(f'{f["id"]}: "{f["text"]}"' for f in fields)
+    col_lines = "\n".join(f'- {c}: "{samples.get(c, "")}"' for c in columns)
+    prompt = (
+        "You match spreadsheet COLUMNS to editable TEXT FIELDS in a document "
+        "template. The document is one example filled-in copy; each field holds "
+        "an example value. For each column, pick the ONE field id whose ROLE "
+        "matches (a client-name field for a client_name column, an amount field "
+        "for an amount column, a date field for a date, etc.) — even if the "
+        "example values differ. If no field fits, use null.\n\n"
+        f"TEXT FIELDS (id: current text):\n{field_lines}\n\n"
+        f"COLUMNS (name: example value):\n{col_lines}\n\n"
+        'Respond ONLY with a JSON object mapping column name to field id or '
+        'null, e.g. {"client_name": 12, "montant_ht": 15, "note": null}.'
+    )
+    body = {"model": DEEPSEEK_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0, "response_format": {"type": "json_object"}}
+    req = urllib.request.Request(
+        DEEPSEEK_URL, data=json.dumps(body).encode(), method="POST",
+        headers={"Authorization": f"Bearer {DEEPSEEK_KEY}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        resp = json.loads(r.read().decode())
+    return json.loads(resp["choices"][0]["message"]["content"])
+
+
 # ── Upload limits — protect the free-tier server from OOM / abuse ──
 MAX_TEMPLATE_BYTES = 20 * 1024 * 1024   # 20 MB template PDF
 MAX_DATA_BYTES     = 10 * 1024 * 1024   # 10 MB data file (CSV/XLSX)
@@ -705,6 +775,47 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
             "X-Redraft-Font-Report": hdr,
         },
     )
+
+
+@app.post("/automap")
+async def automap(spans: str = Form(...), columns: str = Form(...),
+                  samples: str = Form("{}"), user: str = Depends(require_user)):
+    """Match spreadsheet columns → the PDF's text fields. DeepSeek when a key is
+    configured, else free value/name matching. Returns {column: span_id}."""
+    try:
+        raw_fields = json.loads(spans)
+        cols = [str(c) for c in json.loads(columns)]
+        samp = {str(k): str(v) for k, v in json.loads(samples).items()}
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "spans/columns/samples must be valid JSON.")
+    fields = [{"id": int(f["id"]), "text": str(f.get("text", "")).strip()}
+              for f in raw_fields
+              if isinstance(f, dict) and f.get("id") is not None
+              and str(f.get("text", "")).strip()][:400]
+    if not fields or not cols:
+        return {"mapping": {}, "source": "none"}
+
+    mapping, source = {}, "values"
+    if DEEPSEEK_KEY:
+        try:
+            mapping = await run_in_threadpool(_deepseek_map, fields, cols, samp)
+            source = "ai"
+        except Exception:  # noqa: BLE001 — any AI failure → free fallback
+            mapping, source = {}, "values"
+    if not mapping:
+        mapping = await run_in_threadpool(_value_map, fields, cols, samp)
+        source = "values"
+
+    valid = {f["id"] for f in fields}
+    clean = {}
+    for c, i in (mapping or {}).items():
+        try:
+            iv = int(i)
+        except (TypeError, ValueError):
+            continue
+        if c in cols and iv in valid:
+            clean[c] = iv
+    return {"mapping": clean, "source": source}
 
 
 @app.post("/bulk")

@@ -1,0 +1,6 @@
+﻿invoice_number;invoice_date;client_name;client_address;client_ref;client_ice;description;bon_commande;montant_ht;banque;agence;compte
+W/2026/05/001;05/05/2026;Attijariwafa Bank;2, bd Moulay Youssef 20000 Casablanca.;REF-2026-001;001648789000071;Run Actif deux interfaces : du 01/01/2026 au 31/01/2026;BC-2026-0101;3.560,00;ATTIJARIWAFABANK;NEARSHORE Casablanca;007 780 0003409000001312 34
+W/2026/05/002;05/05/2026;Attijariwafa Bank;2, bd Moulay Youssef 20000 Casablanca.;REF-2026-002;001648789000071;Run Actif deux interfaces : du 01/02/2026 au 28/02/2026;BC-2026-0102;3.560,00;ATTIJARIWAFABANK;NEARSHORE Casablanca;007 780 0003409000001312 34
+W/2026/05/003;12/05/2026;Maroc Telecom;Avenue Annakhil, Hay Riad, Rabat;REF-2026-003;000112233000045;Prestation de maintenance applicative : Avril 2026;BC-2026-0412;12.750,00;ATTIJARIWAFABANK;NEARSHORE Casablanca;007 780 0003409000001312 34
+W/2026/05/004;18/05/2026;Banque Populaire;101, Bd Zerktouni 20100 Casablanca;REF-2026-004;000998877000012;Développement module reporting : Mai 2026;BC-2026-0518;47.320,50;ATTIJARIWAFABANK;NEARSHORE Casablanca;007 780 0003409000001312 34
+W/2026/05/005;25/05/2026;Attijari Payment Processing;2 Boulevard Moulay Youssef Casablanca 20500;REF-2026-005;000284808000053;Homologation Acquisition E-commerce;BC-2026-0922;299.500,00;ATTIJARIWAFABANK;NEARSHORE Casablanca;007 780 0003409000001312 34
