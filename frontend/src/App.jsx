@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditor } from "./useEditor.js";
 import { addDoc, getRecord, patchDoc, getAllRecords } from "./lib/history.js";
 import { renderThumb } from "./lib/thumb.js";
@@ -19,6 +19,7 @@ export default function App() {
   const auth = useAuth();
   const { plan, refresh: refreshPlan } = usePlan(view); // re-checks usage on nav
   const loadedDocIdRef = useRef(null); // which history doc is currently in `ed`
+  const [cloudProjectId, setCloudProjectId] = useState(null); // open saved template (live)
 
   // Gate the app behind a Supabase session — no session → back to the landing.
   // (If Supabase isn't configured, auth.enabled is false and the app runs open.)
@@ -89,6 +90,7 @@ export default function App() {
   }, [ed.previewData, docId]);
 
   async function handleUpload(file, { bulk = false } = {}) {
+    setCloudProjectId(null); // a fresh upload is not a saved template
     const res = await ed.loadFile(file);
     if (!res) return;
     const buf = await file.arrayBuffer();
@@ -115,6 +117,7 @@ export default function App() {
   }
 
   function openFromHistory(meta) {
+    setCloudProjectId(null); // a local history doc is not a saved cloud template
     patchDoc(meta.id, { addedAt: Date.now() });
     navigate(`/editor/${meta.id}`);
   }
@@ -122,6 +125,8 @@ export default function App() {
   // Open a cloud-saved template: download the PDF, seed its saved bulk setup so
   // BulkWorkspace applies it, then open the Bulk tab (rows start empty — paste
   // fresh data each time).
+  // Open a saved template LIVE: load its PDF + setup, mark it the active cloud
+  // project (so edits auto-sync back to it), and do NOT add a new history copy.
   async function openCloudProject(project) {
     try {
       const file = await openProjectFile(project);
@@ -142,23 +147,9 @@ export default function App() {
       } catch {
         /* non-fatal */
       }
-      const buf = await file.arrayBuffer();
-      let id = null;
-      try {
-        id = await addDoc({
-          name: file.name, bytes: buf, pages: res.pages.length, fields: res.spans.length,
-        });
-      } catch {
-        /* history best-effort */
-      }
-      if (id) {
-        loadedDocIdRef.current = id;
-        navigate(`/bulk/${id}`);
-        renderThumb(buf).then((thumb) => thumb && patchDoc(id, { thumb }));
-      } else {
-        loadedDocIdRef.current = "memory";
-        navigate(`/bulk/memory`);
-      }
+      setCloudProjectId(project.id); // edits now flow back to this saved template
+      loadedDocIdRef.current = "memory";
+      navigate(`/bulk/memory`);
     } catch (e) {
       window.alert(e.message || "Couldn't open this template.");
     }
@@ -289,6 +280,8 @@ export default function App() {
           spans={ed.spans}
           data={ed.fileData}
           pages={ed.pages}
+          cloudProjectId={cloudProjectId}
+          onCloudSaved={setCloudProjectId}
         />
       ) : (
         <AnnexWorkspace

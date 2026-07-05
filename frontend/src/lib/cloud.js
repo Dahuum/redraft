@@ -62,6 +62,19 @@ export async function openProjectFile(project) {
   return new File([data], `${project.name || "template"}.pdf`, { type: "application/pdf" });
 }
 
+// Live-update a saved template's setup (auto-sync while you edit it). Best effort.
+export async function updateProjectSetup(id, setup) {
+  if (!hasSupabase || !id) return;
+  try {
+    await supabase
+      .from("projects")
+      .update({ setup, updated_at: new Date().toISOString() })
+      .eq("id", id);
+  } catch {
+    /* transient — will retry on the next change */
+  }
+}
+
 export async function deleteProject(project) {
   if (!hasSupabase) return;
   if (project.storage_path) {

@@ -4,7 +4,7 @@ import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
 import { bulkGenerate, editPdf } from "../api.js";
 import { effectiveSplit } from "../lib/split.js";
-import { cloudEnabled, saveProject } from "../lib/cloud.js";
+import { cloudEnabled, saveProject, updateProjectSetup } from "../lib/cloud.js";
 import SplitPicker from "./SplitPicker.jsx";
 
 // Make a list of column names unique by suffixing duplicates: a, a (2), a (3).
@@ -23,7 +23,7 @@ function uniquify(names) {
  * what differs, add documents (rows), or import a CSV to fill many at once.
  * Serializes to the same CSV + mapping the untouched /bulk backend expects.
  */
-export default function BulkWorkspace({ file, spans, data, pages }) {
+export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId, onCloudSaved }) {
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
   const [pageIndex, setPageIndex] = useState(0);
@@ -150,6 +150,24 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setPreviewIdx(null);
     setPreviewData(null);
   }, [picked, rows]);
+
+  // Editing a SAVED template → auto-sync its setup back to the cloud (debounced).
+  // Skips the first run so just opening it doesn't cause a redundant write.
+  const skipCloudRef = useRef(true);
+  useEffect(() => {
+    skipCloudRef.current = true; // reset when switching which template is open
+  }, [cloudProjectId]);
+  useEffect(() => {
+    if (!cloudProjectId) return;
+    if (skipCloudRef.current) {
+      skipCloudRef.current = false;
+      return;
+    }
+    const t = setTimeout(() => {
+      updateProjectSetup(cloudProjectId, { picked, impMap, filenameId, splits });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [cloudProjectId, picked, impMap, filenameId, splits]);
 
   const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
 
@@ -319,8 +337,11 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     setSaveNote(null);
     try {
       const setup = { picked, impMap, filenameId, splits };
-      await saveProject(file, { name, kind: "bulk", setup, pages: pageCount });
-      setSaveNote({ ok: true, text: `Saved “${name}” to your account.` });
+      const proj = await saveProject(file, { name, kind: "bulk", setup, pages: pageCount });
+      // Become the live project so further edits auto-sync (no duplicate saves).
+      skipCloudRef.current = true;
+      onCloudSaved?.(proj.id);
+      setSaveNote({ ok: true, text: `Saved “${name}” — changes now sync automatically.` });
     } catch (e) {
       setSaveNote({ ok: false, text: e.message || "Couldn't save." });
     } finally {
@@ -862,7 +883,20 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
           )}
           {picked.length > 0 && (
             <div className="flex items-center justify-between px-0.5">
-              {cloudEnabled ? (
+              {!cloudEnabled ? (
+                <span className="text-caption text-on-surface-variant flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[14px]">cloud_done</span>
+                  Saved on this device
+                </span>
+              ) : cloudProjectId ? (
+                <span
+                  className="text-caption text-secondary flex items-center gap-1"
+                  title="This is a saved template — your changes sync automatically."
+                >
+                  <span className="material-symbols-outlined text-[14px]">cloud_done</span>
+                  Synced to your account
+                </span>
+              ) : (
                 <button
                   onClick={saveToCloud}
                   disabled={saveBusy}
@@ -874,11 +908,6 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                   </span>
                   {saveBusy ? "Saving…" : "Save to account"}
                 </button>
-              ) : (
-                <span className="text-caption text-on-surface-variant flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[14px]">cloud_done</span>
-                  Saved on this device
-                </span>
               )}
               <button
                 onClick={startOver}
