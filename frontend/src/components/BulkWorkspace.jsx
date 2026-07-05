@@ -50,6 +50,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [autoBusy, setAutoBusy] = useState(false); // AI auto-detect in progress
+  const [autoNote, setAutoNote] = useState(null); // { ok, text } shown under the button
 
   // Verify-before-download: render one generated document (reuses /edit).
   const [previewIdx, setPreviewIdx] = useState(null); // row being previewed, or null
@@ -252,6 +253,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
     if (!impHeaders.length) return;
     setAutoBusy(true);
     setError(null);
+    setAutoNote(null);
     try {
       // Send up to 3 example values per column so the AI can tell a date from
       // an amount from an ICE number (all just digits with one example).
@@ -264,17 +266,14 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
         }
         samples[h] = vals.join(" | ");
       });
-      if (!spans.length) {
-        setError("No PDF fields to detect — load the template in the PDF Editor tab first.");
+      if (!spans || !spans.length) {
+        setAutoNote({ ok: false, text: `No PDF fields found (spans=${spans ? spans.length : "none"}). Reload the bill in the PDF Editor tab, then come back.` });
         return;
       }
       const { mapping, source } = await autoMapFields(spans, impHeaders, samples);
       const entries = Object.entries(mapping); // [ [column, spanId], … ]
       if (!entries.length) {
-        setError(
-          "The AI didn't match any fields to your columns. Map them by hand below, " +
-            "or check the field names in your CSV."
-        );
+        setAutoNote({ ok: false, text: `AI returned 0 matches (source: ${source}). ${spans.length} fields, ${impHeaders.length} columns sent. Map by hand below, or tell me this message.` });
         return;
       }
 
@@ -320,10 +319,11 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
       setImpMap(map);
       setSplits(sp);
       setRows(newRows);
+      setAutoNote({ ok: true, text: `Detected ${detected.length} field(s) — showing the table.` });
       setShowImport(false);
       setResult({ detected: detected.length, rows: newRows.length, source });
     } catch (e) {
-      setError(e.message || "Auto-detect failed.");
+      setAutoNote({ ok: false, text: `Error: ${e.status ? `HTTP ${e.status} — ` : ""}${e.message || "auto-detect failed"}` });
     } finally {
       setAutoBusy(false);
     }
@@ -677,6 +677,20 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                     </span>
                     {autoBusy ? "Detecting fields…" : "Auto-detect fields from this data (AI)"}
                   </button>
+                  {autoNote && (
+                    <div
+                      className={`rounded-lg px-3 py-2 text-caption flex items-start gap-2 border ${
+                        autoNote.ok
+                          ? "border-secondary-container/30 bg-secondary-container/10 text-secondary"
+                          : "border-error/40 bg-error/10 text-error"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[16px] shrink-0">
+                        {autoNote.ok ? "check_circle" : "warning"}
+                      </span>
+                      <span>{autoNote.text}</span>
+                    </div>
+                  )}
                   <p className="text-caption text-on-surface-variant">
                     Match each field to a column ({impRows.length} rows found):
                   </p>
