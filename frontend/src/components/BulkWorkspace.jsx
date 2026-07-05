@@ -425,7 +425,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
   const currentStep = picked.length === 0 ? 1 : 2;
   const stepHint =
     picked.length === 0
-      ? "Click the text on the document you want to change"
+      ? "Upload your data and auto-detect the fields — or click text on the document"
       : "Type the new values — each row makes one PDF, then press Generate";
 
   return (
@@ -533,7 +533,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
             <div className="min-w-0">
               <h2 className="font-display-md text-xl font-bold tracking-tight">Bulk generator</h2>
             </div>
-            {picked.length > 0 && (
+            {file && (
               <button
                 onClick={() => {
                   setShowImport((v) => !v);
@@ -546,7 +546,7 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
                 }`}
               >
                 <span className="material-symbols-outlined text-[16px]">upload</span>
-                Import list
+                {showImport ? "Close" : "Import list"}
               </button>
             )}
           </div>
@@ -562,27 +562,34 @@ export default function BulkWorkspace({ file, spans, data, pages }) {
 
         {/* Body */}
         <div className="flex-1 overflow-auto">
-          {picked.length === 0 ? (
+          {!showImport && picked.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 text-on-surface-variant animate-fade">
-              <span className="material-symbols-outlined text-[44px] text-accent-cyan/70">ads_click</span>
+              <span className="material-symbols-outlined text-[44px] text-accent-cyan/70">table_view</span>
               <p className="mt-3 text-body-lg text-on-surface font-semibold">
-                Click on the document to start
+                Start from your spreadsheet
               </p>
-              <p className="mt-1 text-body-md max-w-[270px]">
-                Tap any text or number on the PDF — a client name, a date, a price. It appears here
-                so you can type a new value. Everything you don't touch stays the same.
+              <p className="mt-1 text-body-md max-w-[290px]">
+                Upload your CSV/Excel and let AI auto-detect which spots on the document to fill —
+                or click any text on the PDF to pick fields yourself.
               </p>
-              <div className="mt-3 flex items-center gap-1.5 text-accent-cyan text-label-md">
-                <span className="material-symbols-outlined text-[18px]">arrow_back</span>
-                the document is right here
-              </div>
+              <button
+                onClick={() => {
+                  setShowImport(true);
+                  setError(null);
+                }}
+                disabled={!file}
+                className="mt-5 px-5 py-2.5 rounded-lg bg-secondary-container text-white hover:bg-[#003ea8] transition-colors text-label-md flex items-center gap-2 shadow-[0_0_20px_rgba(0,83,219,0.3)] disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-[18px]">upload</span>
+                Upload your data
+              </button>
               {spans.length > 0 && (
                 <button
                   onClick={runExample}
-                  className="mt-5 px-4 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors text-label-md flex items-center gap-2"
+                  className="mt-3 text-caption text-on-surface-variant hover:text-accent-cyan transition-colors flex items-center gap-1.5"
                 >
-                  <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
-                  Show me an example
+                  <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
+                  or show me an example
                 </button>
               )}
             </div>
