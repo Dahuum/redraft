@@ -819,15 +819,24 @@ async def automap(spans: str = Form(...), columns: str = Form(...),
         mapping = await run_in_threadpool(_value_map, fields, cols, samp)
         source = "values"
 
+    # Reconcile the model's answer with what we asked for:
+    #  • map returned keys back to the EXACT column names (lenient: the model may
+    #    return "montant ht" for "montant_ht") so near-matches aren't dropped;
+    #  • one field per column (drop a span already claimed by an earlier column).
     valid = {f["id"] for f in fields}
-    clean = {}
-    for c, i in (mapping or {}).items():
+    by_norm = {_norm(c): c for c in cols}
+    clean, used = {}, set()
+    for raw_c, i in (mapping or {}).items():
+        c = raw_c if raw_c in cols else by_norm.get(_norm(str(raw_c)))
+        if not c or c in clean:
+            continue
         try:
             iv = int(i)
         except (TypeError, ValueError):
             continue
-        if c in cols and iv in valid:
+        if iv in valid and iv not in used:
             clean[c] = iv
+            used.add(iv)
     return {"mapping": clean, "source": source}
 
 
