@@ -1,0 +1,6 @@
+﻿invoice_number;invoice_date;client_name;client_address;client_ref;client_ice;description;bon_commande;montant_ht;banque;agence;compte
+W/2026/06/101;03/06/2026;Maroc Telecom;Av Annakhil, Hay Riad, Rabat;REF-601;000112233000045;Prestation de maintenance applicative Mai 2026;BC-2026-601;15.400,00;ATTIJARIWAFABANK;NEARSHORE Casablanca;007 780 0003409000001312 34
+W/2026/06/102;07/06/2026;Banque Populaire;101, Bd Zerktouni, Casablanca;REF-602;000998877000012;Développement portail client e-banking;BC-2026-602;88.250,50;BANQUE POPULAIRE;Agdal Rabat;011 810 0002215000004421 07
+W/2026/06/103;12/06/2026;Orange Maroc;Twin Center, Bd Zerktouni, Casablanca;REF-603;000556677000088;Intégration API paiement mobile;BC-2026-603;42.000,00;CIH BANK;Maarif Casablanca;230 610 0007788000005512 19
+W/2026/06/104;18/06/2026;Inwi;Lot La Colline, Sidi Maarouf, Casablanca;REF-604;000334455000021;Audit de sécurité du système d'information;BC-2026-604;127.900,00;BMCE BANK;Gauthier Casablanca;011 230 0004455000009987 33
+W/2026/06/105;25/06/2026;CNSS;Bd Rahal El Meskini, Casablanca;REF-605;000778899000054;Formation de l'équipe technique;BC-2026-605;9.750,00;SGMB;Rabat Ville;022 450 0009900000003344 61
