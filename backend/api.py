@@ -26,15 +26,20 @@ import json
 import os
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
 import warnings
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
 import fitz
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
@@ -45,15 +50,135 @@ from annex_model import (  # noqa: E402  — annex rules
 
 app = FastAPI(title="Redraft API", version="1.0")
 
-# Dev CORS: the Vite dev server runs on a different origin (5173). Allow all for
-# local development — tighten in production.
+# CORS: allow the Vercel app (prod + preview deploys) and local dev. The real
+# security is the JWT check below, not CORS (CORS only constrains browsers).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Redraft-Font-Report", "X-Redraft-Generated", "X-Redraft-Failed"],
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auth + usage metering (Supabase). Entirely OPT-IN: if the SUPABASE_* env vars
+# aren't set the API runs OPEN (local dev / before you configure secrets), so
+# deploying this can't break the live app — you turn the lock on with config.
+# ─────────────────────────────────────────────────────────────────────────────
+SUPABASE_URL     = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_ANON    = os.environ.get("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE = os.environ.get("SUPABASE_SERVICE_KEY", "")
+AUTH_ON = bool(SUPABASE_URL and SUPABASE_ANON and SUPABASE_SERVICE)
+
+# Plan limits — documents generated per calendar month.
+PLANS = {
+    "free": {"documents": 30},
+    "pro":  {"documents": 10 ** 9},
+}
+
+_TOKEN_CACHE: dict = {}  # access_token -> (user_id, expires_at)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _period() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _sb_http(method: str, path: str, headers: dict, body=None, timeout: int = 10):
+    """Minimal Supabase REST/Auth call over stdlib. Returns (status, json|None)."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{SUPABASE_URL}{path}", data=data,
+                                 method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode() or "null")
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except Exception:  # noqa: BLE001 — network/parse issues → treated as failure
+        return 0, None
+
+
+def _validate_token(token: str):
+    """user_id for a valid Supabase access token, else None. Cached ~5 min."""
+    if not token:
+        return None
+    now = time.time()
+    hit = _TOKEN_CACHE.get(token)
+    if hit and hit[1] > now:
+        return hit[0]
+    st, user = _sb_http("GET", "/auth/v1/user",
+                        {"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON})
+    if st == 200 and isinstance(user, dict) and user.get("id"):
+        _TOKEN_CACHE[token] = (user["id"], now + 300)
+        return user["id"]
+    return None
+
+
+def require_user(authorization: str = Header(default="")) -> str:
+    """Dependency → the caller's user_id, or 401. Returns '' when auth is off."""
+    if not AUTH_ON:
+        return ""
+    token = authorization[7:].strip() if authorization[:7].lower() == "bearer " else ""
+    uid = _validate_token(token)
+    if not uid:
+        raise HTTPException(401, "Please sign in to use Redraft.")
+    return uid
+
+
+def _svc_headers(extra: dict = None) -> dict:
+    h = {"apikey": SUPABASE_SERVICE, "Authorization": f"Bearer {SUPABASE_SERVICE}",
+         "Content-Type": "application/json"}
+    if extra:
+        h.update(extra)
+    return h
+
+
+def _get_profile(uid: str) -> dict:
+    """Get-or-create the user's profile row (service_role bypasses RLS)."""
+    st, rows = _sb_http("GET",
+                        f"/rest/v1/profiles?id=eq.{uid}&select=plan,used,period",
+                        _svc_headers())
+    if st == 200 and rows:
+        return rows[0]
+    st, rows = _sb_http("POST", "/rest/v1/profiles",
+                        _svc_headers({"Prefer": "return=representation"}),
+                        body={"id": uid})
+    if st in (200, 201) and rows:
+        return rows[0]
+    return {"plan": "free", "used": 0, "period": _period()}
+
+
+def _effective_used(prof: dict) -> int:
+    return 0 if prof.get("period") != _period() else int(prof.get("used") or 0)
+
+
+def _meter_check(uid: str, n: int):
+    """Raise 402 if generating n docs would exceed the caller's monthly plan."""
+    if not AUTH_ON or not uid:
+        return
+    prof = _get_profile(uid)
+    limit = PLANS.get(prof.get("plan", "free"), PLANS["free"])["documents"]
+    used = _effective_used(prof)
+    if used + n > limit:
+        raise HTTPException(
+            402, f"You've used {used} of {limit} free documents this month. "
+                 f"Upgrade to Pro for unlimited.")
+
+
+def _meter_add(uid: str, n: int):
+    """Add n to the caller's monthly usage (resets on a new month)."""
+    if not AUTH_ON or not uid or n <= 0:
+        return
+    prof = _get_profile(uid)
+    _sb_http("PATCH", f"/rest/v1/profiles?id=eq.{uid}",
+             _svc_headers({"Prefer": "return=minimal"}),
+             body={"used": _effective_used(prof) + n, "period": _period(),
+                   "updated_at": _now_iso()})
 
 
 # ── Upload limits — protect the free-tier server from OOM / abuse ──
@@ -477,8 +602,20 @@ def root():
             "endpoints": ["/extract", "/edit", "/bulk"]}
 
 
+@app.get("/me")
+async def me(user: str = Depends(require_user)):
+    """The caller's plan + monthly usage, for the UI. Open mode → unlimited."""
+    if not AUTH_ON or not user:
+        return {"auth": False, "plan": "pro", "used": 0, "limit": None}
+    prof = await run_in_threadpool(_get_profile, user)
+    plan = prof.get("plan", "free")
+    limit = PLANS.get(plan, PLANS["free"])["documents"]
+    return {"auth": True, "plan": plan, "used": _effective_used(prof),
+            "limit": (None if limit >= 10 ** 9 else limit)}
+
+
 @app.post("/extract")
-async def extract(file: UploadFile = File(...)):
+async def extract(file: UploadFile = File(...), user: str = Depends(require_user)):
     """Upload a PDF → JSON of every text span (+ page dimensions)."""
     data = await file.read()
     if not data:
@@ -499,13 +636,15 @@ async def extract(file: UploadFile = File(...)):
 
 @app.post("/edit")
 async def edit(file: UploadFile = File(...), edits: str = Form(...),
-               stamps: str = Form("[]")):
+               stamps: str = Form("[]"), final: str = Form(""),
+               user: str = Depends(require_user)):
     """Apply replacements + baked overlays and return the edited PDF bytes.
 
     `edits` is a JSON array: [{"index": <span_id>, "new_text": "..."}].
     `stamps` (optional) is a JSON array of added text / signature overlays in
-    top-left PDF points — see _apply_stamps. Spans are re-extracted server-side;
-    index references the /extract ordering.
+    top-left PDF points — see _apply_stamps. `final` = truthy only on the real
+    download (counts 1 toward the plan); previews leave it empty. Spans are
+    re-extracted server-side; index references the /extract ordering.
     """
     data = await file.read()
     if not data:
@@ -541,6 +680,9 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
     if not replacements and not stamp_list:
         raise HTTPException(400, "Nothing to apply — no edits or added items.")
 
+    if final:
+        await run_in_threadpool(_meter_check, user, 1)
+
     try:
         if replacements:
             edited, report = apply_replacements(data, replacements)
@@ -550,6 +692,9 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"Failed to apply edits "
                                  f"({type(exc).__name__}: {exc}).")
+
+    if final:
+        await run_in_threadpool(_meter_add, user, 1)
 
     hdr = base64.b64encode(json.dumps(report).encode()).decode()
     stem = Path(file.filename or "document").stem
@@ -567,7 +712,8 @@ async def bulk(template: UploadFile = File(...),
                data: UploadFile = File(...),
                mapping: str = Form(...),
                filename_col: str = Form(""),
-               output: str = Form("zip")):
+               output: str = Form("zip"),
+               user: str = Depends(require_user)):
     """Generate one PDF per data row → a ZIP (or one merged PDF).
 
     `mapping` is a JSON object {"<span_index>": "<column_name>", …}. Each mapped
@@ -600,6 +746,7 @@ async def bulk(template: UploadFile = File(...),
     if not rows:
         raise HTTPException(400, "The data file has no rows.")
     _check_rows(rows)
+    await run_in_threadpool(_meter_check, user, len(rows))
 
     try:
         spans = extract_spans(tmpl_bytes)
@@ -630,6 +777,7 @@ async def bulk(template: UploadFile = File(...),
 
     if not files:
         raise HTTPException(500, "Every row failed to generate.")
+    await run_in_threadpool(_meter_add, user, len(files))
 
     stem = Path(template.filename or "template").stem
     hdrs = {"X-Redraft-Generated": str(len(files)), "X-Redraft-Failed": str(failed)}
@@ -649,7 +797,7 @@ async def bulk(template: UploadFile = File(...),
 
 
 @app.post("/fonts")
-async def fonts(file: UploadFile = File(...)):
+async def fonts(file: UploadFile = File(...), user: str = Depends(require_user)):
     """Upload a PDF → status of every distinct font it uses.
 
     Lets the UI flag fonts that won't match exactly (`fallback`/`substitute`)
@@ -670,7 +818,8 @@ async def fonts(file: UploadFile = File(...)):
 
 
 @app.post("/font")
-async def upload_font(fontname: str = Form(...), file: UploadFile = File(...)):
+async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
+                      user: str = Depends(require_user)):
     """Install a user-supplied .ttf/.otf so *fontname* matches exactly.
 
     Saves it under the engine's cache name and clears the resolution memo so the
@@ -834,7 +983,8 @@ def _annex_erase_bands(model: dict, spans: list,
 
 
 @app.post("/annex/model")
-async def annex_model(file: UploadFile = File(...), template: str = Form(None)):
+async def annex_model(file: UploadFile = File(...), template: str = Form(None),
+                      user: str = Depends(require_user)):
     """Upload an annex PDF → its detected line items, sections and total.
 
     Optional `template` (JSON) reuses a saved layout (scan-once); when omitted the
@@ -899,7 +1049,8 @@ async def annex_generate(template: UploadFile = File(...),
                          mapping: str = Form(...),
                          headers: str = Form("{}"),
                          profile: str = Form(None),
-                         filename_col: str = Form("")):
+                         filename_col: str = Form(""),
+                         user: str = Depends(require_user)):
     """One annex per data row → ZIP.
 
     `mapping` is a JSON object {"<item_index>": "<column_name>", …} linking each
@@ -940,6 +1091,7 @@ async def annex_generate(template: UploadFile = File(...),
     if not rows:
         raise HTTPException(400, "The data file has no rows.")
     _check_rows(rows)
+    await run_in_threadpool(_meter_check, user, len(rows))
 
     prof_in = None
     if profile:
@@ -998,6 +1150,7 @@ async def annex_generate(template: UploadFile = File(...),
 
     if made == 0:
         raise HTTPException(500, "Every annex failed to generate.")
+    await run_in_threadpool(_meter_add, user, made)
 
     stem = Path(template.filename or "annex").stem
     return Response(

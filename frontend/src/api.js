@@ -1,7 +1,22 @@
 // Tiny fetch wrapper around the Redraft FastAPI backend.
 // Override the target with VITE_API_BASE when needed (defaults to localhost:8000).
+import { supabase, hasSupabase } from "./lib/supabase.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+
+// Attach the signed-in user's Supabase token so the backend can authorize +
+// meter the request. No session (or Supabase not configured) → no header, and
+// the backend runs open.
+async function authHeaders() {
+  if (!hasSupabase) return {};
+  try {
+    const { data } = await supabase.auth.getSession();
+    const t = data?.session?.access_token;
+    return t ? { Authorization: `Bearer ${t}` } : {};
+  } catch {
+    return {};
+  }
+}
 
 async function asError(res) {
   let detail = `${res.status} ${res.statusText}`;
@@ -11,7 +26,9 @@ async function asError(res) {
   } catch {
     /* non-JSON error body — keep the status line */
   }
-  return new Error(detail);
+  const err = new Error(detail);
+  err.status = res.status; // lets callers detect 401 (sign in) / 402 (upgrade)
+  return err;
 }
 
 // GET / → true if the API is reachable (used by the connection badge)
@@ -24,23 +41,32 @@ export async function ping() {
   }
 }
 
+// GET /me → { auth, plan, used, limit } — the caller's plan + monthly usage.
+export async function getMe() {
+  const res = await fetch(`${API_BASE}/me`, { headers: await authHeaders() });
+  if (!res.ok) throw await asError(res);
+  return res.json();
+}
+
 // POST /extract → { filename, pages, span_count, spans }
 export async function extractSpans(file) {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/extract`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/extract`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
 
 // POST /edit → { blob, fontReport }
-// `stamps` (optional) = added text / signature overlays to bake into the PDF.
-export async function editPdf(file, edits, stamps = []) {
+// `stamps` = added text / signature overlays to bake in. `final` = true only on
+// the real download (counts toward the plan); previews leave it false.
+export async function editPdf(file, edits, stamps = [], final = false) {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("edits", JSON.stringify(edits));
   if (stamps && stamps.length) fd.append("stamps", JSON.stringify(stamps));
-  const res = await fetch(`${API_BASE}/edit`, { method: "POST", body: fd });
+  if (final) fd.append("final", "1");
+  const res = await fetch(`${API_BASE}/edit`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   let fontReport = null;
   const hdr = res.headers.get("X-Redraft-Font-Report");
@@ -58,7 +84,7 @@ export async function editPdf(file, edits, stamps = []) {
 export async function checkFonts(file) {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/fonts`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/fonts`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -68,7 +94,7 @@ export async function uploadFont(fontname, file) {
   const fd = new FormData();
   fd.append("fontname", fontname);
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/font`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/font`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -79,7 +105,7 @@ export async function annexModel(file, profile = null) {
   const fd = new FormData();
   fd.append("file", file);
   if (profile) fd.append("template", JSON.stringify(profile));
-  const res = await fetch(`${API_BASE}/annex/model`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/annex/model`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -97,7 +123,7 @@ export async function annexGenerate(
   fd.append("headers", JSON.stringify(headers));
   if (profile) fd.append("profile", JSON.stringify(profile));
   if (filenameCol) fd.append("filename_col", filenameCol);
-  const res = await fetch(`${API_BASE}/annex/generate`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/annex/generate`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return {
     blob: await res.blob(),
@@ -116,7 +142,7 @@ export async function bulkGenerate(template, dataFile, mapping, filenameCol = ""
   fd.append("mapping", JSON.stringify(mapping));
   if (filenameCol) fd.append("filename_col", filenameCol);
   if (output && output !== "zip") fd.append("output", output);
-  const res = await fetch(`${API_BASE}/bulk`, { method: "POST", body: fd });
+  const res = await fetch(`${API_BASE}/bulk`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return {
     blob: await res.blob(),

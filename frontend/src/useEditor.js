@@ -136,7 +136,7 @@ export function useEditor() {
     setError(null);
     setBusy(true);
     try {
-      const { blob } = await editPdf(file, arr, overlays);
+      const { blob } = await editPdf(file, arr, overlays, true); // final → counts toward plan
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

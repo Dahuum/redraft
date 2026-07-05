@@ -165,6 +165,10 @@ export default function HomeScreen({ onUpload, onOpen, busy, error, onSignOut })
               >
                 Browse Files
               </button>
+              <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant/70">
+                <span className="material-symbols-outlined text-[14px]">lock</span>
+                Your files are processed in memory and never stored.
+              </p>
               {error && (
                 <p className="mt-md text-sm text-error text-center max-w-sm">{error}</p>
               )}

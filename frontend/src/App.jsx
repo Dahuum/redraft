@@ -9,12 +9,14 @@ import BulkWorkspace from "./components/BulkWorkspace.jsx";
 import AnnexWorkspace from "./components/AnnexWorkspace.jsx";
 import ThemeToggle from "./components/ThemeToggle.jsx";
 import { useAuth } from "./lib/useAuth.js";
+import { usePlan } from "./lib/usePlan.js";
 
 export default function App() {
   const route = parseRoute(usePath());
   const { view, mode, docId } = route;
   const ed = useEditor();
   const auth = useAuth();
+  const { plan, refresh: refreshPlan } = usePlan(view); // re-checks usage on nav
   const loadedDocIdRef = useRef(null); // which history doc is currently in `ed`
 
   // Gate the app behind a Supabase session — no session → back to the landing.
@@ -119,6 +121,7 @@ export default function App() {
   async function handleDownload() {
     await ed.download();
     if (docId && docId !== "memory") patchDoc(docId, { status: "Final" });
+    refreshPlan(); // usage may have gone up
   }
 
   // While auth is resolving (or redirecting an unauthenticated user), hold a loader.
@@ -167,6 +170,18 @@ export default function App() {
             <span className="material-symbols-outlined text-[18px]">download</span>
             Export PDF
           </button>
+          {plan?.auth && plan.limit != null && (
+            <span
+              title="Documents generated this month"
+              className={`px-2.5 py-1 rounded-md font-label-md text-[12px] border ${
+                plan.used >= plan.limit
+                  ? "border-error/40 text-error bg-error/10"
+                  : "border-outline-variant text-on-surface-variant"
+              }`}
+            >
+              {plan.used}/{plan.limit} docs
+            </span>
+          )}
           {auth.enabled && (
             <button
               onClick={auth.signOut}
