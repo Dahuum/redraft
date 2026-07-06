@@ -197,13 +197,13 @@ export default function App() {
         </button>
         <div className="flex items-center gap-3">
           <ThemeToggle />
-          <button className="px-3 py-1.5 rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100">
+          <button className="h-8 px-3 inline-flex items-center rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100">
             Share
           </button>
           <button
             onClick={handleDownload}
             disabled={ed.nEdits === 0 || ed.busy}
-            className="px-3 py-1.5 rounded-md font-label-md text-[13px] bg-primary text-on-primary hover:bg-primary/90 transition-colors shadow-[0_0_15px_rgba(195,198,210,0.1)] opacity-80 active:opacity-100 flex items-center gap-2 disabled:opacity-40"
+            className="h-8 px-3 rounded-md font-label-md text-[13px] bg-primary text-on-primary hover:bg-primary/90 transition-colors shadow-[0_0_15px_rgba(195,198,210,0.1)] opacity-80 active:opacity-100 inline-flex items-center gap-2 disabled:opacity-40"
           >
             <span className="material-symbols-outlined text-[18px]">download</span>
             Export PDF
@@ -211,7 +211,7 @@ export default function App() {
           {plan?.auth && plan.limit != null && (
             <span
               title="Documents generated this month"
-              className={`px-2.5 py-1 rounded-md font-label-md text-[12px] border ${
+              className={`h-8 px-2.5 inline-flex items-center rounded-md font-label-md text-[12px] border ${
                 plan.used >= plan.limit
                   ? "border-error/40 text-error bg-error/10"
                   : "border-outline-variant text-on-surface-variant"
@@ -224,7 +224,7 @@ export default function App() {
             <button
               onClick={auth.signOut}
               title="Sign out"
-              className="ml-1 px-3 py-1.5 rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100 flex items-center gap-1.5"
+              className="ml-1 h-8 px-3 rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100 inline-flex items-center gap-1.5"
             >
               <span className="material-symbols-outlined text-[18px]">logout</span>
               Sign out
