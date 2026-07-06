@@ -141,7 +141,7 @@ def _svc_headers(extra: dict = None) -> dict:
 def _get_profile(uid: str) -> dict:
     """Get-or-create the user's profile row (service_role bypasses RLS)."""
     st, rows = _sb_http("GET",
-                        f"/rest/v1/profiles?id=eq.{uid}&select=plan,used,period",
+                        f"/rest/v1/profiles?id=eq.{uid}&select=plan,used,period,doc_limit",
                         _svc_headers())
     if st == 200 and rows:
         return rows[0]
@@ -153,21 +153,29 @@ def _get_profile(uid: str) -> dict:
     return {"plan": "free", "used": 0, "period": _period()}
 
 
+def _limit_for(prof: dict) -> int:
+    """Monthly document limit: a per-user doc_limit override wins; else the plan."""
+    dl = prof.get("doc_limit")
+    if dl is not None:
+        return int(dl)
+    return PLANS.get(prof.get("plan", "free"), PLANS["free"])["documents"]
+
+
 def _effective_used(prof: dict) -> int:
     return 0 if prof.get("period") != _period() else int(prof.get("used") or 0)
 
 
 def _meter_check(uid: str, n: int):
-    """Raise 402 if generating n docs would exceed the caller's monthly plan."""
+    """Raise 402 if generating n docs would exceed the caller's monthly limit."""
     if not AUTH_ON or not uid:
         return
     prof = _get_profile(uid)
-    limit = PLANS.get(prof.get("plan", "free"), PLANS["free"])["documents"]
+    limit = _limit_for(prof)
     used = _effective_used(prof)
     if used + n > limit:
         raise HTTPException(
-            402, f"You've used {used} of {limit} free documents this month. "
-                 f"Upgrade to Pro for unlimited.")
+            402, f"You've used {used} of {limit} documents this month. "
+                 f"Upgrade for more.")
 
 
 def _meter_add(uid: str, n: int):
@@ -611,7 +619,7 @@ async def me(user: str = Depends(require_user)):
         return {"auth": False, "plan": "pro", "used": 0, "limit": None}
     prof = await run_in_threadpool(_get_profile, user)
     plan = prof.get("plan", "free")
-    limit = PLANS.get(plan, PLANS["free"])["documents"]
+    limit = _limit_for(prof)
     return {"auth": True, "plan": plan, "used": _effective_used(prof),
             "limit": (None if limit >= 10 ** 9 else limit)}
 
