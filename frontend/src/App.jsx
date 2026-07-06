@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditor } from "./useEditor.js";
+import { ping } from "./api.js";
 import { addDoc, getRecord, patchDoc, getAllRecords } from "./lib/history.js";
 import { renderThumb } from "./lib/thumb.js";
 import { usePath, parseRoute, navigate } from "./lib/router.js";
@@ -20,6 +21,15 @@ export default function App() {
   const { plan, refresh: refreshPlan } = usePlan(view); // re-checks usage on nav
   const loadedDocIdRef = useRef(null); // which history doc is currently in `ed`
   const [cloudProjectId, setCloudProjectId] = useState(null); // open saved template (live)
+
+  // Wake the (free-tier, sleeps-when-idle) backend the instant the app loads,
+  // so it's warm by the time the user clicks Upload/Generate — no dropped first
+  // click. Fire-and-forget; retry once a few seconds later in case it was cold.
+  useEffect(() => {
+    ping();
+    const t = setTimeout(() => ping(), 4000);
+    return () => clearTimeout(t);
+  }, []);
 
   // Gate the app behind a Supabase session — no session → back to the landing.
   // (If Supabase isn't configured, auth.enabled is false and the app runs open.)
