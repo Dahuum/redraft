@@ -24,6 +24,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -36,7 +37,7 @@ from pathlib import Path
 from typing import List
 
 import fitz
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
@@ -128,6 +129,44 @@ def require_user(authorization: str = Header(default="")) -> str:
     if not uid:
         raise HTTPException(401, "Please sign in to use Redraft.")
     return uid
+
+
+def optional_user(authorization: str = Header(default="")) -> str:
+    """Like require_user but never 401s — returns '' for anonymous callers. Used
+    on the guest-allowed endpoints (compose / extract / edit)."""
+    if not AUTH_ON:
+        return ""
+    token = authorization[7:].strip() if authorization[:7].lower() == "bearer " else ""
+    return _validate_token(token) or ""
+
+
+# ── Guest (anonymous) daily limit, metered by IP (in-memory; soft cap) ──
+GUEST_DAILY_LIMIT = int(os.environ.get("GUEST_DAILY_LIMIT", "5"))
+_IP_USAGE: dict = {}  # (ip, "YYYY-MM-DD") -> count
+
+
+def _client_ip(request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _guest_meter_check(ip: str, n: int):
+    used = _IP_USAGE.get((ip, _period_day()), 0)
+    if used + n > GUEST_DAILY_LIMIT:
+        raise HTTPException(
+            402, f"You've reached the free daily limit of {GUEST_DAILY_LIMIT} "
+                 f"documents. Sign in to Redraft for more.")
+
+
+def _guest_meter_add(ip: str, n: int):
+    key = (ip, _period_day())
+    _IP_USAGE[key] = _IP_USAGE.get(key, 0) + n
+
+
+def _period_day() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _svc_headers(extra: dict = None) -> dict:
@@ -624,9 +663,117 @@ async def me(user: str = Depends(require_user)):
             "limit": (None if limit >= 10 ** 9 else limit)}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Compose: turn plain text into a clean, editable, signable A4 PDF (no upload).
+# Uses PyMuPDF's Story engine (HTML/CSS typography) so the result is properly
+# formatted — real margins, headings, justified paragraphs, auto-pagination —
+# then opens straight in the editor. This is the "text → document" primitive.
+# ─────────────────────────────────────────────────────────────────────────────
+import html as _html  # noqa: E402
+from datetime import date as _date  # noqa: E402
+
+MAX_COMPOSE_CHARS = 60_000
+
+# Classic Legal treatment: serif body, centered title over a full-width rule,
+# a Référence / Date row, bold "Article" headings, justified paragraphs, and a
+# paired signature block. Notary-grade — reads as a real filed contract.
+_COMPOSE_CSS = """
+* { font-family: serif; color: #1a1a1a; }
+h1 { font-size: 15pt; font-weight: bold; text-align: center;
+     letter-spacing: .4pt; margin: 0 0 8pt 0; }
+.trule { border-bottom: 1pt solid #1a1a1a; margin: 0 0 7pt 0; }
+.ref { text-align: center; font-size: 9pt; color: #555; margin: 0 0 24pt 0; }
+h2 { font-size: 11pt; font-weight: bold; margin: 16pt 0 6pt 0; }
+p { font-size: 10.5pt; line-height: 1.55; margin: 0 0 9pt 0; text-align: justify; }
+.sig { width: 100%; margin-top: 42pt; font-size: 10pt; }
+.sig td { width: 50%; padding-right: 24pt; }
+.ln { border-top: .8pt solid #1a1a1a; margin-top: 46pt; }
+"""
+
+
+def _compose_html(title: str, body: str, meta: str = "") -> str:
+    """Build the Classic Legal document from plain text: blank lines → justified
+    paragraphs; a short line in CAPS or ending ':' → a bold heading. Header has a
+    ruled title + Référence/Date row (date auto-filled today); ends with a paired
+    signature block. `meta`, if given, overrides the reference line."""
+    parts = []
+    if title.strip():
+        parts.append(f"<h1>{_html.escape(title.strip())}</h1>")
+        parts.append('<div class="trule"></div>')
+        ref = _html.escape(meta.strip()) if meta.strip() else (
+            f"Référence : ____________&nbsp;&nbsp;·&nbsp;&nbsp;"
+            f"Date : {_date.today().strftime('%d / %m / %Y')}"
+        )
+        parts.append(f'<p class="ref">{ref}</p>')
+    for block in re.split(r"\n\s*\n", body.strip()):
+        block = block.strip()
+        if not block:
+            continue
+        one_line = "\n" not in block
+        # A heading is a short standalone line that is either a legal section
+        # marker (Article/Clause/Section/Titre/Chapitre/Préambule/Annexe…), a
+        # numbered item ("1." / "1)"), or ALL-CAPS. Colon lead-ins like
+        # "Entre les soussignés :" stay as normal paragraphs.
+        looks_heading = one_line and len(block) <= 72 and (
+            block.isupper()
+            or re.match(r"^(article|clause|section|titre|chapitre|pr[ée]ambule"
+                        r"|annexe|art\.)\b", block, re.I)
+            or re.match(r"^\d+[.)]\s+\S", block)
+        )
+        safe = _html.escape(block).replace("\n", "<br/>")
+        parts.append(f"<h2>{safe}</h2>" if looks_heading else f"<p>{safe}</p>")
+    parts.append(
+        '<table class="sig"><tr>'
+        '<td>Signature<div class="ln"></div></td>'
+        '<td>Signature<div class="ln"></div></td>'
+        "</tr></table>"
+    )
+    return "<html><body>" + "".join(parts) + "</body></html>"
+
+
+def compose_pdf(title: str, body: str, meta: str = "") -> bytes:
+    """Flow the HTML across A4 pages with clean margins → editable PDF bytes."""
+    page_rect = fitz.paper_rect("a4")
+    margin = 64
+    where = page_rect + (margin, margin, -margin, -margin)
+    story = fitz.Story(html=_compose_html(title, body, meta), user_css=_COMPOSE_CSS)
+    buf = io.BytesIO()
+    writer = fitz.DocumentWriter(buf)
+    more = 1
+    guard = 0
+    while more and guard < 50:               # 50-page hard cap (safety)
+        dev = writer.begin_page(page_rect)
+        more, _ = story.place(where)
+        story.draw(dev)
+        writer.end_page()
+        guard += 1
+    writer.close()
+    return buf.getvalue()
+
+
+@app.post("/compose")
+async def compose(text: str = Form(...), title: str = Form(""),
+                  meta: str = Form(""), user: str = Depends(optional_user)):
+    """Plain text → a clean, editable A4 PDF (opened in the editor client-side).
+    Guest-allowed: composing is free; the daily cap applies at download (/edit)."""
+    if len(text) > MAX_COMPOSE_CHARS:
+        raise HTTPException(413, f"Text is too long (limit {MAX_COMPOSE_CHARS} chars).")
+    if not text.strip():
+        raise HTTPException(400, "Provide some text to build the document.")
+    try:
+        pdf = await run_in_threadpool(compose_pdf, title, text, meta)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"Couldn't build the document ({type(exc).__name__}).")
+    stem = "".join(c for c in (title or "document") if c.isalnum() or c in " -_").strip() or "document"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.pdf"'})
+
+
 @app.post("/extract")
-async def extract(file: UploadFile = File(...), user: str = Depends(require_user)):
-    """Upload a PDF → JSON of every text span (+ page dimensions)."""
+async def extract(file: UploadFile = File(...), user: str = Depends(optional_user)):
+    """Upload a PDF → JSON of every text span (+ page dimensions). Guest-allowed
+    (read-only) so a composed document can open in the editor without login."""
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
@@ -645,16 +792,17 @@ async def extract(file: UploadFile = File(...), user: str = Depends(require_user
 
 
 @app.post("/edit")
-async def edit(file: UploadFile = File(...), edits: str = Form(...),
+async def edit(request: Request, file: UploadFile = File(...), edits: str = Form(...),
                stamps: str = Form("[]"), final: str = Form(""),
-               user: str = Depends(require_user)):
+               user: str = Depends(optional_user)):
     """Apply replacements + baked overlays and return the edited PDF bytes.
 
     `edits` is a JSON array: [{"index": <span_id>, "new_text": "..."}].
     `stamps` (optional) is a JSON array of added text / signature overlays in
     top-left PDF points — see _apply_stamps. `final` = truthy only on the real
-    download (counts 1 toward the plan); previews leave it empty. Spans are
-    re-extracted server-side; index references the /extract ordering.
+    download; it counts 1 toward the plan (signed-in) or the free daily cap
+    (guest, by IP). Previews leave it empty. Guest-allowed so a composed doc can
+    be edited + downloaded without login. Spans are re-extracted server-side.
     """
     data = await file.read()
     if not data:
@@ -690,8 +838,12 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
     if not replacements and not stamp_list:
         raise HTTPException(400, "Nothing to apply — no edits or added items.")
 
+    ip = _client_ip(request)
     if final:
-        await run_in_threadpool(_meter_check, user, 1)
+        if user:
+            await run_in_threadpool(_meter_check, user, 1)
+        elif AUTH_ON:  # guest download → per-IP daily cap
+            _guest_meter_check(ip, 1)
 
     try:
         if replacements:
@@ -704,7 +856,10 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
                                  f"({type(exc).__name__}: {exc}).")
 
     if final:
-        await run_in_threadpool(_meter_add, user, 1)
+        if user:
+            await run_in_threadpool(_meter_add, user, 1)
+        elif AUTH_ON:
+            _guest_meter_add(ip, 1)
 
     hdr = base64.b64encode(json.dumps(report).encode()).decode()
     stem = Path(file.filename or "document").stem

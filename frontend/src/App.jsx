@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditor } from "./useEditor.js";
-import { ping } from "./api.js";
+import { ping, composeDoc } from "./api.js";
 import { addDoc, getRecord, patchDoc, getAllRecords } from "./lib/history.js";
 import { renderThumb } from "./lib/thumb.js";
 import { usePath, parseRoute, navigate } from "./lib/router.js";
@@ -21,6 +21,15 @@ export default function App() {
   const { plan, refresh: refreshPlan } = usePlan(view); // re-checks usage on nav
   const loadedDocIdRef = useRef(null); // which history doc is currently in `ed`
   const [cloudProjectId, setCloudProjectId] = useState(null); // open saved template (live)
+  // True while a ?compose= deep-link is being turned into a document, so we show
+  // a loader and go straight to the editor — never flash the home/overview page.
+  const [composing, setComposing] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).has("compose");
+    } catch {
+      return false;
+    }
+  });
 
   // Wake the (free-tier, sleeps-when-idle) backend the instant the app loads,
   // so it's warm by the time the user clicks Upload/Generate — no dropped first
@@ -31,10 +40,51 @@ export default function App() {
     return () => clearTimeout(t);
   }, []);
 
-  // Gate the app behind a Supabase session — no session → back to the landing.
-  // (If Supabase isn't configured, auth.enabled is false and the app runs open.)
+  // Guest session: a logged-out visitor who arrived via a ?compose= link. They
+  // get an editor-only session (compose → edit → sign → download, metered), but
+  // not the home overview / bulk / annex / cloud — those still require login.
+  const [guest, setGuest] = useState(false);
+
+  // Gate the app behind a Supabase session — no session → back to the landing,
+  // UNLESS this is a guest compose session. (Supabase not configured → open.)
   useEffect(() => {
-    if (auth.enabled && auth.ready && !auth.user) window.location.replace("/");
+    if (!auth.enabled || !auth.ready || auth.user) return;
+    const hasCompose = new URLSearchParams(window.location.search).has("compose");
+    if (hasCompose || guest) {
+      setGuest(true); // allow the editor-only guest session
+      return;
+    }
+    window.location.replace("/");
+  }, [auth.enabled, auth.ready, auth.user, guest]);
+
+  // Deep-link entry: /app.html?compose=<text>&title=<title> — compose the text
+  // into a clean PDF and open it straight in the editor. This is the shareable
+  // "Create in Redraft" button: any site links here, the user lands editing —
+  // works for signed-in users AND logged-out guests.
+  const composedRef = useRef(false);
+  useEffect(() => {
+    if (composedRef.current) return;
+    if (auth.enabled && !auth.ready) return; // wait until auth resolves
+    const params = new URLSearchParams(window.location.search);
+    const text = params.get("compose");
+    if (!text) return;
+    composedRef.current = true;
+    if (auth.enabled && !auth.user) setGuest(true);
+    const title = params.get("title") || "";
+    (async () => {
+      try {
+        const blob = await composeDoc(text, title);
+        const name = (title.trim() || "document").replace(/[^\w \-]/g, "").slice(0, 60) || "document";
+        // navigate() (inside handleUpload) rewrites the path to /editor and drops
+        // the ?compose= query, so a refresh won't re-compose.
+        await handleUpload(new File([blob], `${name}.pdf`, { type: "application/pdf" }));
+      } catch (e) {
+        window.alert(e.message || "Couldn't create the document from the link.");
+      } finally {
+        setComposing(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.enabled, auth.ready, auth.user]);
 
   // One-time backfill: give any pre-existing history docs a thumbnail.
@@ -171,11 +221,23 @@ export default function App() {
     refreshPlan(); // usage may have gone up
   }
 
-  // While auth is resolving (or redirecting an unauthenticated user), hold a loader.
-  if (auth.enabled && (!auth.ready || !auth.user)) {
+  // While auth is resolving (or redirecting an unauthenticated non-guest), hold a
+  // loader. A guest compose session is allowed through.
+  if (auth.enabled && (!auth.ready || (!auth.user && !guest))) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-background text-on-surface-variant">
         <span className="material-symbols-outlined animate-spin text-[28px]">progress_activity</span>
+      </div>
+    );
+  }
+
+  // Composing a ?compose= deep-link → loader, then straight into the editor
+  // (never render the home/overview page in between).
+  if (composing) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center gap-3 bg-background text-on-surface-variant">
+        <span className="material-symbols-outlined animate-spin text-[28px] text-accent-cyan">progress_activity</span>
+        <p className="text-body-md">Preparing your document…</p>
       </div>
     );
   }
@@ -199,7 +261,12 @@ export default function App() {
       {/* TopNavBar */}
       <header className="bg-surface/80 backdrop-blur-xl text-primary font-label-md text-label-md h-14 w-full border-b border-outline-variant flex justify-between items-center sticky top-0 z-30 px-6">
         <button
-          onClick={() => navigate("/")}
+          onClick={() => {
+            // Logged in → app home. Guest (arrived via a compose link) → the
+            // landing page, which is where they can sign in / sign up.
+            if (auth.enabled && !auth.user) window.location.href = "/";
+            else navigate("/");
+          }}
           className="flex items-center gap-2 text-on-surface hover:opacity-80 transition-opacity"
         >
           <span className="material-symbols-outlined text-[20px]">arrow_back</span>
@@ -230,7 +297,7 @@ export default function App() {
               {plan.used}/{plan.limit} docs
             </span>
           )}
-          {auth.enabled && (
+          {auth.enabled && auth.user && (
             <button
               onClick={auth.signOut}
               title="Sign out"
@@ -238,6 +305,16 @@ export default function App() {
             >
               <span className="material-symbols-outlined text-[18px]">logout</span>
               Sign out
+            </button>
+          )}
+          {auth.enabled && !auth.user && (
+            <button
+              onClick={() => { window.location.href = "/"; }}
+              title="Sign in to save your work and get more documents"
+              className="ml-1 h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-[#003ea8] transition-colors inline-flex items-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[18px]">login</span>
+              Sign in
             </button>
           )}
         </div>

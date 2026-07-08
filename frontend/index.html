@@ -41,11 +41,10 @@
       <span class="brand__name">Redraft</span>
     </a>
     <ul class="nav__links">
-      <li><a href="#features">Features</a></li>
-      <li><a href="#tools">Tools</a></li>
+      <li><a href="#product">Preview</a></li>
+      <li><a href="#mission">Info</a></li>
+      <li><a href="#features">Tools</a></li>
       <li><a href="#pricing">Pricing</a></li>
-      <li><a href="#enterprise">Enterprise</a></li>
-      <li><a href="#docs">Docs</a></li>
     </ul>
     <div class="nav__cta">
       <button class="nav__signin" data-modal="signin">Sign In</button>
@@ -183,20 +182,20 @@
   <div class="hero__inner">
     <a href="#" class="eyebrow eyebrow--badge">
       <span class="eyebrow__icon" aria-hidden="true"></span>
-      AI-Powered PDF Editing — No Adobe needed
+      Edit, sign &amp; generate PDFs — no Adobe needed
     </a>
     <h1 class="hero__title">
       Edit any PDF.<br />
       <span class="hero__title-gradient">Exactly how you want it.</span>
     </h1>
     <p class="hero__sub">
-      Upload your PDF, let AI reconstruct it perfectly, edit anything —
-      text, numbers, layout — and export a clean result in seconds.
+      Upload a PDF and change any text or number in place, add your signature,
+      or generate hundreds of documents from a spreadsheet — a clean result in seconds.
     </p>
 
     <div class="hero__actions">
       <a href="#" class="btn btn--primary btn--lg" data-modal="signup">Start Editing Free</a>
-      <a href="#how" class="btn btn--ghost btn--lg">
+      <a href="#product" class="btn btn--ghost btn--lg">
         See how it works
         <svg width="14" height="14" viewBox="0 0 13.333 13.333" fill="currentColor" aria-hidden="true">
           <path d="M 10.146 7.5 L 0 7.5 L 0 5.833 L 10.146 5.833 L 5.479 1.167 L 6.667 0 L 13.333 6.667 L 6.667 13.333 L 5.479 12.167 L 10.146 7.5 L 10.146 7.5" />
@@ -210,7 +209,7 @@
         <span style="width:28px;height:28px;border-radius:50%;border:2px solid var(--bg);background:linear-gradient(135deg,#06b6d4,#3b82f6);display:inline-block;margin-left:-10px"></span>
         <span style="width:28px;height:28px;border-radius:50%;border:2px solid var(--bg);background:linear-gradient(135deg,#8b5cf6,#ec4899);display:inline-block;margin-left:-10px"></span>
       </div>
-      <span>Already used by 500+ freelancers and businesses</span>
+      <span>Already used by 50+ freelancers and businesses</span>
     </div>
   </div>
 </section>
@@ -225,12 +224,12 @@
 </section>
 
 <!-- ─────────── MISSION ─────────── -->
-<section class="mission">
+<section class="mission" id="mission" data-screen-label="Mission">
   <p class="eyebrow">OUR MISSION</p>
   <p class="mission__copy reveal-text">
-    We think AI integration is the way of the future for document
-    management. Our goal is to build strong tools and infrastructure
-    that enable teams to fully utilize intelligent PDF technology.
+    We believe working with documents should be effortless and open to
+    everyone. Our mission is to give you the easiest — and freest — way to
+    edit, sign, and generate the documents you need, without gatekeepers.
   </p>
 </section>
 
@@ -238,12 +237,11 @@
 <!-- ─────────── BENTO FEATURES ─────────── -->
 <section class="bento" id="features">
   <article class="card card--feature card--tall">
-    <p class="eyebrow eyebrow--sm">WORKFLOW EFFICIENCY</p>
-    <h3 class="card__title">Automate tasks.<br />Focus on growth.</h3>
+    <p class="eyebrow eyebrow--sm">BULK GENERATION</p>
+    <h3 class="card__title">Hundreds of documents.<br />From one spreadsheet.</h3>
     <p class="card__body">
-      Cut out the boring stuff with our awesome automations,
-      so your team can keep their eyes on the prize and grow
-      your product like never before.
+      Pick the fields that change, map them to your Excel or CSV, and generate
+      every client's document at once — download a ZIP or one merged PDF.
     </p>
 
     <div class="card__art">
@@ -260,21 +258,21 @@
   </article>
 
   <article class="card card--feature">
-    <p class="eyebrow eyebrow--sm">APP USERS</p>
-    <h3 class="card__title card__title--md">Track and improve</h3>
+    <p class="eyebrow eyebrow--sm">EDIT &amp; SIGN</p>
+    <h3 class="card__title card__title--md">Edit any PDF, then sign it</h3>
     <p class="card__body">
-      Monitor performance in real-time and optimize your
-      workflow with clear, actionable insights.
+      Click any text or number to change it in place, add text in the
+      document's own font, and drop in a signature you draw or type.
     </p>
     <span class="blob blob--right" aria-hidden="true"></span>
   </article>
 
   <article class="card card--feature">
-    <p class="eyebrow eyebrow--sm">COMPLETED TASK</p>
-    <h3 class="card__title card__title--md">Track Your Success</h3>
+    <p class="eyebrow eyebrow--sm">START FROM TEXT</p>
+    <h3 class="card__title card__title--md">Text into a clean document</h3>
     <p class="card__body">
-      Get detailed insights on task completion, team performance,
-      and progress with customizable reports.
+      Paste a contract or letter and get a professionally formatted,
+      editable and signable PDF in seconds — no template needed.
     </p>
     <span class="blob blob--left" aria-hidden="true"></span>
   </article>
@@ -288,8 +286,8 @@
       <p class="eyebrow eyebrow--sm">PRICING</p>
     </header>
 
-    <!-- Billing toggle -->
-    <div class="pricing__toggle" role="group" aria-label="Billing period">
+    <!-- Billing toggle hidden during beta (everything is free) -->
+    <div class="pricing__toggle" role="group" aria-label="Billing period" hidden>
       <button class="pricing__period pricing__period--active" id="btn-monthly">Monthly</button>
       <button class="pricing__period" id="btn-yearly">
         Yearly
@@ -310,47 +308,46 @@
             <span class="pricing-card__mo">/mo</span>
           </div>
           <p class="pricing-card__billed-note">&nbsp;</p>
-          <p class="pricing-card__tagline">Everything you need to get started with PDF editing.</p>
+          <p class="pricing-card__tagline">Edit, sign and create documents — great for occasional use.</p>
         </div>
         <a href="#get-started" class="btn btn--ghost btn--block" data-modal="signup">Get Started Free</a>
         <ul class="pricing-card__list">
-          <li>Up to 3 PDFs per month</li>
-          <li>Basic text editing</li>
-          <li>Export to PDF</li>
-          <li>5 MB file size limit</li>
-          <li>Email support</li>
+          <li>30 documents per month</li>
+          <li>Edit any PDF — change text in place</li>
+          <li>Add text &amp; signatures (draw or type)</li>
+          <li>Start from text → a clean, signable document</li>
+          <li>Save up to 3 templates &amp; signatures</li>
+          <li>Files processed in memory, never stored</li>
         </ul>
       </article>
 
       <!-- Pro -->
       <article class="pricing-card pricing-card--pro">
-        <div class="pricing-card__popular">Most Popular</div>
+        <div class="pricing-card__popular">Free during beta</div>
         <div class="pricing-card__head">
           <p class="pricing-card__name">Pro</p>
           <div class="pricing-card__price">
-            <span class="pricing-card__dollar">$</span>
-            <span class="pricing-card__num" id="pro-price">3.99</span>
-            <span class="pricing-card__mo">/mo</span>
+            <span class="pricing-card__num" id="pro-price">Free</span>
+            <span class="pricing-card__mo">in beta</span>
           </div>
-          <p class="pricing-card__billed-note" id="pro-billed">Billed monthly</p>
-          <p class="pricing-card__tagline">Full AI power for freelancers and growing teams.</p>
+          <p class="pricing-card__billed-note" id="pro-billed">No card — free while we're in beta</p>
+          <p class="pricing-card__tagline">Everything, unlimited — for people who send documents every week.</p>
         </div>
-        <a href="#get-started" class="btn btn--primary btn--block" data-modal="signup">Start Pro — Free Trial</a>
+        <a href="#get-started" class="btn btn--primary btn--block" data-modal="signup">Get Pro free</a>
         <ul class="pricing-card__list">
-          <li>Unlimited PDFs</li>
-          <li>AI-powered editing</li>
-          <li>Advanced layout tools</li>
-          <li>100 MB file size limit</li>
+          <li>Unlimited documents per month</li>
+          <li>Bulk generate from a spreadsheet (ZIP or one merged PDF)</li>
+          <li>Billing-annex automation (remove lines, recompute totals)</li>
+          <li>Save unlimited templates &amp; signatures to your account</li>
+          <li>Reuse a template across devices — edits sync automatically</li>
+          <li>Larger files</li>
           <li>Priority support</li>
-          <li>Team collaboration</li>
-          <li>API access</li>
-          <li>30-day version history</li>
         </ul>
       </article>
 
     </div>
 
-    <p class="pricing__footnote">No credit card required &nbsp;·&nbsp; Cancel anytime</p>
+    <p class="pricing__footnote">We're in beta — every plan is free right now, no credit card needed.</p>
 
 
   </div>

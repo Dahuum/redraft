@@ -153,7 +153,7 @@ function Screen(_p = {}) {
       lineHeight: 1.0770000219345093,
       color: "var(--bw-fg, rgb(0,0,0))"
     }
-  }, "app.yourapp.io")), /*#__PURE__*/React.createElement("div", {
+  }, "redraft.dev")), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       left: 0,
