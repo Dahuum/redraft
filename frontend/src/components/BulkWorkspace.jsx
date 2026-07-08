@@ -217,23 +217,14 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
     hs = uniquify(hs);
     setImpHeaders(hs);
     setImpRows(rs.map((r) => r.map((v) => String(v ?? ""))));
-    // Keep your prior column choices when re-pasting same-shaped data; fuzzy-fill the rest.
-    setImpMap((prev) => {
+    // Positional auto-map: the Nth field you picked ← the Nth CSV column, in the
+    // order you clicked them. Deterministic (no fuzzy guessing) — pick fields in
+    // the same order as your columns and everything lines up automatically.
+    setImpMap(() => {
       const m = {};
-      for (const s of pickedSpans) {
-        if (prev[s.id] && hs.includes(prev[s.id])) {
-          m[s.id] = prev[s.id];
-          continue;
-        }
-        const txt = (s.text || "").toLowerCase().trim();
-        const hit =
-          txt &&
-          hs.find((h) => {
-            const hl = h.toLowerCase();
-            return hl && (txt.includes(hl) || hl.includes(txt));
-          });
-        if (hit) m[s.id] = hit;
-      }
+      pickedSpans.forEach((s, i) => {
+        if (i < hs.length) m[s.id] = hs[i];
+      });
       return m;
     });
     setError(null);
@@ -622,7 +613,8 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
               {impHeaders.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-caption text-on-surface-variant">
-                    Match each field to a column ({impRows.length} rows found):
+                    Matched in order — field 1 ← column 1, field 2 ← column 2 …
+                    ({impRows.length} rows). Adjust any below if needed.
                   </p>
                   {pickedSpans.map((s) => (
                     <div key={s.id} className="flex items-center gap-2">

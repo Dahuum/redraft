@@ -276,6 +276,17 @@ def _hex_to_rgb(hex_str: str):
         return (0.07, 0.09, 0.15)
 
 
+def _styled_font_name(fontname: str, bold: bool, italic: bool) -> str:
+    """Build the styled variant name of a font family, e.g. 'Poppins-Regular' +
+    bold+italic → 'Poppins-BoldItalic'. The resolver understands these names."""
+    try:
+        fam, _weight, _style = _pe._parse_font_name(fontname)
+    except Exception:  # noqa: BLE001
+        fam = fontname
+    suffix = ("Bold" if bold else "") + ("Italic" if italic else "")
+    return f"{fam}-{suffix or 'Regular'}"
+
+
 def _apply_stamps(pdf_bytes: bytes, stamps: list) -> bytes:
     """Bake added text + signature-image overlays onto the PDF (PyMuPDF).
 
@@ -302,21 +313,37 @@ def _apply_stamps(pdf_bytes: bytes, stamps: list) -> bytes:
                 color = _hex_to_rgb(st.get("color"))
                 x = float(st.get("x") or 0)
                 y = float(st.get("y") or 0) + size * 0.82   # box-top → baseline
-                try:
-                    raw = resolve_full_font(str(st.get("font") or ""))
-                except Exception:  # noqa: BLE001
-                    raw = None
+                bold = bool(st.get("bold"))
+                italic = bool(st.get("italic"))
+                font_name = str(st.get("font") or "")
+                # Resolve the styled variant (family-Bold / -Italic / -BoldItalic)
+                # first; fall back to the picked font as-is; else a base-14 builtin
+                # that carries the requested style so B/I always render.
+                raw = None
+                if font_name:
+                    target = _styled_font_name(font_name, bold, italic) if (bold or italic) else font_name
+                    try:
+                        raw = resolve_full_font(target)
+                    except Exception:  # noqa: BLE001
+                        raw = None
+                    if raw is None and target != font_name:
+                        try:
+                            raw = resolve_full_font(font_name)
+                        except Exception:  # noqa: BLE001
+                            raw = None
+                builtin = {(False, False): "helv", (True, False): "hebo",
+                           (False, True): "heit", (True, True): "hebi"}[(bold, italic)]
                 try:
                     if raw:
                         page.insert_text(fitz.Point(x, y), text, fontsize=size,
                                          color=color, fontname=f"inj{i}", fontbuffer=raw)
                     else:
                         page.insert_text(fitz.Point(x, y), text, fontsize=size,
-                                         color=color, fontname="helv")
+                                         color=color, fontname=builtin)
                 except Exception:  # noqa: BLE001 — safe builtin fallback
                     try:
                         page.insert_text(fitz.Point(x, y), text, fontsize=size,
-                                         color=color, fontname="helv")
+                                         color=color, fontname=builtin)
                     except Exception:  # noqa: BLE001
                         continue
             elif kind == "sign":
