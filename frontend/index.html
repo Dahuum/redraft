@@ -196,7 +196,7 @@
 
     <div class="hero__actions">
       <a href="#" class="btn btn--primary btn--lg" data-modal="signup">Start Editing Free</a>
-      <a href="#how" class="btn btn--ghost btn--lg">
+      <a href="#product" class="btn btn--ghost btn--lg">
         See how it works
         <svg width="14" height="14" viewBox="0 0 13.333 13.333" fill="currentColor" aria-hidden="true">
           <path d="M 10.146 7.5 L 0 7.5 L 0 5.833 L 10.146 5.833 L 5.479 1.167 L 6.667 0 L 13.333 6.667 L 6.667 13.333 L 5.479 12.167 L 10.146 7.5 L 10.146 7.5" />
@@ -288,8 +288,8 @@
       <p class="eyebrow eyebrow--sm">PRICING</p>
     </header>
 
-    <!-- Billing toggle -->
-    <div class="pricing__toggle" role="group" aria-label="Billing period">
+    <!-- Billing toggle hidden during beta (everything is free) -->
+    <div class="pricing__toggle" role="group" aria-label="Billing period" hidden>
       <button class="pricing__period pricing__period--active" id="btn-monthly">Monthly</button>
       <button class="pricing__period" id="btn-yearly">
         Yearly
@@ -310,47 +310,46 @@
             <span class="pricing-card__mo">/mo</span>
           </div>
           <p class="pricing-card__billed-note">&nbsp;</p>
-          <p class="pricing-card__tagline">Everything you need to get started with PDF editing.</p>
+          <p class="pricing-card__tagline">Edit, sign and create documents — great for occasional use.</p>
         </div>
         <a href="#get-started" class="btn btn--ghost btn--block" data-modal="signup">Get Started Free</a>
         <ul class="pricing-card__list">
-          <li>Up to 3 PDFs per month</li>
-          <li>Basic text editing</li>
-          <li>Export to PDF</li>
-          <li>5 MB file size limit</li>
-          <li>Email support</li>
+          <li>30 documents per month</li>
+          <li>Edit any PDF — change text in place</li>
+          <li>Add text &amp; signatures (draw or type)</li>
+          <li>Start from text → a clean, signable document</li>
+          <li>Save up to 3 templates &amp; signatures</li>
+          <li>Files processed in memory, never stored</li>
         </ul>
       </article>
 
       <!-- Pro -->
       <article class="pricing-card pricing-card--pro">
-        <div class="pricing-card__popular">Most Popular</div>
+        <div class="pricing-card__popular">Free during beta</div>
         <div class="pricing-card__head">
           <p class="pricing-card__name">Pro</p>
           <div class="pricing-card__price">
-            <span class="pricing-card__dollar">$</span>
-            <span class="pricing-card__num" id="pro-price">3.99</span>
-            <span class="pricing-card__mo">/mo</span>
+            <span class="pricing-card__num" id="pro-price">Free</span>
+            <span class="pricing-card__mo">in beta</span>
           </div>
-          <p class="pricing-card__billed-note" id="pro-billed">Billed monthly</p>
-          <p class="pricing-card__tagline">Full AI power for freelancers and growing teams.</p>
+          <p class="pricing-card__billed-note" id="pro-billed">No card — free while we're in beta</p>
+          <p class="pricing-card__tagline">Everything, unlimited — for people who send documents every week.</p>
         </div>
-        <a href="#get-started" class="btn btn--primary btn--block" data-modal="signup">Start Pro — Free Trial</a>
+        <a href="#get-started" class="btn btn--primary btn--block" data-modal="signup">Get Pro free</a>
         <ul class="pricing-card__list">
-          <li>Unlimited PDFs</li>
-          <li>AI-powered editing</li>
-          <li>Advanced layout tools</li>
-          <li>100 MB file size limit</li>
+          <li>Unlimited documents per month</li>
+          <li>Bulk generate from a spreadsheet (ZIP or one merged PDF)</li>
+          <li>Billing-annex automation (remove lines, recompute totals)</li>
+          <li>Save unlimited templates &amp; signatures to your account</li>
+          <li>Reuse a template across devices — edits sync automatically</li>
+          <li>Larger files</li>
           <li>Priority support</li>
-          <li>Team collaboration</li>
-          <li>API access</li>
-          <li>30-day version history</li>
         </ul>
       </article>
 
     </div>
 
-    <p class="pricing__footnote">No credit card required &nbsp;·&nbsp; Cancel anytime</p>
+    <p class="pricing__footnote">We're in beta — every plan is free right now, no credit card needed.</p>
 
 
   </div>

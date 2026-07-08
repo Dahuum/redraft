@@ -48,17 +48,7 @@
     const yearly = period === 'yearly';
     btnMonthly.classList.toggle('pricing__period--active', !yearly);
     btnYearly.classList.toggle('pricing__period--active',  yearly);
-    if (!priceEl) return;
-    priceEl.style.opacity = '0';
-    setTimeout(() => {
-      priceEl.textContent = yearly ? '2.79' : '3.99';
-      if (billedEl) {
-        billedEl.textContent = yearly
-          ? 'Billed $33.48 / year  —  save $14.40'
-          : 'Billed monthly';
-      }
-      priceEl.style.opacity = '1';
-    }, 150);
+    // Beta: Pro is free regardless of billing period — don't overwrite the price.
   }
 
   btnMonthly.addEventListener('click', () => setPeriod('monthly'));
