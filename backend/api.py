@@ -632,46 +632,63 @@ async def me(user: str = Depends(require_user)):
 # then opens straight in the editor. This is the "text → document" primitive.
 # ─────────────────────────────────────────────────────────────────────────────
 import html as _html  # noqa: E402
+from datetime import date as _date  # noqa: E402
 
 MAX_COMPOSE_CHARS = 60_000
 
+# Classic Legal treatment: serif body, centered title over a full-width rule,
+# a Référence / Date row, bold "Article" headings, justified paragraphs, and a
+# paired signature block. Notary-grade — reads as a real filed contract.
 _COMPOSE_CSS = """
-* { font-family: sans-serif; color: #111827; }
+* { font-family: serif; color: #1a1a1a; }
 h1 { font-size: 15pt; font-weight: bold; text-align: center;
-     margin: 0 0 6pt 0; letter-spacing: .3pt; }
-.meta { font-size: 9.5pt; color: #6b7280; text-align: center; margin: 0 0 22pt 0; }
-p { font-size: 10.5pt; line-height: 1.65; margin: 0 0 11pt 0; text-align: justify; }
-h2 { font-size: 11.5pt; font-weight: bold; margin: 16pt 0 7pt 0; }
-.sig-wrap { margin-top: 34pt; }
-.sig { display: inline-block; width: 46%; font-size: 10pt; }
-.sig .line { border-top: 1px solid #111827; margin-top: 40pt;
-             padding-top: 4pt; color: #374151; }
+     letter-spacing: .4pt; margin: 0 0 8pt 0; }
+.trule { border-bottom: 1pt solid #1a1a1a; margin: 0 0 7pt 0; }
+.ref { text-align: center; font-size: 9pt; color: #555; margin: 0 0 24pt 0; }
+h2 { font-size: 11pt; font-weight: bold; margin: 16pt 0 6pt 0; }
+p { font-size: 10.5pt; line-height: 1.55; margin: 0 0 9pt 0; text-align: justify; }
+.sig { width: 100%; margin-top: 42pt; font-size: 10pt; }
+.sig td { width: 50%; padding-right: 24pt; }
+.ln { border-top: .8pt solid #1a1a1a; margin-top: 46pt; }
 """
 
 
 def _compose_html(title: str, body: str, meta: str = "") -> str:
-    """Build clean HTML from plain text: blank lines → paragraphs, a line that
-    is short/UPPER or ends with ':' → a subheading, plus a signature block."""
+    """Build the Classic Legal document from plain text: blank lines → justified
+    paragraphs; a short line in CAPS or ending ':' → a bold heading. Header has a
+    ruled title + Référence/Date row (date auto-filled today); ends with a paired
+    signature block. `meta`, if given, overrides the reference line."""
     parts = []
     if title.strip():
         parts.append(f"<h1>{_html.escape(title.strip())}</h1>")
-    if meta.strip():
-        parts.append(f'<p class="meta">{_html.escape(meta.strip())}</p>')
+        parts.append('<div class="trule"></div>')
+        ref = _html.escape(meta.strip()) if meta.strip() else (
+            f"Référence : ____________&nbsp;&nbsp;·&nbsp;&nbsp;"
+            f"Date : {_date.today().strftime('%d / %m / %Y')}"
+        )
+        parts.append(f'<p class="ref">{ref}</p>')
     for block in re.split(r"\n\s*\n", body.strip()):
         block = block.strip()
         if not block:
             continue
         one_line = "\n" not in block
-        looks_heading = one_line and (
-            len(block) <= 60 and (block.isupper() or block.rstrip().endswith(":"))
+        # A heading is a short standalone line that is either a legal section
+        # marker (Article/Clause/Section/Titre/Chapitre/Préambule/Annexe…), a
+        # numbered item ("1." / "1)"), or ALL-CAPS. Colon lead-ins like
+        # "Entre les soussignés :" stay as normal paragraphs.
+        looks_heading = one_line and len(block) <= 72 and (
+            block.isupper()
+            or re.match(r"^(article|clause|section|titre|chapitre|pr[ée]ambule"
+                        r"|annexe|art\.)\b", block, re.I)
+            or re.match(r"^\d+[.)]\s+\S", block)
         )
         safe = _html.escape(block).replace("\n", "<br/>")
         parts.append(f"<h2>{safe}</h2>" if looks_heading else f"<p>{safe}</p>")
     parts.append(
-        '<div class="sig-wrap">'
-        '<div class="sig"><div class="line">Date</div></div>'
-        '<div class="sig" style="float:right"><div class="line">Signature</div></div>'
-        "</div>"
+        '<table class="sig"><tr>'
+        '<td>Signature<div class="ln"></div></td>'
+        '<td>Signature<div class="ln"></div></td>'
+        "</tr></table>"
     )
     return "<html><body>" + "".join(parts) + "</body></html>"
 
@@ -679,7 +696,7 @@ def _compose_html(title: str, body: str, meta: str = "") -> str:
 def compose_pdf(title: str, body: str, meta: str = "") -> bytes:
     """Flow the HTML across A4 pages with clean margins → editable PDF bytes."""
     page_rect = fitz.paper_rect("a4")
-    margin = 62
+    margin = 64
     where = page_rect + (margin, margin, -margin, -margin)
     story = fitz.Story(html=_compose_html(title, body, meta), user_css=_COMPOSE_CSS)
     buf = io.BytesIO()
