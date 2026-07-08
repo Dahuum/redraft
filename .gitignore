@@ -2,3 +2,12 @@
 __pycache__/
 *.pyc
 
+backend/.font_cache/
+__pycache__/
+*.pyc
+*.zip
+test_artifacts/
+redraft_extracted/
+frontend/.env.local
+frontend/dist/
+frontend/node_modules/
