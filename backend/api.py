@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import List
 
 import fitz
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
@@ -129,6 +129,44 @@ def require_user(authorization: str = Header(default="")) -> str:
     if not uid:
         raise HTTPException(401, "Please sign in to use Redraft.")
     return uid
+
+
+def optional_user(authorization: str = Header(default="")) -> str:
+    """Like require_user but never 401s — returns '' for anonymous callers. Used
+    on the guest-allowed endpoints (compose / extract / edit)."""
+    if not AUTH_ON:
+        return ""
+    token = authorization[7:].strip() if authorization[:7].lower() == "bearer " else ""
+    return _validate_token(token) or ""
+
+
+# ── Guest (anonymous) daily limit, metered by IP (in-memory; soft cap) ──
+GUEST_DAILY_LIMIT = int(os.environ.get("GUEST_DAILY_LIMIT", "5"))
+_IP_USAGE: dict = {}  # (ip, "YYYY-MM-DD") -> count
+
+
+def _client_ip(request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _guest_meter_check(ip: str, n: int):
+    used = _IP_USAGE.get((ip, _period_day()), 0)
+    if used + n > GUEST_DAILY_LIMIT:
+        raise HTTPException(
+            402, f"You've reached the free daily limit of {GUEST_DAILY_LIMIT} "
+                 f"documents. Sign in to Redraft for more.")
+
+
+def _guest_meter_add(ip: str, n: int):
+    key = (ip, _period_day())
+    _IP_USAGE[key] = _IP_USAGE.get(key, 0) + n
+
+
+def _period_day() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _svc_headers(extra: dict = None) -> dict:
@@ -715,8 +753,9 @@ def compose_pdf(title: str, body: str, meta: str = "") -> bytes:
 
 @app.post("/compose")
 async def compose(text: str = Form(...), title: str = Form(""),
-                  meta: str = Form(""), user: str = Depends(require_user)):
-    """Plain text → a clean, editable A4 PDF (opened in the editor client-side)."""
+                  meta: str = Form(""), user: str = Depends(optional_user)):
+    """Plain text → a clean, editable A4 PDF (opened in the editor client-side).
+    Guest-allowed: composing is free; the daily cap applies at download (/edit)."""
     if len(text) > MAX_COMPOSE_CHARS:
         raise HTTPException(413, f"Text is too long (limit {MAX_COMPOSE_CHARS} chars).")
     if not text.strip():
@@ -732,8 +771,9 @@ async def compose(text: str = Form(...), title: str = Form(""),
 
 
 @app.post("/extract")
-async def extract(file: UploadFile = File(...), user: str = Depends(require_user)):
-    """Upload a PDF → JSON of every text span (+ page dimensions)."""
+async def extract(file: UploadFile = File(...), user: str = Depends(optional_user)):
+    """Upload a PDF → JSON of every text span (+ page dimensions). Guest-allowed
+    (read-only) so a composed document can open in the editor without login."""
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
@@ -752,16 +792,17 @@ async def extract(file: UploadFile = File(...), user: str = Depends(require_user
 
 
 @app.post("/edit")
-async def edit(file: UploadFile = File(...), edits: str = Form(...),
+async def edit(request: Request, file: UploadFile = File(...), edits: str = Form(...),
                stamps: str = Form("[]"), final: str = Form(""),
-               user: str = Depends(require_user)):
+               user: str = Depends(optional_user)):
     """Apply replacements + baked overlays and return the edited PDF bytes.
 
     `edits` is a JSON array: [{"index": <span_id>, "new_text": "..."}].
     `stamps` (optional) is a JSON array of added text / signature overlays in
     top-left PDF points — see _apply_stamps. `final` = truthy only on the real
-    download (counts 1 toward the plan); previews leave it empty. Spans are
-    re-extracted server-side; index references the /extract ordering.
+    download; it counts 1 toward the plan (signed-in) or the free daily cap
+    (guest, by IP). Previews leave it empty. Guest-allowed so a composed doc can
+    be edited + downloaded without login. Spans are re-extracted server-side.
     """
     data = await file.read()
     if not data:
@@ -797,8 +838,12 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
     if not replacements and not stamp_list:
         raise HTTPException(400, "Nothing to apply — no edits or added items.")
 
+    ip = _client_ip(request)
     if final:
-        await run_in_threadpool(_meter_check, user, 1)
+        if user:
+            await run_in_threadpool(_meter_check, user, 1)
+        elif AUTH_ON:  # guest download → per-IP daily cap
+            _guest_meter_check(ip, 1)
 
     try:
         if replacements:
@@ -811,7 +856,10 @@ async def edit(file: UploadFile = File(...), edits: str = Form(...),
                                  f"({type(exc).__name__}: {exc}).")
 
     if final:
-        await run_in_threadpool(_meter_add, user, 1)
+        if user:
+            await run_in_threadpool(_meter_add, user, 1)
+        elif AUTH_ON:
+            _guest_meter_add(ip, 1)
 
     hdr = base64.b64encode(json.dumps(report).encode()).decode()
     stem = Path(file.filename or "document").stem
