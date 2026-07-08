@@ -55,6 +55,17 @@ export async function getMe() {
   return res.json();
 }
 
+// POST /compose → a clean PDF Blob built from plain text (title/meta optional).
+export async function composeDoc(text, title = "", meta = "") {
+  const fd = new FormData();
+  fd.append("text", text);
+  if (title) fd.append("title", title);
+  if (meta) fd.append("meta", meta);
+  const res = await fetch(`${API_BASE}/compose`, { method: "POST", body: fd, headers: await authHeaders() });
+  if (!res.ok) throw await asError(res);
+  return res.blob();
+}
+
 // POST /extract → { filename, pages, span_count, spans }
 export async function extractSpans(file) {
   const fd = new FormData();

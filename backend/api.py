@@ -24,6 +24,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -622,6 +623,95 @@ async def me(user: str = Depends(require_user)):
     limit = _limit_for(prof)
     return {"auth": True, "plan": plan, "used": _effective_used(prof),
             "limit": (None if limit >= 10 ** 9 else limit)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compose: turn plain text into a clean, editable, signable A4 PDF (no upload).
+# Uses PyMuPDF's Story engine (HTML/CSS typography) so the result is properly
+# formatted — real margins, headings, justified paragraphs, auto-pagination —
+# then opens straight in the editor. This is the "text → document" primitive.
+# ─────────────────────────────────────────────────────────────────────────────
+import html as _html  # noqa: E402
+
+MAX_COMPOSE_CHARS = 60_000
+
+_COMPOSE_CSS = """
+* { font-family: sans-serif; color: #111827; }
+h1 { font-size: 15pt; font-weight: bold; text-align: center;
+     margin: 0 0 6pt 0; letter-spacing: .3pt; }
+.meta { font-size: 9.5pt; color: #6b7280; text-align: center; margin: 0 0 22pt 0; }
+p { font-size: 10.5pt; line-height: 1.65; margin: 0 0 11pt 0; text-align: justify; }
+h2 { font-size: 11.5pt; font-weight: bold; margin: 16pt 0 7pt 0; }
+.sig-wrap { margin-top: 34pt; }
+.sig { display: inline-block; width: 46%; font-size: 10pt; }
+.sig .line { border-top: 1px solid #111827; margin-top: 40pt;
+             padding-top: 4pt; color: #374151; }
+"""
+
+
+def _compose_html(title: str, body: str, meta: str = "") -> str:
+    """Build clean HTML from plain text: blank lines → paragraphs, a line that
+    is short/UPPER or ends with ':' → a subheading, plus a signature block."""
+    parts = []
+    if title.strip():
+        parts.append(f"<h1>{_html.escape(title.strip())}</h1>")
+    if meta.strip():
+        parts.append(f'<p class="meta">{_html.escape(meta.strip())}</p>')
+    for block in re.split(r"\n\s*\n", body.strip()):
+        block = block.strip()
+        if not block:
+            continue
+        one_line = "\n" not in block
+        looks_heading = one_line and (
+            len(block) <= 60 and (block.isupper() or block.rstrip().endswith(":"))
+        )
+        safe = _html.escape(block).replace("\n", "<br/>")
+        parts.append(f"<h2>{safe}</h2>" if looks_heading else f"<p>{safe}</p>")
+    parts.append(
+        '<div class="sig-wrap">'
+        '<div class="sig"><div class="line">Date</div></div>'
+        '<div class="sig" style="float:right"><div class="line">Signature</div></div>'
+        "</div>"
+    )
+    return "<html><body>" + "".join(parts) + "</body></html>"
+
+
+def compose_pdf(title: str, body: str, meta: str = "") -> bytes:
+    """Flow the HTML across A4 pages with clean margins → editable PDF bytes."""
+    page_rect = fitz.paper_rect("a4")
+    margin = 62
+    where = page_rect + (margin, margin, -margin, -margin)
+    story = fitz.Story(html=_compose_html(title, body, meta), user_css=_COMPOSE_CSS)
+    buf = io.BytesIO()
+    writer = fitz.DocumentWriter(buf)
+    more = 1
+    guard = 0
+    while more and guard < 50:               # 50-page hard cap (safety)
+        dev = writer.begin_page(page_rect)
+        more, _ = story.place(where)
+        story.draw(dev)
+        writer.end_page()
+        guard += 1
+    writer.close()
+    return buf.getvalue()
+
+
+@app.post("/compose")
+async def compose(text: str = Form(...), title: str = Form(""),
+                  meta: str = Form(""), user: str = Depends(require_user)):
+    """Plain text → a clean, editable A4 PDF (opened in the editor client-side)."""
+    if len(text) > MAX_COMPOSE_CHARS:
+        raise HTTPException(413, f"Text is too long (limit {MAX_COMPOSE_CHARS} chars).")
+    if not text.strip():
+        raise HTTPException(400, "Provide some text to build the document.")
+    try:
+        pdf = await run_in_threadpool(compose_pdf, title, text, meta)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"Couldn't build the document ({type(exc).__name__}).")
+    stem = "".join(c for c in (title or "document") if c.isalnum() or c in " -_").strip() or "document"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.pdf"'})
 
 
 @app.post("/extract")

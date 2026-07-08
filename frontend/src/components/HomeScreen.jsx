@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useHistory, removeDoc, ago } from "../lib/history.js";
 import { cloudEnabled, listProjects, deleteProject, openProjectFile } from "../lib/cloud.js";
 import { renderThumb } from "../lib/thumb.js";
+import { composeDoc } from "../api.js";
 import ThemeToggle from "./ThemeToggle.jsx";
 
 const STATUS = {
@@ -94,6 +95,30 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
   }, [menuOpen]);
 
   const pick = (f) => f && onUpload(f);
+
+  // ---- Start from text → clean PDF → opens in the editor ----
+  const [showText, setShowText] = useState(false);
+  const [txtTitle, setTxtTitle] = useState("");
+  const [txtBody, setTxtBody] = useState("");
+  const [composing, setComposing] = useState(false);
+  const [txtError, setTxtError] = useState(null);
+
+  async function createFromText() {
+    if (!txtBody.trim()) return setTxtError("Paste or write the document text first.");
+    setComposing(true);
+    setTxtError(null);
+    try {
+      const blob = await composeDoc(txtBody, txtTitle);
+      const name = (txtTitle.trim() || "document").replace(/[^\w \-]/g, "").slice(0, 60) || "document";
+      const file = new File([blob], `${name}.pdf`, { type: "application/pdf" });
+      setShowText(false);
+      onUpload(file); // same path as a normal upload → opens in the editor
+    } catch (e) {
+      setTxtError(e.message || "Couldn't build the document.");
+    } finally {
+      setComposing(false);
+    }
+  }
 
   return (
     <>
@@ -234,6 +259,23 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               {error && (
                 <p className="mt-md text-sm text-error text-center max-w-sm">{error}</p>
               )}
+            </div>
+          )}
+
+          {/* Start from text → clean PDF, straight into the editor */}
+          {tab === "editor" && (
+            <div className="-mt-sm mb-lg flex items-center justify-center gap-2">
+              <span className="text-caption text-on-surface-variant/60">or</span>
+              <button
+                onClick={() => {
+                  setTxtError(null);
+                  setShowText(true);
+                }}
+                className="font-label-md text-sm px-md py-1.5 rounded-lg border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors flex items-center gap-2"
+              >
+                <span className="material-symbols-outlined text-[18px]">edit_note</span>
+                Start from text
+              </button>
             </div>
           )}
 
@@ -379,6 +421,68 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           </section>
         </div>
       </main>
+
+      {/* Start-from-text composer */}
+      {showText && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade"
+          onMouseDown={(e) => e.target === e.currentTarget && !composing && setShowText(false)}
+        >
+          <div className="w-full max-w-2xl bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop">
+            <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between">
+              <h3 className="font-display-md text-lg font-bold flex items-center gap-2">
+                <span className="material-symbols-outlined text-[20px] text-accent-cyan">edit_note</span>
+                Start from text
+              </h3>
+              <button
+                onClick={() => !composing && setShowText(false)}
+                className="text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-caption text-on-surface-variant">
+                Paste any text — a contract, a letter, an agreement. Redraft turns it into a clean,
+                formatted PDF you can edit and sign right away.
+              </p>
+              <input
+                value={txtTitle}
+                onChange={(e) => setTxtTitle(e.target.value)}
+                placeholder="Title (optional) — e.g. Service Agreement"
+                className="w-full bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-2 px-3 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+              />
+              <textarea
+                value={txtBody}
+                onChange={(e) => setTxtBody(e.target.value)}
+                placeholder={
+                  "Paste your document text here…\n\nTip: leave a blank line between paragraphs. A short line in CAPITALS or ending with ':' becomes a section heading."
+                }
+                className="w-full h-64 bg-surface-container-lowest border border-outline-variant/50 rounded-lg p-3 text-sm text-on-surface leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent-cyan resize-y"
+              />
+              {txtError && <p className="text-caption text-error">{txtError}</p>}
+            </div>
+            <div className="px-5 py-4 border-t border-outline-variant/30 flex items-center justify-end gap-2">
+              <button
+                onClick={() => !composing && setShowText(false)}
+                className="px-4 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors font-label-md text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createFromText}
+                disabled={composing || !txtBody.trim()}
+                className="px-4 py-2 rounded-lg bg-accent-cyan text-[#080c14] font-semibold hover:bg-[#00d0d9] transition-all font-label-md text-sm flex items-center gap-2 disabled:opacity-50"
+              >
+                <span className={`material-symbols-outlined text-[18px] ${composing ? "animate-spin" : ""}`}>
+                  {composing ? "progress_activity" : "auto_awesome"}
+                </span>
+                {composing ? "Building…" : "Create & open in editor"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
