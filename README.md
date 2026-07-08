@@ -1,115 +1,140 @@
-# GFP – Générateur de Factures PDF
+# Redraft
 
-Génère automatiquement des factures PDF au format SWAM à partir de données saisies manuellement ou lues depuis un fichier Excel.
+Edit, generate, and sign PDFs — exactly how you want them.
+
+Redraft is a document tool for people who work with PDFs at scale:
+
+- **PDF Editor** — click any text or number and change it in place; add free text in
+  the document's own font; draw or type a signature and place it anywhere.
+- **Bulk Generator** — pick the fields that vary, map them to a spreadsheet, and
+  generate hundreds of documents (a ZIP, or one merged PDF), named per client.
+- **Annex Automation** — scan a billing annex once, then remove lines and recompute
+  totals from a CSV, across pages, for any client.
+- **Start from text** — paste a contract, letter, or agreement → get a clean,
+  professionally-typeset, editable & signable PDF (see the **Compose API** below).
+- **Cloud templates & signatures** — save a template + its setup to your account and
+  reuse it on any device.
+
+**Live:** [redraft.dev](https://redraft.dev)
 
 ---
 
-## Fichiers
+## Architecture
 
-| Fichier | Rôle |
-|---|---|
-| `main.py` | Module de **génération PDF** uniquement – classe `InvoicePDF` |
-| `generate_bills.py` | Lit la base CSV, **boucle sur chaque ligne** et crée un PDF par facture |
-| `invoices_db.csv` | **Base de données** : 1 ligne = 1 facture (séparateur `;`) |
-| `Fature_RUN Fraude_Inwi_Mars2026.xlsx` | Template SWAM d'origine (référence) |
-| `image1.png` | Logo SWAM (en-tête) |
-| `image2.png` | Tampon / cachet société (bas de page) |
+| Piece      | Stack                              | Hosting                          |
+|------------|------------------------------------|----------------------------------|
+| Frontend   | Vite + React (MPA), Tailwind       | Vercel — `redraft.dev`           |
+| Backend    | FastAPI + PyMuPDF (stateless)      | Hugging Face Space (Docker)      |
+| Auth + DB  | Supabase (Postgres, RLS, Storage)  | Supabase                         |
 
----
+- **Stateless backend** — files are processed in memory and never stored server-side.
+- **Auth is opt-in** — the API enforces a Supabase JWT when `SUPABASE_*` env vars are
+  set; without them it runs open (local dev). Per-user monthly limits are metered in
+  the `profiles` table.
 
-## Utilisation
-
-### 1. Ajouter des factures à `invoices_db.csv`
-
-Ouvrez `invoices_db.csv` (Excel, LibreOffice, éditeur de texte…) et ajoutez **une ligne par facture**. Format :
-
-- séparateur : `;`
-- encodage : UTF-8 ou Latin-1 (auto-détecté)
-- colonnes obligatoires :
-
-```
-invoice_number;invoice_date;client_name;client_address;client_ref;client_ice;description;bon_commande;montant_ht;banque;agence;compte
-```
-
-> `montant_ht` accepte les formats européens (`3.560,00`, `1 234,56`) **et** le point décimal (`47673.99`).
-> La TVA 20 %, le Total TTC et la somme en lettres sont calculés automatiquement.
-
-### 2. Lancer la génération par lot
+### Run locally
 
 ```bash
-python3 generate_bills.py
+# backend  →  http://localhost:8000
+uvicorn api:app --app-dir backend --host 0.0.0.0 --port 8000 --reload
+
+# frontend →  http://localhost:5173   (app at /app.html)
+npm --prefix frontend install
+npm --prefix frontend run dev
 ```
 
-Crée un dossier `./bill_YYYY-MM-DD/` (date du jour) contenant **un PDF par ligne** du CSV (nommé `facture_<invoice_number>.pdf`).
+The frontend reads `VITE_API_BASE` (defaults to `http://localhost:8000`) and the
+`VITE_SUPABASE_*` keys from `frontend/.env.local`.
 
-### 3. Utiliser `InvoicePDF` directement depuis un script Python
+### Branches
+
+- **`main`** — what's deployed to `redraft.dev`.
+- **`redraft-dev`** — where work happens; open a PR to `main` when it's solid.
+
+---
+
+## Compose API — text → clean editable PDF
+
+Turn plain text into a professionally-typeset, **editable & signable** PDF in one
+HTTP call. No template, no design work. Built for contracts, letters, and agreements.
+
+> **Status:** the endpoint currently requires a signed-in Redraft session. A public
+> (no-login) version + an embeddable button is the planned next step — see
+> "Making it a public button" below.
+
+### Endpoint
+
+```
+POST https://dahuum-radraft.hf.space/compose
+Content-Type: multipart/form-data
+```
+
+| Field   | Required | Description                                                        |
+|---------|----------|--------------------------------------------------------------------|
+| `text`  | ✅       | The document body. Blank lines separate paragraphs.                |
+| `title` | optional | Document title (centered, bold, over a rule).                      |
+| `meta`  | optional | Overrides the reference line. Defaults to `Référence : ___ · Date : <today>`. |
+
+**Automatic formatting:** blank lines → justified paragraphs; a short line that is
+`Article …` / `Section …` / `Clause …` / numbered / ALL-CAPS → a **bold heading**;
+a signature block is appended; long documents paginate onto multiple A4 pages.
+
+**Returns:** an `application/pdf` file — Classic Legal styling, ready to edit and sign.
+
+### Examples
+
+**curl**
+
+```bash
+curl -X POST https://dahuum-radraft.hf.space/compose \
+  -F "title=CONTRAT DE PRESTATION DE SERVICE" \
+  -F $'text=Entre les soussignés :\n\nLa société ACME SARL, ci-après « le Prestataire ».\n\nArticle 1 — Objet\n\nRéalisation d\'une plateforme de facturation.\n\nArticle 2 — Rémunération\n\n120 000,00 MAD hors taxes.' \
+  -o contract.pdf
+```
+
+**JavaScript — a button on any website**
+
+```html
+<button id="make-contract">Create contract</button>
+<script>
+document.getElementById("make-contract").onclick = async () => {
+  const fd = new FormData();
+  fd.append("title", "Service Agreement");
+  fd.append("text", document.getElementById("contract-text").value);
+  const res = await fetch("https://dahuum-radraft.hf.space/compose", { method: "POST", body: fd });
+  const blob = await res.blob();
+  window.open(URL.createObjectURL(blob)); // preview / download the PDF
+};
+</script>
+```
+
+**Python**
 
 ```python
-from main import InvoicePDF
-
-data = {
-    "invoice_number": "W/2026/04/001",
-    "invoice_date":   "30/04/2026",
-    "client_name":    "Wana Corporate",
-    "client_address": "Lottissement LA COLLINE 2 Sidi Maarouf Casablanca.",
-    "client_ref":     "",                          # laisser vide si non applicable
-    "client_ice":     "001957412000035",
-    "description":    "Run relatif au monitoring de la fraude transactionnelle du 01/04/2026 au 30/04/2026",
-    "bon_commande":   "Réf: Bon de commande N°4500044831 signé le 31/07/2023",
-    "montant_ht":     47673.99,                    # numérique – TVA et TTC calculés automatiquement
-    "banque":         "ATTIJARIWAFABANK.",
-    "agence":         "C.A. MANDARONA LOT. ATTAWFIQ SIDI MAAROUF",
-    "compte":         "007 780 0003409000001312 34",
-}
-
-InvoicePDF(data, "facture.pdf").build()
+import requests
+r = requests.post(
+    "https://dahuum-radraft.hf.space/compose",
+    data={"title": "Service Agreement", "text": open("contract.txt").read()},
+)
+open("contract.pdf", "wb").write(r.content)
 ```
 
----
+### Making it a public button
 
-## Champs saisissables
+To let **anyone** use this with no account:
 
-| Clé | Description | Auto ? |
-|---|---|---|
-| `invoice_number` | Numéro de facture | ✗ |
-| `invoice_date` | Date de la facture | ✗ |
-| `client_name` | Nom du client | ✗ |
-| `client_address` | Adresse du client | ✗ |
-| `client_ref` | Référence client (optionnel) | ✗ |
-| `client_ice` | ICE du client | ✗ |
-| `description` | Description de la prestation | ✗ |
-| `bon_commande` | Référence bon de commande | ✗ |
-| `montant_ht` | Montant HT (float) | ✗ |
-| TVA 20 % | `montant_ht × 0.20` | **✓ auto** |
-| Total TTC | `montant_ht + TVA` | **✓ auto** |
-| Arrêtée en lettres | Conversion numérique → mots (français) | **✓ auto** |
-| `banque` | Nom de la banque | ✗ |
-| `agence` | Nom de l'agence | ✗ |
-| `compte` | Numéro de compte bancaire | ✗ |
+1. Drop the login requirement on `/compose` (it's a cheap generate call).
+2. Rate-limit by IP (e.g. 20 documents/hour) to prevent abuse.
+3. Ship a hosted page `redraft.dev/new` — paste title + text → **Create** → the PDF.
+4. Provide the embed snippet above for integrators.
+
+Later: open the composed PDF in a **guest editor** so recipients can sign without an
+account — the full "generate → edit → sign, embedded anywhere" flow.
 
 ---
 
-## Structure de la base CSV `invoices_db.csv`
+## Legacy billing scripts
 
-| Colonne | Description | Exemple |
-|---|---|---|
-| `invoice_number` | Numéro de facture | `W/2026/04/001` |
-| `invoice_date` | Date de la facture | `30/04/2026` |
-| `client_name` | Nom du client | `Wana Corporate` |
-| `client_address` | Adresse du client | `Lottissement LA COLLINE 2 …` |
-| `client_ref` | Référence client (optionnel) | *(vide)* |
-| `client_ice` | ICE du client | `001957412000035` |
-| `description` | Description de la prestation | `Run relatif au monitoring …` |
-| `bon_commande` | Référence du bon de commande | `Réf: Bon de commande N°4500044831 …` |
-| `montant_ht` | Montant HT (numérique) | `47673.99` |
-| `banque` | Nom de la banque | `ATTIJARIWAFABANK.` |
-| `agence` | Nom de l'agence | `C.A. MANDARONA LOT. …` |
-| `compte` | Numéro de compte | `007 780 0003409000001312 34` |
-
----
-
-## Dépendances
-
-```bash
-pip install reportlab num2words
-```
+The repository also contains the original Streamlit invoice generator
+(`main.py`, `generate_bills.py`, `reconstruct.py`, `invoices_db.csv`). These are kept
+for reference and are independent of the `backend/` + `frontend/` app.
