@@ -113,6 +113,15 @@ export default function App() {
       navigate("/", { replace: true });
       return;
     }
+    // "memory" = an in-memory doc (cloud template / composed / storage-off upload)
+    // that is NOT in history. Trust loadedDocIdRef (set synchronously before we
+    // navigated here) instead of the async ed.file state — otherwise a render
+    // race makes us look it up, fail, and bounce home (the "click twice" bug).
+    // On a hard refresh the in-memory doc is gone (ref reset) → go home cleanly.
+    if (docId === "memory") {
+      if (loadedDocIdRef.current !== "memory") navigate("/", { replace: true });
+      return;
+    }
     if (loadedDocIdRef.current === docId && ed.file) return; // already loaded
     let cancelled = false;
     (async () => {
