@@ -297,7 +297,7 @@ export default function App() {
               {plan.used}/{plan.limit} docs
             </span>
           )}
-          {auth.enabled && (
+          {auth.enabled && auth.user && (
             <button
               onClick={auth.signOut}
               title="Sign out"
@@ -305,6 +305,16 @@ export default function App() {
             >
               <span className="material-symbols-outlined text-[18px]">logout</span>
               Sign out
+            </button>
+          )}
+          {auth.enabled && !auth.user && (
+            <button
+              onClick={() => { window.location.href = "/"; }}
+              title="Sign in to save your work and get more documents"
+              className="ml-1 h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-[#003ea8] transition-colors inline-flex items-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[18px]">login</span>
+              Sign in
             </button>
           )}
         </div>
