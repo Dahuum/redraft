@@ -250,6 +250,8 @@ export default function PdfCanvas({
                         lineHeight: 1.05,
                         whiteSpace: "pre",
                         fontFamily: "Inter, system-ui, sans-serif",
+                        fontWeight: o.bold ? 700 : 400,
+                        fontStyle: o.italic ? "italic" : "normal",
                         padding: "1px 2px",
                         borderRadius: 2,
                         outline: sel ? "1.5px solid #2563eb" : "1px dashed rgba(37,99,235,.45)",
@@ -283,6 +285,28 @@ export default function PdfCanvas({
                             </option>
                           ))}
                         </select>
+                        <button
+                          onClick={() => onOverlayChange(o.id, { bold: !o.bold })}
+                          title="Bold"
+                          className={`w-5 h-5 rounded text-[12px] font-bold transition-colors ${
+                            o.bold
+                              ? "bg-secondary-container text-white"
+                              : "text-on-surface-variant hover:bg-surface-container-highest"
+                          }`}
+                        >
+                          B
+                        </button>
+                        <button
+                          onClick={() => onOverlayChange(o.id, { italic: !o.italic })}
+                          title="Italic"
+                          className={`w-5 h-5 rounded text-[12px] italic font-serif transition-colors ${
+                            o.italic
+                              ? "bg-secondary-container text-white"
+                              : "text-on-surface-variant hover:bg-surface-container-highest"
+                          }`}
+                        >
+                          I
+                        </button>
                         <button
                           onClick={() => onOverlayChange(o.id, { size: Math.max(6, o.size - 1) })}
                           className="w-5 h-5 rounded text-on-surface-variant hover:bg-surface-container-highest"
