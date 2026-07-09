@@ -233,6 +233,8 @@ def _meter_add(uid: str, n: int):
 # ── Upload limits — protect the free-tier server from OOM / abuse ──
 MAX_TEMPLATE_BYTES = 20 * 1024 * 1024   # 20 MB template PDF
 MAX_DATA_BYTES     = 10 * 1024 * 1024   # 10 MB data file (CSV/XLSX)
+MAX_PDF_BYTES      = 25 * 1024 * 1024   # 25 MB any single uploaded PDF
+MAX_FONT_BYTES     = 8 * 1024 * 1024    # 8 MB uploaded .ttf/.otf
 MAX_ROWS           = 500                # rows per bulk / annex run
 
 
@@ -518,10 +520,15 @@ def _font_covers(buf: bytes) -> bool:
 
 
 def _font_cache_name(fontname: str) -> str:
-    """The exact .font_cache filename the engine looks up for *fontname*."""
+    """The exact .font_cache filename the engine looks up for *fontname*.
+
+    The family is reduced to alphanumerics so a crafted font name can never
+    escape the cache directory (path traversal via '/', '..', etc.).
+    """
     fam, weight, style = _pe._parse_font_name(fontname)
-    nospace = fam.replace(" ", "").replace("-", "")
-    return f"{nospace}-{weight}-{style}.ttf"
+    nospace = re.sub(r"[^A-Za-z0-9]", "", fam)[:64] or "font"
+    style = "italic" if str(style).lower().startswith("ital") else "normal"
+    return f"{nospace}-{int(weight)}-{style}.ttf"
 
 
 def _font_status(fontname: str) -> dict:
@@ -810,6 +817,7 @@ async def extract(file: UploadFile = File(...), user: str = Depends(optional_use
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
     _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
     try:
         spans = extract_spans(data)
@@ -840,6 +848,7 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
     _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
     try:
         edit_list = json.loads(edits)
@@ -1005,6 +1014,7 @@ async def fonts(file: UploadFile = File(...), user: str = Depends(require_user))
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
     auto = _ingest_embedded_fonts(data)  # adopt the PDF's own embedded fonts first
     try:
         spans = extract_spans(data)
@@ -1024,6 +1034,7 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
     next edit picks it up. Returns the font's new status.
     """
     raw = await file.read()
+    _check_size("The font file", raw, MAX_FONT_BYTES)
     if len(raw) < 4 or raw[:4] not in _SFNT_MAGICS:
         if raw[:4] in (b"wOFF", b"wOF2"):
             raise HTTPException(400, "WOFF/WOFF2 isn't supported — upload the .ttf "
@@ -1031,7 +1042,10 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
         raise HTTPException(400, "That doesn't look like a .ttf or .otf font file.")
 
     name = _font_cache_name(fontname)
-    path = os.path.join(_pe._FONT_CACHE_DIR, name)
+    # Defence in depth: the resolved path must stay inside the font cache dir.
+    path = os.path.abspath(os.path.join(_pe._FONT_CACHE_DIR, name))
+    if os.path.dirname(path) != os.path.abspath(_pe._FONT_CACHE_DIR):
+        raise HTTPException(400, "Invalid font name.")
     try:
         with open(path, "wb") as f:
             f.write(raw)
@@ -1192,6 +1206,7 @@ async def annex_model(file: UploadFile = File(...), template: str = Form(None),
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
     _ingest_embedded_fonts(data)
     tmpl_in = None
     if template:
