@@ -15,6 +15,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
     file, fileData, spans, pages, pageIndex, setPageIndex, selectedId, setSelectedId,
     edits, nEdits, editedIds, previewData, busy, error, zoom, setZoom,
     overlays, addOverlay, updateOverlay, removeOverlay, fonts, hasChanges,
+    moves, moveSpan, clearMove,
     loadFile, setFieldValue, resetAll, preview, download,
   } = ed;
   const doDownload = onDownload || download;
@@ -157,6 +158,10 @@ export default function EditorWorkspace({ ed, onDownload }) {
                 fonts={fonts}
                 placement={placement}
                 onPlace={handlePlace}
+                moves={previewData ? {} : moves}
+                edits={edits}
+                onSpanMove={moveSpan}
+                onSpanMoveClear={clearMove}
               />
             </div>
           ) : (
