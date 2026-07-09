@@ -530,6 +530,123 @@ def _fetch_google_font(family: str, weight: int, style: str) -> bytes | None:
     return None
 
 
+# ── Script-aware fallback (so ANY script renders, never boxes) ──────────────────
+# When the primary font can't render some characters of the replacement text,
+# switch to a broad-coverage full font that can. Families are resolved via the
+# normal chain (system → Google Fonts download + cache), so scripts that aren't
+# pre-installed (CJK, emoji) are fetched on demand. Broadest coverage first.
+_FALLBACK_FAMILIES = (
+    "Noto Sans",            # Latin, Cyrillic, Greek, Vietnamese, IPA…
+    "DejaVu Sans",          # + Arabic, Hebrew, many symbols (system)
+    "Noto Sans Arabic", "Noto Naskh Arabic",
+    "Noto Sans Hebrew", "Noto Sans Devanagari", "Noto Sans Thai",
+    "Noto Sans SC", "Noto Sans JP", "Noto Sans KR", "Noto Sans TC",  # CJK (download)
+    "Noto Sans Bengali", "Noto Sans Tamil", "Noto Sans Telugu",
+    "Noto Emoji",           # monochrome emoji (download)
+)
+_FALLBACK_MEMO: dict = {}   # family → (raw, avail) | None  (resolved once per process)
+
+
+_CMAP_MEMO: dict = {}  # font fingerprint → codepoint set (parsed once)
+
+
+def _full_cmap_chars(raw: bytes) -> set:
+    """Comprehensive codepoint coverage: union of ALL Unicode cmap subtables via
+    fontTools (the engine's own _parse_cmap_chars misses some subtables, e.g.
+    DejaVu's Arabic). Memoized per font. Used only for coverage decisions."""
+    fp = (len(raw), raw[:24], raw[-24:]) if raw else (0, b"", b"")
+    if fp in _CMAP_MEMO:
+        return _CMAP_MEMO[fp]
+    result: set = set()
+    try:
+        from fontTools.ttLib import TTFont
+        tt = TTFont(io.BytesIO(raw), fontNumber=0, lazy=True)
+        for t in tt["cmap"].tables:
+            if t.isUnicode():
+                result.update(t.cmap.keys())
+    except Exception:
+        try:
+            result = _parse_cmap_chars(raw)
+        except Exception:
+            result = set()
+    _CMAP_MEMO[fp] = result
+    return result
+
+
+def _get_fallback_font(family: str):
+    """Resolve a fallback family from SYSTEM fonts only (fast, no network — the
+    edit path must never block). Memoized, so each family is probed at most once.
+    The exact weight/width doesn't matter for a coverage fallback; glyphs do."""
+    if family in _FALLBACK_MEMO:
+        return _FALLBACK_MEMO[family]
+    raw = None
+    try:
+        raw = _find_system_font(family, 400, "normal")
+    except Exception:
+        raw = None
+    val = (raw, _full_cmap_chars(raw)) if raw else None
+    _FALLBACK_MEMO[family] = val
+    return val
+
+
+def _uncovered_chars(text: str, avail: set, is_base14: bool) -> list:
+    """Characters of *text* the current font can't render.
+
+    base-14 fonts reliably cover Latin-1; treat anything above U+00FF as
+    needing a fallback (a broad fallback font also covers the Latin part, so a
+    whole-string switch is lossless for what base-14 could already draw)."""
+    out = []
+    for c in text:
+        if c.isspace():
+            continue
+        cp = ord(c)
+        if is_base14:
+            if cp > 0x00FF:
+                out.append(c)
+        elif avail:
+            if cp not in avail:
+                out.append(c)
+    return out
+
+
+_RTL_RE = re.compile(r"[֐-ࣿיִ-﷿ﹰ-﻿]")  # Hebrew + Arabic
+
+
+def _shape_text(text: str) -> str:
+    """Reshape + bidi-reorder Arabic/Hebrew so fitz.insert_text — which has no
+    text shaper — draws connected, correctly-ordered glyphs. No-op for LTR text
+    or when the (optional, pure-Python) shaping libs aren't installed."""
+    if not text or not _RTL_RE.search(text):
+        return text
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
+    except Exception:
+        return text
+
+
+def _fallback_font_for_text(text: str, weight: int, style: str):
+    """Pick a full font covering as much of *text* as possible.
+    Returns (family, raw_bytes, avail_set) or None. Prefers a font covering ALL
+    non-space chars (so mixed Latin+exotic renders in one consistent face)."""
+    need = {c for c in text if not c.isspace()}
+    if not need:
+        return None
+    best = None  # (covered, family, raw, avail)
+    for fam in _FALLBACK_FAMILIES:
+        got = _get_fallback_font(fam)
+        if not got:
+            continue
+        raw, avail = got
+        covered = sum(1 for c in need if ord(c) in avail)
+        if covered == len(need):
+            return (fam, raw, avail)
+        if best is None or covered > best[0]:
+            best = (covered, fam, raw, avail)
+    return (best[1], best[2], best[3]) if best and best[0] > 0 else None
+
+
 # ── Full font resolution ───────────────────────────────────────────────────────
 
 def resolve_full_font(fontname: str) -> bytes | None:
@@ -778,6 +895,11 @@ class PDFEditor:
         # Font resolution cache for this document instance:
         # (page_num, fontname) → (alias, raw_bytes, avail_chars)
         self._font_cache: dict = {}
+        # When True, shrink replacement text to fit the original box (legacy
+        # behaviour, used by fit-to-box generation). When False, PRESERVE the
+        # original font size exactly — in-place editing must never silently
+        # resize text. Callers set this per use case.
+        self.shrink_to_fit: bool = True
 
     # ------------------------------------------------------------------
     def spans(self, page_num: int = 0) -> list:
@@ -888,8 +1010,41 @@ class PDFEditor:
             registered: set = set()
 
             for span, new_text in items:
-                alias, raw, _ = self._font_info(page_num, span["font"])
+                alias, raw, avail = self._font_info(page_num, span["font"])
                 is_base14 = _base14_builtin(span["font"]) is not None
+
+                # Script coverage: if the current font can't draw some characters
+                # of the replacement text, switch the run to a broad full font
+                # that can — so ANY script (Arabic, CJK, emoji, …) renders as real
+                # glyphs instead of boxes. Only triggers on genuinely missing
+                # glyphs; a fully-covered edit keeps its exact original font.
+                # Use the comprehensive cmap of the resolved font (the engine's
+                # _parse_cmap_chars misses some subtables and would falsely flag
+                # ordinary Latin as uncovered → needless fallback).
+                prim_avail = _full_cmap_chars(raw) if raw else set()
+                latin1_only = is_base14 or (alias is None and raw is None)
+                uncovered = _uncovered_chars(new_text, prim_avail, latin1_only)
+                if uncovered:
+                    _, _wght, _styl = _parse_font_name(span["font"])
+                    fb = _fallback_font_for_text(new_text, _wght, _styl)
+                    if fb:
+                        fb_fam, fb_raw, fb_avail = fb
+                        cur_cov = sum(
+                            1 for c in new_text if not c.isspace() and (
+                                (prim_avail and ord(c) in prim_avail)
+                                or (latin1_only and ord(c) <= 0x00FF)))
+                        new_cov = sum(1 for c in new_text
+                                      if not c.isspace() and ord(c) in fb_avail)
+                        if new_cov > cur_cov:
+                            alias = "fb" + re.sub(r"[^A-Za-z0-9]", "", fb_fam) \
+                                    + f"{_wght}{_styl[:1]}"
+                            raw = fb_raw
+                            is_base14 = False
+                            _FONT_SOURCE[span["font"]] = (
+                                f"script-fallback:{fb_fam} "
+                                f"(original '{span['font']}' lacks some glyphs)")
+                            _dbg(f"SCRIPT FALLBACK {span['font']!r} → {fb_fam!r} "
+                                 f"for {new_text[:24]!r}")
 
                 # base-14 fonts have alias=builtin code, raw=None → skip insert_font.
                 if alias and raw and alias not in registered:
@@ -917,6 +1072,10 @@ class PDFEditor:
                     _dbg(f"insert_text(font={fontname_to_use!r}, size≈{span['size']}) "
                          f"text={new_text[:30]!r} (original font {span['font']!r})")
 
+                # Shape RTL/Arabic so it draws connected + correctly ordered
+                # (fitz.insert_text has no shaper). No-op for LTR text.
+                draw_text = _shape_text(new_text)
+
                 # Font object for text-width measurement
                 try:
                     fobj = fitz.Font(fontbuffer=raw) if raw else fitz.Font(fontname_to_use)
@@ -926,12 +1085,16 @@ class PDFEditor:
                 bbox      = span["bbox"]              # fitz.Rect
                 bbox_w    = max(bbox.x1 - bbox.x0, 1.0)
                 fontsize  = span["size"]
-                text_w    = fobj.text_length(new_text, fontsize)
+                text_w    = fobj.text_length(draw_text, fontsize)
 
-                # Shrink font proportionally if new text overflows, min 6 pt
-                if text_w > bbox_w:
+                # Shrink font proportionally if new text overflows the original
+                # box — ONLY when fit-to-box is enabled. In-place editing keeps
+                # the original size exactly (self.shrink_to_fit = False), so the
+                # font/size never changes under the user; longer text just runs
+                # wider, as in any real editor.
+                if self.shrink_to_fit and text_w > bbox_w:
                     fontsize = max(6.0, fontsize * bbox_w / text_w)
-                    text_w   = fobj.text_length(new_text, fontsize)
+                    text_w   = fobj.text_length(draw_text, fontsize)
 
                 # Look up alignment detected from column context
                 align_key = (round(span["origin"][0], 1),
@@ -949,7 +1112,7 @@ class PDFEditor:
                 try:
                     stamp_page.insert_text(
                         fitz.Point(ox, oy),
-                        new_text,
+                        draw_text,
                         fontname=fontname_to_use,
                         fontsize=fontsize,
                         color=span["color"],

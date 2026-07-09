@@ -417,8 +417,13 @@ def page_dims(pdf_bytes: bytes) -> list:
     return dims
 
 
-def apply_replacements(pdf_bytes: bytes, replacements: list) -> tuple:
+def apply_replacements(pdf_bytes: bytes, replacements: list,
+                       preserve_size: bool = True) -> tuple:
     """Apply [(span_dict, new_text), …] → (edited_bytes, font_report).
+
+    `preserve_size` (default True) keeps each edited span's original font size
+    exactly — in-place editing must never silently resize text. Set False for
+    fit-to-box generation where long values should shrink into a fixed column.
 
     font_report mirrors the Streamlit UI's report so the client can surface
     substituted/fallback fonts instead of silently rendering something else.
@@ -430,6 +435,7 @@ def apply_replacements(pdf_bytes: bytes, replacements: list) -> tuple:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 ed = PDFEditor(in_path)
+                ed.shrink_to_fit = not preserve_size
 
                 by_page: dict = {}
                 for sd, new_text in replacements:
@@ -456,7 +462,7 @@ def apply_replacements(pdf_bytes: bytes, replacements: list) -> tuple:
                 if (src.startswith("system:") or src.startswith("google")
                         or src.startswith("builtin:")):
                     status = "match"
-                elif src.startswith("substitute"):
+                elif src.startswith("substitute") or src.startswith("script-fallback"):
                     status = "substitute"
                 elif src.startswith("BUILTIN") or src.startswith("SUBSET"):
                     status = "fallback"
