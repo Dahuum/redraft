@@ -2,6 +2,7 @@
   "rewrites": [
     { "source": "/app", "destination": "/app.html" },
     { "source": "/app/(.*)", "destination": "/app.html" },
-    { "source": "/new", "destination": "/new.html" }
+    { "source": "/new", "destination": "/new.html" },
+    { "source": "/templates", "destination": "/templates.html" }
   ]
 }

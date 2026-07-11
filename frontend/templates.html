@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Free document templates — Redraft</title>
+<meta name="description" content="Ready-to-use contract, NDA, and letter templates. Click one to fill it in — editable & signable, no account needed." />
+<script>
+  try {
+    if (localStorage.getItem("redraft-theme") === "light")
+      document.documentElement.setAttribute("data-theme", "light");
+  } catch (e) {}
+</script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+<script>
+  window.REDRAFT_PH = { key: "phc_REPLACE_WITH_YOUR_POSTHOG_KEY", host: "https://us.i.posthog.com" };
+</script>
+<script src="/analytics.js"></script>
+<style>
+  :root {
+    --bg:#080c14; --card:#0e131d; --card2:#131a26; --ink:#e7ebf3; --muted:#9aa4b5;
+    --line:#232c3b; --accent:#00f5ff; --accent-ink:#04121a; --brand:#2563eb;
+  }
+  :root[data-theme="light"] {
+    --bg:#eef1f6; --card:#ffffff; --card2:#f6f8fb; --ink:#101725; --muted:#5a6474;
+    --line:#e2e6ee; --accent:#0aa5ad; --accent-ink:#ffffff; --brand:#2563eb;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; }
+  body {
+    background:radial-gradient(ellipse at top, rgba(37,99,235,.10), transparent 60%), var(--bg);
+    color:var(--ink); min-height:100vh; line-height:1.5;
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; align-items:center; padding:32px 20px 64px;
+  }
+  a { color:inherit; }
+  .nav { width:100%; max-width:960px; display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; }
+  .brand { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:20px; letter-spacing:-.02em; text-decoration:none; color:var(--ink); }
+  .nav .links a { text-decoration:none; color:var(--muted); font-size:14px; font-weight:500; margin-left:18px; }
+  .nav .links a:hover { color:var(--ink); }
+  header.hero { width:100%; max-width:960px; margin-bottom:26px; }
+  h1 { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:30px; letter-spacing:-.02em; margin:0 0 8px; }
+  .sub { color:var(--muted); font-size:15.5px; margin:0; max-width:640px; }
+  .grid { width:100%; max-width:960px; display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px; }
+  .tpl {
+    background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px;
+    display:flex; flex-direction:column; cursor:pointer; transition:transform .12s, border-color .15s, box-shadow .15s;
+  }
+  .tpl:hover { transform:translateY(-2px); border-color:var(--accent); box-shadow:0 16px 40px rgba(0,0,0,.24); }
+  .tpl .emoji { font-size:26px; }
+  .tpl .lang { margin-left:auto; font-size:10.5px; font-weight:700; letter-spacing:.06em; color:var(--muted);
+               border:1px solid var(--line); border-radius:999px; padding:3px 8px; }
+  .tpl .top { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .tpl h3 { font-size:16px; font-weight:700; margin:0 0 5px; }
+  .tpl p { color:var(--muted); font-size:13px; margin:0 0 16px; flex:1; }
+  .tpl .row { display:flex; align-items:center; gap:8px; }
+  .open { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; background:var(--accent);
+          color:var(--accent-ink); border:none; border-radius:10px; font:inherit; font-weight:700; font-size:13.5px;
+          padding:10px 12px; cursor:pointer; transition:filter .15s; }
+  .open:hover { filter:brightness(1.06); }
+  .link { border:1px solid var(--line); background:transparent; color:var(--ink); border-radius:10px; padding:10px 12px;
+          font:inherit; font-size:13px; cursor:pointer; white-space:nowrap; }
+  .link:hover { border-color:var(--accent); }
+  .foot { color:var(--muted); font-size:12.5px; margin-top:34px; text-align:center; }
+  .foot a { color:var(--ink); }
+</style>
+</head>
+<body>
+  <div class="nav">
+    <a class="brand" href="/">Redraft</a>
+    <div class="links">
+      <a href="/new">Start from text</a>
+      <a href="/app">Open the editor →</a>
+    </div>
+  </div>
+
+  <header class="hero">
+    <h1>Free document templates</h1>
+    <p class="sub">Pick a template — it opens prefilled in the editor, ready to fill, edit and sign.
+      No account needed. Share any template with a link.</p>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <p class="foot">Made with Redraft · <a href="/">redraft.dev</a></p>
+
+  <script>
+    try { window.rdTrack && window.rdTrack("templates_page_view"); } catch (e) {}
+
+    // Prose templates — the compose engine turns blank-line paragraphs into
+    // justified text and "Article …" / ALL-CAPS lines into bold headings.
+    var TEMPLATES = [
+      {
+        emoji: "📝", lang: "FR", name: "Contrat de prestation",
+        desc: "Contrat de prestation de service entre un prestataire et un client.",
+        title: "CONTRAT DE PRESTATION DE SERVICE",
+        body:
+"Entre les soussignés :\n\n[Nom du prestataire], ci-après « le Prestataire »,\n\net [Nom du client], ci-après « le Client ».\n\nArticle 1 — Objet\n\nLe présent contrat a pour objet la réalisation de [description de la prestation].\n\nArticle 2 — Durée\n\nLe contrat prend effet le [date] pour une durée de [durée].\n\nArticle 3 — Rémunération\n\nEn contrepartie, le Client versera au Prestataire la somme de [montant] MAD hors taxes.\n\nArticle 4 — Confidentialité\n\nChaque partie s'engage à préserver la confidentialité des informations échangées.\n\nFait à [ville], le [date]."
+      },
+      {
+        emoji: "🤝", lang: "FR", name: "Accord de confidentialité",
+        desc: "NDA pour protéger les informations échangées sur un projet.",
+        title: "ACCORD DE CONFIDENTIALITÉ",
+        body:
+"Entre [Partie A] et [Partie B].\n\nArticle 1 — Objet\n\nLe présent accord vise à protéger les informations confidentielles échangées dans le cadre de [projet].\n\nArticle 2 — Engagement\n\nChaque partie s'engage à ne pas divulguer les informations confidentielles à des tiers sans autorisation écrite préalable.\n\nArticle 3 — Durée\n\nLes obligations de confidentialité demeurent en vigueur pendant [durée] à compter de la signature.\n\nFait à [ville], le [date]."
+      },
+      {
+        emoji: "⚖️", lang: "FR", name: "Mise en demeure",
+        desc: "Lettre formelle de mise en demeure de payer une somme due.",
+        title: "MISE EN DEMEURE",
+        body:
+"[Nom et adresse de l'expéditeur]\n\n[Nom et adresse du destinataire]\n\nObjet : Mise en demeure de payer\n\nMadame, Monsieur,\n\nSauf erreur de notre part, vous restez redevable de la somme de [montant] MAD au titre de [facture / prestation].\n\nPar la présente, nous vous mettons en demeure de régler cette somme sous un délai de [délai] jours à compter de la réception du présent courrier.\n\nÀ défaut, nous nous réservons le droit d'engager toute action utile au recouvrement de notre créance.\n\nVeuillez agréer, Madame, Monsieur, l'expression de nos salutations distinguées.\n\nFait à [ville], le [date]."
+      },
+      {
+        emoji: "📋", lang: "FR", name: "Attestation de travail",
+        desc: "Attestation d'emploi à remettre à un salarié.",
+        title: "ATTESTATION DE TRAVAIL",
+        body:
+"Je soussigné(e) [Nom du responsable], agissant en qualité de [fonction] au sein de [société], atteste que :\n\nMonsieur / Madame [Nom du salarié], titulaire de la CIN n° [CIN], est employé(e) au sein de notre société depuis le [date] en qualité de [poste].\n\nLa présente attestation est délivrée à l'intéressé(e) pour servir et valoir ce que de droit.\n\nFait à [ville], le [date]."
+      },
+      {
+        emoji: "💼", lang: "EN", name: "Service Agreement",
+        desc: "A simple service agreement between a provider and a client.",
+        title: "SERVICE AGREEMENT",
+        body:
+"Between [Provider], and [Client].\n\nArticle 1 — Scope\n\nThe Provider agrees to deliver [description of services] to the Client.\n\nArticle 2 — Term\n\nThis agreement begins on [date] and continues for [duration].\n\nArticle 3 — Fees\n\nThe Client shall pay the Provider [amount] excluding tax, payable [terms].\n\nArticle 4 — Confidentiality\n\nBoth parties agree to keep all shared information confidential.\n\nSigned in [city], on [date]."
+      },
+      {
+        emoji: "🔒", lang: "EN", name: "Non-Disclosure Agreement",
+        desc: "A short mutual NDA for early conversations.",
+        title: "NON-DISCLOSURE AGREEMENT",
+        body:
+"Between [Party A] and [Party B].\n\nArticle 1 — Purpose\n\nThis agreement protects the confidential information exchanged in connection with [project].\n\nArticle 2 — Obligations\n\nEach party agrees not to disclose the other's confidential information to any third party without prior written consent.\n\nArticle 3 — Term\n\nThe confidentiality obligations remain in effect for [duration] from the date of signature.\n\nSigned in [city], on [date]."
+      }
+    ];
+
+    // A template opens the guest editor via the same ?compose= deep-link the app
+    // already understands. A share link is just the absolute form of that URL.
+    function deepLink(t) {
+      return "/app?compose=" + encodeURIComponent(t.body) +
+             (t.title ? "&title=" + encodeURIComponent(t.title) : "");
+    }
+    function open(t) {
+      try { window.rdTrack && window.rdTrack("template_open", { name: t.name }); } catch (e) {}
+      window.location.href = deepLink(t);
+    }
+    function copyLink(t, btn) {
+      var abs = window.location.origin + deepLink(t);
+      try { window.rdTrack && window.rdTrack("template_link_copied", { name: t.name }); } catch (e) {}
+      (navigator.clipboard ? navigator.clipboard.writeText(abs) : Promise.reject())
+        .then(function () { btn.textContent = "Copied ✓"; })
+        .catch(function () { window.prompt("Copy this share link:", abs); btn.textContent = "Copy link"; })
+        .finally(function () { setTimeout(function () { btn.textContent = "Copy link"; }, 1800); });
+    }
+
+    var grid = document.getElementById("grid");
+    TEMPLATES.forEach(function (t) {
+      var card = document.createElement("div");
+      card.className = "tpl";
+      card.addEventListener("click", function () { open(t); });
+
+      var top = document.createElement("div");
+      top.className = "top";
+      var em = document.createElement("span"); em.className = "emoji"; em.textContent = t.emoji;
+      var lang = document.createElement("span"); lang.className = "lang"; lang.textContent = t.lang;
+      top.appendChild(em); top.appendChild(lang);
+
+      var h = document.createElement("h3"); h.textContent = t.name;
+      var p = document.createElement("p"); p.textContent = t.desc;
+
+      var row = document.createElement("div"); row.className = "row";
+      var openBtn = document.createElement("button"); openBtn.className = "open";
+      openBtn.textContent = "Use this template";
+      openBtn.addEventListener("click", function (e) { e.stopPropagation(); open(t); });
+      var linkBtn = document.createElement("button"); linkBtn.className = "link"; linkBtn.textContent = "Copy link";
+      linkBtn.addEventListener("click", function (e) { e.stopPropagation(); copyLink(t, linkBtn); });
+      row.appendChild(openBtn); row.appendChild(linkBtn);
+
+      card.appendChild(top); card.appendChild(h); card.appendChild(p); card.appendChild(row);
+      grid.appendChild(card);
+    });
+  </script>
+</body>
+</html>
