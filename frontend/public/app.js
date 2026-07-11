@@ -2,6 +2,9 @@
  * Redraft landing — animation runtime
  * ────────────────────────────────────────────────────────────── */
 
+// Funnel entry: the marketing landing was viewed (top of the WS0 funnel).
+try { window.rdTrack && window.rdTrack("landing_view"); } catch (e) {}
+
 // ────── Theme toggle (light / dark) ──────
 (function initTheme() {
   const root   = document.documentElement;

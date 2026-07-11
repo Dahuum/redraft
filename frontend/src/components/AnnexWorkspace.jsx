@@ -358,6 +358,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
         a.click();
         URL.revokeObjectURL(url);
         setResult({ generated, failed });
+        window.rdTrack?.("annex_generate", { count: generated, failed });
       })
       .catch((e) => setError(e.message || "Generation failed."))
       .finally(() => setBusy(false));

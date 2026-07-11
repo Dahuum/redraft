@@ -45,6 +45,15 @@ export default function App() {
   // not the home overview / bulk / annex / cloud — those still require login.
   const [guest, setGuest] = useState(false);
 
+  // WS0 analytics: tie all events to the signed-in user (enables retention/WAC),
+  // and record when an anonymous guest session begins.
+  useEffect(() => {
+    if (auth.user?.id) window.rdIdentify?.(auth.user.id, { email: auth.user.email });
+  }, [auth.user]);
+  useEffect(() => {
+    if (guest) window.rdTrack?.("guest_start");
+  }, [guest]);
+
   // Gate the app behind a Supabase session — no session → back to the landing,
   // UNLESS this is a guest compose session. (Supabase not configured → open.)
   useEffect(() => {
@@ -70,6 +79,7 @@ export default function App() {
     if (!text) return;
     composedRef.current = true;
     if (auth.enabled && !auth.user) setGuest(true);
+    window.rdTrack?.("compose_submit", { source: "deeplink" });
     const title = params.get("title") || "";
     (async () => {
       try {

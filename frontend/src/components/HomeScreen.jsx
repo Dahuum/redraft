@@ -107,6 +107,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     if (!txtBody.trim()) return setTxtError("Paste or write the document text first.");
     setComposing(true);
     setTxtError(null);
+    window.rdTrack?.("compose_submit", { source: "home" });
     try {
       const blob = await composeDoc(txtBody, txtTitle);
       const name = (txtTitle.trim() || "document").replace(/[^\w \-]/g, "").slice(0, 60) || "document";

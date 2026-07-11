@@ -29,6 +29,12 @@
       href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
       rel="stylesheet"
     />
+    <!-- Product analytics (PostHog) — same config as the landing. Safe no-op
+         until a real phc_ key is set. See frontend/public/analytics.js. -->
+    <script>
+      window.REDRAFT_PH = { key: "phc_REPLACE_WITH_YOUR_POSTHOG_KEY", host: "https://us.i.posthog.com" };
+    </script>
+    <script src="/analytics.js"></script>
   </head>
   <body
     class="text-on-surface font-body-md text-body-md overflow-x-hidden selection:bg-[#00f5ff]/20 selection:text-[#00f5ff]"
