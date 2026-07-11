@@ -228,6 +228,54 @@ def _meter_add(uid: str, n: int):
                    "updated_at": _now_iso()})
 
 
+# ── Loop A: a subtle "Made with Redraft" line on FREE / GUEST output ──────────
+# Every document a free/guest user sends to a client is a warm, perfectly-targeted
+# impression (the Calendly/Typeform/Loom growth loop). Pro output stays clean —
+# so removing the footer is also a Pro perk. In local/open mode (no Supabase) we
+# never stamp it, so dev output is untouched.
+_ATTRIB_TEXT = "Made with Redraft · redraft.dev"
+_ATTRIB_URL  = "https://redraft.dev/?utm_source=redraft-pdf&utm_medium=footer"
+
+
+def _wants_attribution(user: str) -> bool:
+    """True if this caller's final output should carry the free-tier footer:
+    guests and free-plan users, yes; Pro (and local open mode), no."""
+    if not AUTH_ON:
+        return False            # local / open dev — never stamp
+    if not user:
+        return True             # anonymous guest
+    prof = _get_profile(user)
+    return prof.get("plan", "free") != "pro"
+
+
+def _add_attribution(pdf_bytes: bytes) -> bytes:
+    """Stamp a small grey, right-aligned attribution line + clickable link in the
+    bottom margin of every page. Best-effort: any failure returns the PDF as-is."""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return pdf_bytes
+    try:
+        size, color = 7.0, (0.62, 0.64, 0.68)
+        try:
+            tw = fitz.get_text_length(_ATTRIB_TEXT, fontname="helv", fontsize=size)
+        except Exception:  # noqa: BLE001
+            tw = size * 0.5 * len(_ATTRIB_TEXT)
+        for page in doc:
+            r = page.rect
+            x = max(4.0, r.width - 28.0 - tw)
+            y = r.height - 12.0                 # baseline inside the bottom margin
+            try:
+                page.insert_text(fitz.Point(x, y), _ATTRIB_TEXT, fontsize=size,
+                                 fontname="helv", color=color)
+                page.insert_link({"kind": fitz.LINK_URI,
+                                  "from": fitz.Rect(x, y - size, x + tw, y + 2),
+                                  "uri": _ATTRIB_URL})
+            except Exception:  # noqa: BLE001 — never let the footer break output
+                continue
+        return doc.tobytes()
+    finally:
+        doc.close()
 
 
 # ── Upload limits — protect the free-tier server from OOM / abuse ──
@@ -893,6 +941,8 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
         else:
             edited, report = data, {"fonts": [], "warnings": []}
         edited = _apply_stamps(edited, stamp_list)
+        if final and _wants_attribution(user):     # Loop A — free/guest footer
+            edited = _add_attribution(edited)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"Failed to apply edits "
                                  f"({type(exc).__name__}: {exc}).")
@@ -968,12 +1018,15 @@ async def bulk(template: UploadFile = File(...),
     files: list = []       # [(name, pdf_bytes)]
     failed = 0
     used_names: set = set()
+    attribution = _wants_attribution(user)         # Loop A — free/guest footer
     for row_idx, row in enumerate(rows):
         reps = [(spans[i], str(row.get(col, "")))
                 for i, col in mp.items()
                 if 0 <= i < len(spans) and str(row.get(col, ""))]
         try:
             out, _ = apply_replacements(tmpl_bytes, reps)
+            if attribution:
+                out = _add_attribution(out)
             name = _row_filename(row, filename_col, headers, row_idx, "row")
             if name in used_names:                       # avoid overwrite
                 name = f"{name[:-4]}_{row_idx + 1}.pdf"
@@ -1329,6 +1382,7 @@ async def annex_generate(template: UploadFile = File(...),
     zip_buf = io.BytesIO()
     made = failed = 0
     used_names: set = set()
+    attribution = _wants_attribution(user)         # Loop A — free/guest footer
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for row_idx, row in enumerate(rows):
             spec: dict = {}
@@ -1352,6 +1406,8 @@ async def annex_generate(template: UploadFile = File(...),
                         reps += _header_edits(spans[sid], txt)
             try:
                 out, _ = apply_replacements(tmpl_bytes, reps)
+                if attribution:
+                    out = _add_attribution(out)
                 name = _row_filename(row, filename_col, data_headers, row_idx, "annex")
                 if name in used_names:                       # avoid overwrite
                     name = f"{name[:-4]}_{row_idx + 1}.pdf"
