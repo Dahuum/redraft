@@ -27,6 +27,18 @@ export default function SplitField({
   const labelPart = split != null ? span.text.slice(0, split) : "";
   const valuePart = split != null ? fullValue.slice(split) : fullValue;
 
+  // Reflect the span's real weight/style so editing is WYSIWYG — a bold field
+  // looks bold while you type it. Uses the font flags (bit 16 = bold, bit 2 =
+  // italic) with the font name as a fallback signal.
+  const fnt = (span.font || "").toLowerCase();
+  const fl = span.flags || 0;
+  const isBold = (fl & 16) !== 0 || /bold|black|heavy|semibold|extrabold/.test(fnt);
+  const isItalic = (fl & 2) !== 0 || /italic|oblique/.test(fnt);
+  const valueStyle = {
+    fontWeight: isBold ? 700 : 400,
+    fontStyle: isItalic ? "italic" : "normal",
+  };
+
   if (editing) {
     const chars = span.text.split("");
     const mark = hover != null ? hover : split ?? chars.length;
@@ -98,6 +110,7 @@ export default function SplitField({
         {split != null && (
           <span
             title={labelPart}
+            style={valueStyle}
             className="shrink-0 max-w-[46%] truncate px-2 py-2 text-sm bg-surface-container-high text-on-surface-variant/70 border-r border-outline-variant/40 select-none flex items-center"
           >
             {labelPart}
@@ -109,6 +122,7 @@ export default function SplitField({
           value={valuePart}
           onFocus={onFocus}
           onChange={(e) => onChange(split != null ? labelPart + e.target.value : e.target.value)}
+          style={valueStyle}
           className="flex-1 min-w-0 bg-surface-container-lowest py-2 px-3 text-sm text-on-surface focus:outline-none"
         />
       </div>
