@@ -169,6 +169,29 @@ def _period_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _period_hour() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
+
+
+# ── /compose hourly IP rate limit — it's a public, no-login endpoint (the
+# redraft.dev/new page + embed button call it), so cap it per IP to prevent
+# abuse. Generous: a real user composing a few docs never hits it. ──
+COMPOSE_HOURLY_LIMIT = int(os.environ.get("COMPOSE_HOURLY_LIMIT", "30"))
+_COMPOSE_IP: dict = {}  # (ip, "YYYY-MM-DD-HH") -> count
+
+
+def _compose_rate_check(ip: str):
+    """Raise 429 if this IP has composed too many documents this hour."""
+    if not AUTH_ON:
+        return                       # local/open dev — no limit
+    key = (ip, _period_hour())
+    if _COMPOSE_IP.get(key, 0) >= COMPOSE_HOURLY_LIMIT:
+        raise HTTPException(
+            429, f"Too many documents created from this network in the last hour "
+                 f"(limit {COMPOSE_HOURLY_LIMIT}). Please try again shortly.")
+    _COMPOSE_IP[key] = _COMPOSE_IP.get(key, 0) + 1
+
+
 def _svc_headers(extra: dict = None) -> dict:
     h = {"apikey": SUPABASE_SERVICE, "Authorization": f"Bearer {SUPABASE_SERVICE}",
          "Content-Type": "application/json"}
@@ -840,14 +863,16 @@ def compose_pdf(title: str, body: str, meta: str = "") -> bytes:
 
 
 @app.post("/compose")
-async def compose(text: str = Form(...), title: str = Form(""),
+async def compose(request: Request, text: str = Form(...), title: str = Form(""),
                   meta: str = Form(""), user: str = Depends(optional_user)):
     """Plain text → a clean, editable A4 PDF (opened in the editor client-side).
-    Guest-allowed: composing is free; the daily cap applies at download (/edit)."""
+    Guest-allowed: composing is free; the daily cap applies at download (/edit).
+    Public endpoint (redraft.dev/new + embed button) → per-IP hourly rate limit."""
     if len(text) > MAX_COMPOSE_CHARS:
         raise HTTPException(413, f"Text is too long (limit {MAX_COMPOSE_CHARS} chars).")
     if not text.strip():
         raise HTTPException(400, "Provide some text to build the document.")
+    _compose_rate_check(_client_ip(request))
     try:
         pdf = await run_in_threadpool(compose_pdf, title, text, meta)
     except Exception as exc:  # noqa: BLE001

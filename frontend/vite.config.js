@@ -12,6 +12,8 @@ function appRewrite() {
         const url = (req.url || "").split("?")[0];
         if (url === "/app" || url.startsWith("/app/")) {
           req.url = "/app.html";
+        } else if (url === "/new") {
+          req.url = "/new.html";
         }
         next();
       });
@@ -30,6 +32,7 @@ export default defineConfig({
       input: {
         main: "index.html", // landing
         app: "app.html",    // React app
+        new: "new.html",    // public text→PDF compose page (guest)
       },
     },
   },
