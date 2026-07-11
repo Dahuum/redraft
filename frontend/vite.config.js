@@ -16,6 +16,12 @@ function appRewrite() {
           req.url = "/new.html";
         } else if (url === "/templates") {
           req.url = "/templates.html";
+        } else if (url === "/modifier-pdf") {
+          req.url = "/modifier-pdf.html";
+        } else if (url === "/edit-pdf") {
+          req.url = "/edit-pdf.html";
+        } else if (url === "/mail-merge") {
+          req.url = "/mail-merge.html";
         }
         next();
       });
@@ -32,10 +38,13 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main: "index.html",           // landing
-        app: "app.html",              // React app
-        new: "new.html",              // public text→PDF compose page (guest)
-        templates: "templates.html",  // public template gallery (guest)
+        main: "index.html",              // landing
+        app: "app.html",                 // React app
+        new: "new.html",                 // public text→PDF compose page (guest)
+        templates: "templates.html",     // public template gallery (guest)
+        modifierPdf: "modifier-pdf.html", // SEO: modifier un PDF (FR)
+        editPdf: "edit-pdf.html",         // SEO: edit a PDF (EN)
+        mailMerge: "mail-merge.html",     // SEO: mail merge to PDF (EN)
       },
     },
   },

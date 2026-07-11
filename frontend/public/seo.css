@@ -1,0 +1,59 @@
+/* seo.css — shared styles for Redraft's wedge landing pages (/modifier-pdf,
+   /edit-pdf, /mail-merge). Theme-aware, self-contained, matches /new + /templates. */
+:root {
+  --bg:#080c14; --card:#0e131d; --card2:#131a26; --ink:#e7ebf3; --muted:#9aa4b5;
+  --line:#232c3b; --accent:#00f5ff; --accent-ink:#04121a; --brand:#2563eb;
+}
+:root[data-theme="light"] {
+  --bg:#eef1f6; --card:#ffffff; --card2:#f6f8fb; --ink:#101725; --muted:#5a6474;
+  --line:#e2e6ee; --accent:#0aa5ad; --accent-ink:#ffffff; --brand:#2563eb;
+}
+* { box-sizing:border-box; }
+html,body { margin:0; }
+body {
+  background:radial-gradient(ellipse at top, rgba(37,99,235,.10), transparent 60%), var(--bg);
+  color:var(--ink); min-height:100vh; line-height:1.6;
+  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  display:flex; flex-direction:column; align-items:center; padding:0 20px 64px;
+}
+a { color:inherit; }
+.nav { width:100%; max-width:900px; display:flex; align-items:center; justify-content:space-between; padding:24px 0 8px; }
+.brand { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:20px; letter-spacing:-.02em; text-decoration:none; color:var(--ink); }
+.nav .links a { text-decoration:none; color:var(--muted); font-size:14px; font-weight:500; margin-left:18px; }
+.nav .links a:hover { color:var(--ink); }
+.wrap { width:100%; max-width:900px; }
+.hero { padding:44px 0 8px; }
+h1 { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:38px; line-height:1.12; letter-spacing:-.025em; margin:0 0 14px; max-width:16ch; }
+.lede { color:var(--muted); font-size:17px; margin:0 0 26px; max-width:60ch; }
+.cta { display:inline-flex; align-items:center; gap:9px; background:var(--accent); color:var(--accent-ink);
+       border:none; border-radius:12px; font:inherit; font-weight:700; font-size:16px; padding:14px 26px; cursor:pointer;
+       text-decoration:none; transition:filter .15s, transform .05s; }
+.cta:hover { filter:brightness(1.06); }
+.cta:active { transform:scale(.98); }
+.lock { color:var(--muted); font-size:13px; display:inline-flex; align-items:center; gap:7px; margin-left:16px; }
+.grid3 { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; margin:40px 0 8px; }
+.feat { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; }
+.feat .ic { font-size:24px; margin-bottom:10px; }
+.feat h3 { font-size:16px; font-weight:700; margin:0 0 6px; }
+.feat p { color:var(--muted); font-size:14px; margin:0; }
+.section { margin:48px 0 0; }
+.section h2 { font-family:"Plus Jakarta Sans",sans-serif; font-weight:700; font-size:24px; letter-spacing:-.02em; margin:0 0 20px; }
+.steps { display:grid; gap:14px; }
+.step { display:flex; gap:14px; align-items:flex-start; }
+.step .n { flex:none; width:28px; height:28px; border-radius:999px; background:var(--card2); border:1px solid var(--line);
+           display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; color:var(--accent); }
+.step p { margin:2px 0 0; color:var(--ink); font-size:15px; }
+.step p span { color:var(--muted); }
+.faq details { border-top:1px solid var(--line); padding:16px 0; }
+.faq details:last-child { border-bottom:1px solid var(--line); }
+.faq summary { cursor:pointer; font-weight:600; font-size:16px; list-style:none; display:flex; align-items:center; }
+.faq summary::-webkit-details-marker { display:none; }
+.faq summary::after { content:"+"; margin-left:auto; color:var(--muted); font-size:20px; }
+.faq details[open] summary::after { content:"–"; }
+.faq p { color:var(--muted); font-size:15px; margin:10px 0 0; }
+.endcta { margin:52px 0 0; background:var(--card); border:1px solid var(--line); border-radius:20px; padding:34px; text-align:center; }
+.endcta h2 { margin:0 0 8px; }
+.endcta p { color:var(--muted); margin:0 0 20px; }
+.foot { color:var(--muted); font-size:12.5px; margin-top:40px; text-align:center; }
+.foot a { color:var(--ink); }
+@media (max-width:560px){ h1{ font-size:30px; } .lock{ display:flex; margin:12px 0 0; } }
