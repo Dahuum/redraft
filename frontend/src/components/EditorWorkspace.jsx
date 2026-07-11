@@ -4,7 +4,7 @@ import FontPanel from "./FontPanel.jsx";
 import SignaturePanel from "./SignaturePanel.jsx";
 import SplitField from "./SplitField.jsx";
 
-export default function EditorWorkspace({ ed, onDownload }) {
+export default function EditorWorkspace({ ed, onDownload, guest = false }) {
   const inputRef = useRef(null);
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
@@ -220,7 +220,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
         {/* Body: text fields OR the signature workspace */}
         {panel === "sign" ? (
           <div className="flex-1 overflow-y-auto">
-            <SignaturePanel onPlace={(data, ratio) => setPlacement({ kind: "sign", data, ratio })} />
+            <SignaturePanel cloud={!guest} onPlace={(data, ratio) => setPlacement({ kind: "sign", data, ratio })} />
           </div>
         ) : (
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
@@ -238,7 +238,7 @@ export default function EditorWorkspace({ ed, onDownload }) {
             </span>
             {placement?.kind === "text" ? "Click on the document…" : "Add text"}
           </button>
-          {file && <FontPanel file={file} onChanged={() => nEdits > 0 && preview()} />}
+          {file && !guest && <FontPanel file={file} onChanged={() => nEdits > 0 && preview()} />}
           {pageSpans.length === 0 && (
             <p className="text-caption text-on-surface-variant">
               Upload a PDF to see its editable text fields here.

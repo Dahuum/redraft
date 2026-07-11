@@ -19,6 +19,9 @@ export default function App() {
   const ed = useEditor();
   const auth = useAuth();
   const { plan, refresh: refreshPlan } = usePlan(view); // re-checks usage on nav
+  // A logged-out visitor using Redraft without an account (editor-only). Bulk,
+  // annex and cloud save are gated on this below.
+  const guestMode = auth.enabled && !auth.user;
   const loadedDocIdRef = useRef(null); // which history doc is currently in `ed`
   const [cloudProjectId, setCloudProjectId] = useState(null); // open saved template (live)
   // True while a ?compose= deep-link is being turned into a document, so we show
@@ -54,17 +57,14 @@ export default function App() {
     if (guest) window.rdTrack?.("guest_start");
   }, [guest]);
 
-  // Gate the app behind a Supabase session — no session → back to the landing,
-  // UNLESS this is a guest compose session. (Supabase not configured → open.)
+  // WS1 — guest is the front door: a logged-out visitor uses Redraft as a guest
+  // (home + editor: upload → edit → sign → download, IP-metered). Bulk, annex and
+  // cloud save stay behind sign-in and are gated in the UI below. (Supabase not
+  // configured → fully open, no gating at all.)
   useEffect(() => {
     if (!auth.enabled || !auth.ready || auth.user) return;
-    const hasCompose = new URLSearchParams(window.location.search).has("compose");
-    if (hasCompose || guest) {
-      setGuest(true); // allow the editor-only guest session
-      return;
-    }
-    window.location.replace("/");
-  }, [auth.enabled, auth.ready, auth.user, guest]);
+    setGuest(true);
+  }, [auth.enabled, auth.ready, auth.user]);
 
   // Deep-link entry: /app.html?compose=<text>&title=<title> — compose the text
   // into a clean PDF and open it straight in the editor. This is the shareable
@@ -269,7 +269,8 @@ export default function App() {
         onOpenCloud={openCloudProject}
         busy={ed.busy}
         error={ed.error}
-        onSignOut={auth.enabled ? auth.signOut : null}
+        guest={guestMode}
+        onSignOut={auth.enabled && !guestMode ? auth.signOut : null}
       />
     );
   }
@@ -280,12 +281,8 @@ export default function App() {
       {/* TopNavBar */}
       <header className="bg-surface/80 backdrop-blur-xl text-primary font-label-md text-label-md h-14 w-full border-b border-outline-variant flex justify-between items-center sticky top-0 z-30 px-6">
         <button
-          onClick={() => {
-            // Logged in → app home. Guest (arrived via a compose link) → the
-            // landing page, which is where they can sign in / sign up.
-            if (auth.enabled && !auth.user) window.location.href = "/";
-            else navigate("/");
-          }}
+          onClick={() => navigate("/")}
+          title="Back to your documents"
           className="flex items-center gap-2 text-on-surface hover:opacity-80 transition-opacity"
         >
           <span className="material-symbols-outlined text-[20px]">arrow_back</span>
@@ -339,47 +336,62 @@ export default function App() {
         </div>
       </header>
 
-      {/* Mode toggle */}
-      <div className="w-full flex justify-center py-3 bg-background border-b border-outline-variant/30">
-        <div className="bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
-          <button
-            onClick={() => navigate(`/editor/${docId}`)}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
-              mode === "editor"
-                ? "bg-secondary-container text-white shadow-lg"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">edit</span>
-            PDF Editor
-          </button>
-          <button
-            onClick={() => navigate(`/bulk/${docId}`)}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
-              mode === "bulk"
-                ? "bg-secondary-container text-white shadow-lg"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">layers</span>
-            Bulk Generator
-          </button>
-          <button
-            onClick={() => navigate(`/annex/${docId}`)}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
-              mode === "annex"
-                ? "bg-secondary-container text-white shadow-lg"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">rule</span>
-            Annex Automation
-          </button>
+      {/* Mode toggle — guests get the editor only; Bulk/Annex need sign-in */}
+      {guestMode ? (
+        <div className="w-full flex justify-center py-2.5 bg-background border-b border-outline-variant/30">
+          <div className="flex items-center gap-1.5 text-caption text-on-surface-variant bg-surface-container-high/60 border border-outline-variant/20 rounded-full px-4 py-1.5">
+            <span className="material-symbols-outlined text-[15px] text-accent-cyan">lock_open</span>
+            Bulk generation &amp; annex automation unlock when you
+            <button
+              onClick={() => { window.location.href = "/"; }}
+              className="text-secondary font-medium hover:underline"
+            >
+              sign in
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="w-full flex justify-center py-3 bg-background border-b border-outline-variant/30">
+          <div className="bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
+            <button
+              onClick={() => navigate(`/editor/${docId}`)}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+                mode === "editor"
+                  ? "bg-secondary-container text-white shadow-lg"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">edit</span>
+              PDF Editor
+            </button>
+            <button
+              onClick={() => navigate(`/bulk/${docId}`)}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+                mode === "bulk"
+                  ? "bg-secondary-container text-white shadow-lg"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">layers</span>
+              Bulk Generator
+            </button>
+            <button
+              onClick={() => navigate(`/annex/${docId}`)}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+                mode === "annex"
+                  ? "bg-secondary-container text-white shadow-lg"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">rule</span>
+              Annex Automation
+            </button>
+          </div>
+        </div>
+      )}
 
-      {mode === "editor" ? (
-        <EditorWorkspace ed={ed} onDownload={handleDownload} />
+      {mode === "editor" || guestMode ? (
+        <EditorWorkspace ed={ed} onDownload={handleDownload} guest={guestMode} />
       ) : mode === "bulk" ? (
         <BulkWorkspace
           file={ed.file}
