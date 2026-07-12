@@ -287,6 +287,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
         a.click();
         URL.revokeObjectURL(url);
         setResult({ generated, failed, merged: outputMode === "merged" });
+        window.rdTrack?.("bulk_generate", { count: generated, failed, merged: outputMode === "merged" });
       })
       .catch((e) => setError(e.message || "Generation failed."))
       .finally(() => setBusy(false));
@@ -332,6 +333,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
       // Become the live project so further edits auto-sync (no duplicate saves).
       skipCloudRef.current = true;
       onCloudSaved?.(proj.id);
+      window.rdTrack?.("template_saved", { kind: "bulk" });
       setSaveNote({ ok: true, text: `Saved “${name}” — changes now sync automatically.` });
     } catch (e) {
       setSaveNote({ ok: false, text: e.message || "Couldn't save." });

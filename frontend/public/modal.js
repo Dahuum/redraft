@@ -142,6 +142,8 @@
     if (client) {
       client.auth.getSession().then(function (res) {
         if (res && res.data && res.data.session) {
+          var u = res.data.session.user;
+          if (u && window.rdIdentify) window.rdIdentify(u.id, { email: u.email });
           document.querySelectorAll('[data-modal]').forEach(function (el) {
             el.textContent = 'Open app';
             el.dataset.modal = '';
@@ -213,7 +215,13 @@
       var c = getSb();
       if (!c) throw new Error('Auth is not configured.');
       return c.auth.signInWithPassword({ email: val('si-email'), password: val('si-password') })
-        .then(function (r) { if (r.error) throw r.error; goApp(); });
+        .then(function (r) {
+          if (r.error) throw r.error;
+          var u = r.data && r.data.user;
+          if (u && window.rdIdentify) window.rdIdentify(u.id, { email: u.email });
+          if (window.rdTrack) window.rdTrack('signin');
+          goApp();
+        });
     });
 
     // Sign up → verify step (or straight to app if email confirmation is off)
@@ -226,6 +234,9 @@
                    emailRedirectTo: window.location.origin + APP_URL },
       }).then(function (r) {
         if (r.error) throw r.error;
+        var u = r.data && r.data.user;
+        if (u && window.rdIdentify) window.rdIdentify(u.id, { email: u.email });
+        if (window.rdTrack) window.rdTrack('signup');   // account created (activation)
         if (r.data && r.data.session) goApp();     // confirmation disabled
         else goToStep(modalSU, 'verify');          // confirmation email sent
       });

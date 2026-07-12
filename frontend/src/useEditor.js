@@ -54,6 +54,7 @@ export function useEditor() {
         setMoves({});
         resetPreview();
         setSelectedId(res.spans[0] ? res.spans[0].id : null);
+        window.rdTrack?.("doc_opened", { pages: res.pages.length, fields: res.spans.length });
         return res;
       } catch (e) {
         setError(e.message || "Couldn't read that PDF.");
@@ -166,6 +167,7 @@ export function useEditor() {
       });
       setPreviewData(buf);
       setFontReport(fr);
+      window.rdTrack?.("edit_preview");
       return url;
     } catch (e) {
       setError(e.message || "Couldn't apply edits.");
@@ -192,6 +194,12 @@ export function useEditor() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      // ACTIVATION: the user downloaded a real finished document.
+      window.rdTrack?.("download_final", {
+        edits: editArr.length,
+        overlays: overlays.length,
+        moves: Object.keys(moves).length,
+      });
     } catch (e) {
       setError(e.message || "Couldn't export the PDF.");
     } finally {

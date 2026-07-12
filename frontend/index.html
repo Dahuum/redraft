@@ -26,6 +26,13 @@
     anon: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdqcW5sbG12cW5jZm5sdW5qenJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5OTg5MDcsImV4cCI6MjA5ODU3NDkwN30.cr_-yZybx1h-FBS2rxOG07BKgMBTbqzfjpB2sMsUrEY"
   };
 </script>
+<script>
+  // Product analytics (PostHog). The project key is public by design (like the
+  // Supabase anon key above). Paste your real key to turn tracking on — until
+  // then every rdTrack() call is a safe no-op. See frontend/public/analytics.js.
+  window.REDRAFT_PH = { key: "phc_ywKonRpoQMCmsfQVykKc6YeYffCgLswjf8gH9mDVuS3R", host: "https://us.i.posthog.com" };
+</script>
+<script src="/analytics.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>

@@ -44,7 +44,7 @@ function smoothStroke(points, passes = 2, window = 1) {
  *          to a transparent PNG (WYSIWYG preview).
  *   Saved — reusable gallery (persisted). Place → onPlace(pngDataUrl, ratio).
  */
-export default function SignaturePanel({ onPlace }) {
+export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
   const [saved, setSaved] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(SIG_STORE) || "[]");
@@ -58,17 +58,18 @@ export default function SignaturePanel({ onPlace }) {
   // Cloud sync: when signed in, the account is the source of truth (cross-device,
   // capped at 3). Otherwise fall back to this device's localStorage.
   useEffect(() => {
-    if (cloudEnabled) {
+    if (cloud) {
       listSignatures().then((sigs) => {
         if (!sigs) return; // cloud unavailable → keep whatever's loaded locally
         setSaved(sigs);
         if (sigs.length) setMode("saved");
       }).catch(() => {});
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (cloudEnabled) return; // cloud is authoritative; don't shadow it locally
+    if (cloud) return; // cloud is authoritative; don't shadow it locally
     try {
       localStorage.setItem(SIG_STORE, JSON.stringify(saved));
     } catch {
@@ -215,7 +216,7 @@ export default function SignaturePanel({ onPlace }) {
   // ---- Shared ----
   async function addSig(url, ratio) {
     setNote(null);
-    if (cloudEnabled) {
+    if (cloud) {
       try {
         const sig = await saveSignature({ url, ratio: ratio || 3 });
         setSaved((s) => [sig, ...s]);
@@ -235,7 +236,7 @@ export default function SignaturePanel({ onPlace }) {
   }
   function removeSig(id) {
     setSaved((s) => s.filter((x) => x.id !== id));
-    if (cloudEnabled) deleteSignature(id).catch(() => {});
+    if (cloud) deleteSignature(id).catch(() => {});
   }
 
   const TABS = [

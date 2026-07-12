@@ -16,7 +16,7 @@ const STATUS = {
  * Drop Zone + Browse Files perform the real upload (`onUpload`); Recent Activity
  * is the real, persistent history (`onOpen` reopens a doc).
  */
-export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error, onSignOut }) {
+export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error, onSignOut, guest = false }) {
   const inputRef = useRef(null);
   const menuRef = useRef(null);
   const [drag, setDrag] = useState(false);
@@ -107,6 +107,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     if (!txtBody.trim()) return setTxtError("Paste or write the document text first.");
     setComposing(true);
     setTxtError(null);
+    window.rdTrack?.("compose_submit", { source: "home" });
     try {
       const blob = await composeDoc(txtBody, txtTitle);
       const name = (txtTitle.trim() || "document").replace(/[^\w \-]/g, "").slice(0, 60) || "document";
@@ -171,35 +172,46 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
         {/* Trailing Actions */}
         <div className="flex items-center gap-sm">
           <ThemeToggle />
-          <div className="relative ml-xs" ref={menuRef}>
+          {guest ? (
             <button
-              onClick={() => setMenuOpen((v) => !v)}
-              title="Account"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 overflow-hidden cursor-pointer hover:border-accent-cyan/50 transition-colors flex items-center justify-center"
+              onClick={() => { window.location.href = "/"; }}
+              title="Sign in to save your work and unlock bulk & annex"
+              className="ml-xs h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-[#003ea8] transition-colors inline-flex items-center gap-1.5"
             >
-              <img
-                alt="User avatar"
-                className="w-full h-full object-cover"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
-              />
+              <span className="material-symbols-outlined text-[18px]">login</span>
+              Sign in
             </button>
-            {menuOpen && (
-              <div className="absolute right-0 mt-2 w-40 rounded-lg bg-surface-container border border-outline-variant/40 shadow-panel py-1 z-50 animate-drop">
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onSignOut?.();
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left font-label-md text-[13px] text-on-surface hover:bg-surface-container-high transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[18px]">logout</span>
-                  Log out
-                </button>
-              </div>
-            )}
-          </div>
+          ) : (
+            <div className="relative ml-xs" ref={menuRef}>
+              <button
+                onClick={() => setMenuOpen((v) => !v)}
+                title="Account"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 overflow-hidden cursor-pointer hover:border-accent-cyan/50 transition-colors flex items-center justify-center"
+              >
+                <img
+                  alt="User avatar"
+                  className="w-full h-full object-cover"
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
+                />
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 mt-2 w-40 rounded-lg bg-surface-container border border-outline-variant/40 shadow-panel py-1 z-50 animate-drop">
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onSignOut?.();
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-left font-label-md text-[13px] text-on-surface hover:bg-surface-container-high transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">logout</span>
+                    Log out
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </nav>
 
@@ -209,6 +221,22 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
         <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[600px] h-[600px] bg-accent-cyan/5 rounded-full blur-[120px] pointer-events-none -z-10"></div>
 
         <div className="flex-1 flex flex-col w-full mx-auto">
+          {/* Guest banner — edit/sign/download work now; sign-in unlocks more */}
+          {guest && (
+            <div className="mb-md flex items-center gap-2 rounded-xl border border-secondary-container/30 bg-secondary-container/10 px-4 py-2.5 text-caption text-on-surface">
+              <span className="material-symbols-outlined text-[18px] text-secondary shrink-0">info</span>
+              <span className="flex-1">
+                You're using Redraft as a guest — edit, sign &amp; download work right away.{" "}
+                <b>Sign in</b> to save your work and unlock bulk generation &amp; annex automation.
+              </span>
+              <button
+                onClick={() => { window.location.href = "/"; }}
+                className="shrink-0 px-3 py-1 rounded-md bg-secondary-container text-white font-label-md text-[12px] hover:bg-[#003ea8] transition-colors"
+              >
+                Sign in
+              </button>
+            </div>
+          )}
           {/* Drop Zone (Primary Action Area) */}
           {tab === "editor" && (
             <div

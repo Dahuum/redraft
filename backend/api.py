@@ -169,6 +169,29 @@ def _period_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _period_hour() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
+
+
+# ── /compose hourly IP rate limit — it's a public, no-login endpoint (the
+# redraft.dev/new page + embed button call it), so cap it per IP to prevent
+# abuse. Generous: a real user composing a few docs never hits it. ──
+COMPOSE_HOURLY_LIMIT = int(os.environ.get("COMPOSE_HOURLY_LIMIT", "30"))
+_COMPOSE_IP: dict = {}  # (ip, "YYYY-MM-DD-HH") -> count
+
+
+def _compose_rate_check(ip: str):
+    """Raise 429 if this IP has composed too many documents this hour."""
+    if not AUTH_ON:
+        return                       # local/open dev — no limit
+    key = (ip, _period_hour())
+    if _COMPOSE_IP.get(key, 0) >= COMPOSE_HOURLY_LIMIT:
+        raise HTTPException(
+            429, f"Too many documents created from this network in the last hour "
+                 f"(limit {COMPOSE_HOURLY_LIMIT}). Please try again shortly.")
+    _COMPOSE_IP[key] = _COMPOSE_IP.get(key, 0) + 1
+
+
 def _svc_headers(extra: dict = None) -> dict:
     h = {"apikey": SUPABASE_SERVICE, "Authorization": f"Bearer {SUPABASE_SERVICE}",
          "Content-Type": "application/json"}
@@ -228,6 +251,54 @@ def _meter_add(uid: str, n: int):
                    "updated_at": _now_iso()})
 
 
+# ── Loop A: a subtle "Made with Redraft" line on FREE / GUEST output ──────────
+# Every document a free/guest user sends to a client is a warm, perfectly-targeted
+# impression (the Calendly/Typeform/Loom growth loop). Pro output stays clean —
+# so removing the footer is also a Pro perk. In local/open mode (no Supabase) we
+# never stamp it, so dev output is untouched.
+_ATTRIB_TEXT = "Made with Redraft · redraft.dev"
+_ATTRIB_URL  = "https://redraft.dev/?utm_source=redraft-pdf&utm_medium=footer"
+
+
+def _wants_attribution(user: str) -> bool:
+    """True if this caller's final output should carry the free-tier footer:
+    guests and free-plan users, yes; Pro (and local open mode), no."""
+    if not AUTH_ON:
+        return False            # local / open dev — never stamp
+    if not user:
+        return True             # anonymous guest
+    prof = _get_profile(user)
+    return prof.get("plan", "free") != "pro"
+
+
+def _add_attribution(pdf_bytes: bytes) -> bytes:
+    """Stamp a small grey, right-aligned attribution line + clickable link in the
+    bottom margin of every page. Best-effort: any failure returns the PDF as-is."""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return pdf_bytes
+    try:
+        size, color = 7.0, (0.62, 0.64, 0.68)
+        try:
+            tw = fitz.get_text_length(_ATTRIB_TEXT, fontname="helv", fontsize=size)
+        except Exception:  # noqa: BLE001
+            tw = size * 0.5 * len(_ATTRIB_TEXT)
+        for page in doc:
+            r = page.rect
+            x = max(4.0, r.width - 28.0 - tw)
+            y = r.height - 12.0                 # baseline inside the bottom margin
+            try:
+                page.insert_text(fitz.Point(x, y), _ATTRIB_TEXT, fontsize=size,
+                                 fontname="helv", color=color)
+                page.insert_link({"kind": fitz.LINK_URI,
+                                  "from": fitz.Rect(x, y - size, x + tw, y + 2),
+                                  "uri": _ATTRIB_URL})
+            except Exception:  # noqa: BLE001 — never let the footer break output
+                continue
+        return doc.tobytes()
+    finally:
+        doc.close()
 
 
 # ── Upload limits — protect the free-tier server from OOM / abuse ──
@@ -792,14 +863,16 @@ def compose_pdf(title: str, body: str, meta: str = "") -> bytes:
 
 
 @app.post("/compose")
-async def compose(text: str = Form(...), title: str = Form(""),
+async def compose(request: Request, text: str = Form(...), title: str = Form(""),
                   meta: str = Form(""), user: str = Depends(optional_user)):
     """Plain text → a clean, editable A4 PDF (opened in the editor client-side).
-    Guest-allowed: composing is free; the daily cap applies at download (/edit)."""
+    Guest-allowed: composing is free; the daily cap applies at download (/edit).
+    Public endpoint (redraft.dev/new + embed button) → per-IP hourly rate limit."""
     if len(text) > MAX_COMPOSE_CHARS:
         raise HTTPException(413, f"Text is too long (limit {MAX_COMPOSE_CHARS} chars).")
     if not text.strip():
         raise HTTPException(400, "Provide some text to build the document.")
+    _compose_rate_check(_client_ip(request))
     try:
         pdf = await run_in_threadpool(compose_pdf, title, text, meta)
     except Exception as exc:  # noqa: BLE001
@@ -893,6 +966,8 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
         else:
             edited, report = data, {"fonts": [], "warnings": []}
         edited = _apply_stamps(edited, stamp_list)
+        if final and _wants_attribution(user):     # Loop A — free/guest footer
+            edited = _add_attribution(edited)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"Failed to apply edits "
                                  f"({type(exc).__name__}: {exc}).")
@@ -968,12 +1043,15 @@ async def bulk(template: UploadFile = File(...),
     files: list = []       # [(name, pdf_bytes)]
     failed = 0
     used_names: set = set()
+    attribution = _wants_attribution(user)         # Loop A — free/guest footer
     for row_idx, row in enumerate(rows):
         reps = [(spans[i], str(row.get(col, "")))
                 for i, col in mp.items()
                 if 0 <= i < len(spans) and str(row.get(col, ""))]
         try:
             out, _ = apply_replacements(tmpl_bytes, reps)
+            if attribution:
+                out = _add_attribution(out)
             name = _row_filename(row, filename_col, headers, row_idx, "row")
             if name in used_names:                       # avoid overwrite
                 name = f"{name[:-4]}_{row_idx + 1}.pdf"
@@ -1329,6 +1407,7 @@ async def annex_generate(template: UploadFile = File(...),
     zip_buf = io.BytesIO()
     made = failed = 0
     used_names: set = set()
+    attribution = _wants_attribution(user)         # Loop A — free/guest footer
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for row_idx, row in enumerate(rows):
             spec: dict = {}
@@ -1352,6 +1431,8 @@ async def annex_generate(template: UploadFile = File(...),
                         reps += _header_edits(spans[sid], txt)
             try:
                 out, _ = apply_replacements(tmpl_bytes, reps)
+                if attribution:
+                    out = _add_attribution(out)
                 name = _row_filename(row, filename_col, data_headers, row_idx, "annex")
                 if name in used_names:                       # avoid overwrite
                     name = f"{name[:-4]}_{row_idx + 1}.pdf"
