@@ -69,8 +69,11 @@ a bug:
     keys glyph maps by font name, not by the specific embedded font object.
 """
 import base64
+import re
 
 import fitz
+
+import font_extend
 
 try:                       # optional: fast pixel diff; pure-python fallback below
     import numpy as _np
@@ -498,6 +501,116 @@ def analyze(pdf_bytes: bytes) -> dict:
     return {"pages": n_pages, "count": len(fields), "simple": simple, "cid": cid, "fields": fields}
 
 
+# ── "extend" tier: inject a missing glyph via font_extend.py ────────────────
+# Only attempted when a real edit needs a character that has genuinely never
+# been drawn in this exact embedded font/weight/style before (see
+# font_extend.py's module docstring for why that's a real, common case — not
+# a bug). Falls back to the honest refusal if anything about it fails: unknown
+# font family, network failure, non-glyf font, unitsPerEm mismatch, etc.
+def _font_stream_refs(doc, type0_xref):
+    """Type0 font xref -> {"cid_xref", "ff_xref", "tu_xref"} (the descendant
+    CIDFontType2 dict, its embedded FontFile2 stream, and the /ToUnicode CMap
+    stream), or None if the chain is missing or shaped differently than
+    expected. /ToUnicode matters even though rendering itself (CIDToGIDMap)
+    never consults it: it's the SEPARATE map text-extraction, copy/paste,
+    search and accessibility tools use to know what Unicode character a glyph
+    represents — skip updating it and a newly-injected glyph displays
+    correctly but extracts as U+FFFD, which is exactly the kind of silent,
+    non-obvious corruption this whole engine exists to avoid."""
+    obj = doc.xref_object(type0_xref, compressed=True)
+    m = re.search(r"/DescendantFonts\s*\[\s*(\d+)\s+0\s+R", obj)
+    if not m:
+        return None
+    cid_xref = int(m.group(1))
+    cid_obj = doc.xref_object(cid_xref, compressed=True)
+    m2 = re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", cid_obj)
+    if not m2:
+        return None
+    fd_xref = int(m2.group(1))
+    fd_obj = doc.xref_object(fd_xref, compressed=True)
+    m3 = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", fd_obj)
+    if not m3:
+        return None
+    m4 = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", obj)
+    tu_xref = int(m4.group(1)) if m4 else None
+    return {"cid_xref": cid_xref, "ff_xref": int(m3.group(1)), "tu_xref": tu_xref}
+
+
+def _add_tounicode_entries(doc, tu_xref, gid_to_unicode: dict) -> bool:
+    """Append a beginbfchar/endbfchar block mapping each new GID (as a 2-byte
+    CID, since CIDToGIDMap=Identity) to its Unicode codepoint, right before
+    endcmap. Multiple bfchar blocks in one CMap are standard, valid syntax —
+    the existing ones are never touched. Returns False (no-op) if the stream
+    doesn't look like a CMap we understand, rather than risk corrupting it."""
+    if tu_xref is None or not gid_to_unicode:
+        return False
+    data = doc.xref_stream(tu_xref)
+    if not data or b"endcmap" not in data:
+        return False
+    lines = [f"{len(gid_to_unicode)} beginbfchar"]
+    for gid, cp in gid_to_unicode.items():
+        lines.append(f"<{gid:04X}> <{cp:04X}>")
+    lines.append("endbfchar\n")
+    block = ("\n".join(lines)).encode("latin-1")
+    idx = data.rfind(b"endcmap")
+    new_data = data[:idx] + block + data[idx:]
+    doc.update_stream(tu_xref, new_data)
+    return True
+
+
+def _try_extend(doc, font_display_name, missing_chars):
+    """Attempt to inject `missing_chars` into font_display_name's embedded
+    subset. On success, mutates `doc` (new FontFile2 + extended /W array) and
+    returns {char: gid}; on ANY failure returns None and leaves doc untouched
+    (well-formed no-op — callers must not assume partial success)."""
+    type0_xref = None
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[3].split("+")[-1] == font_display_name:
+                type0_xref = f[0]
+                break
+        if type0_xref:
+            break
+    if type0_xref is None:
+        return None
+    refs = _font_stream_refs(doc, type0_xref)
+    if not refs:
+        return None
+    donor = font_extend.resolve_donor(font_display_name)
+    if not donor:
+        return None
+    subset_bytes = doc.xref_stream(refs["ff_xref"])
+    try:
+        result = font_extend.extend_font(subset_bytes, donor, missing_chars)
+    except Exception:  # noqa: BLE001 — any failure -> honest refusal, not a guess
+        return None
+
+    kind, val = doc.xref_get_key(refs["cid_xref"], "W")
+    additions = "".join(f" {result['gid'][ch]}[{result['width_1000'][ch]}]" for ch in missing_chars)
+    if kind == "array" and val and val.endswith("]"):
+        # /W stored inline on the CIDFontType2 dict itself.
+        doc.xref_set_key(refs["cid_xref"], "W", val[:-1] + additions + "]")
+    elif kind == "xref" and val:
+        # /W stored as an indirect reference to a separate array object (also
+        # valid PDF — PyMuPDF's own embedder produces this form) — rewrite
+        # THAT object's content directly, leaving the CIDFontType2 dict's /W
+        # key pointing at the same xref.
+        m = re.match(r"(\d+)\s+0\s+R", val)
+        if not m:
+            return None
+        w_xref = int(m.group(1))
+        arr = doc.xref_object(w_xref, compressed=True)
+        if not arr or not arr.strip().endswith("]"):
+            return None
+        doc.update_object(w_xref, arr.strip()[:-1] + additions + "]")
+    else:
+        return None  # unexpected /W shape — refuse rather than risk it
+    doc.update_stream(refs["ff_xref"], result["font_bytes"])
+    _add_tounicode_entries(doc, refs.get("tu_xref"),
+                           {result["gid"][ch]: ord(ch) for ch in missing_chars})
+    return result["gid"]
+
+
 def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof."""
@@ -520,15 +633,21 @@ def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
     is_cid = subtype.get(nm) == "Type0"
     page = doc[tpage]
 
+    extended_chars: list = []
     if is_cid:
         fm = _gid_maps(doc).get(nm, {})
         missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
         if missing:
-            doc.close()
-            return {"ok": False, "reason": "extend", "tier": "extend", "missing": missing,
-                    "message": (f"This field's font is an embedded subset that doesn't contain "
-                                f"these characters yet: {missing}. That needs the font-extension "
-                                f"step (adding those glyphs) — not built yet.")}
+            new_gids = _try_extend(doc, nm, missing)
+            if new_gids is None:
+                doc.close()
+                return {"ok": False, "reason": "extend", "tier": "extend", "missing": missing,
+                        "message": (f"This field's font is an embedded subset that doesn't contain "
+                                    f"these characters yet: {missing}. Tried to add the glyph(s) from "
+                                    f"an open-source donor font, but couldn't (unknown font family, or "
+                                    f"the fetch/merge failed).")}
+            fm = {**fm, **{_norm(ch): g for ch, g in new_gids.items()}}
+            extended_chars = missing
         old_codes = [fm.get(_norm(ch)) for ch in old_n]
         new_codes = [fm.get(_norm(ch)) for ch in new]
         if any(c is None for c in old_codes) or any(c is None for c in new_codes):
@@ -558,9 +677,28 @@ def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
     _apply(doc, runs, loc_result, new_codes, is_cid)
     edited = doc.tobytes(garbage=4, deflate=True)
     doc.close()
-    diff = _pixel_diff(pdf_bytes, edited, fitz.Rect(target["bbox"]), tpage)
-    return {"ok": True, "tier": ("remap" if is_cid else "clean"), "page": tpage,
-            "case": loc_result["case"],
+
+    # The exclusion zone for "did anything ELSE on the page change" must cover
+    # where the edited text NOW sits, not just its old extent — a longer/
+    # shorter replacement legitimately occupies a different amount of space;
+    # that alone isn't a violation, only something outside BOTH extents is.
+    # Read this from a FRESH reopen of the serialized bytes, not the live
+    # in-session `doc` — PyMuPDF can cache font/CMap interpretation per
+    # session, so text extracted right after update_stream() on the same
+    # object may not reflect the just-written data (e.g. a ToUnicode fix)
+    # even though the bytes themselves are already correct.
+    excl_bbox = fitz.Rect(target["bbox"])
+    new_n = _norm(new)
+    edoc = fitz.open(stream=edited, filetype="pdf")
+    for s2 in _spans(edoc[tpage]):
+        if new_n and new_n in _norm(s2["text"]):
+            excl_bbox |= fitz.Rect(s2["bbox"])
+            break
+    edoc.close()
+
+    diff = _pixel_diff(pdf_bytes, edited, excl_bbox, tpage)
+    return {"ok": True, "tier": ("extend" if extended_chars else ("remap" if is_cid else "clean")),
+            "page": tpage, "case": loc_result["case"], "extended_chars": extended_chars,
             "diff_outside": diff["outside"], "diff_inside": diff["inside"],
             "guarantee": diff["outside"] == 0,
             "pdf_b64": base64.b64encode(edited).decode()}

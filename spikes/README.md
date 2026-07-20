@@ -34,7 +34,36 @@ The engine now:
      partway through a run that also carries unrelated text) → **refuse, with
      a specific named reason** — never a silently-wrong splice.
 
-### Verified (spikes/test_inplace.py — 8 adversarial cases, all pass)
+Text is ALSO searched inside **Form XObjects**, not just the page's own
+top-level content stream — many real PDFs (headless-browser/print-to-PDF
+exports, many resume builders) draw the ENTIRE page as one embedded object,
+so skipping this made every field on such a document fail identically. See
+`_content_streams()` in inplace_spike.py.
+
+### The "extend" tier — injecting a genuinely new glyph
+
+A field's font is an embedded, SUBSETTED copy that only contains glyphs for
+characters actually used *in that exact font/weight/style* — so typing a
+character that's never appeared in, say, the Bold weight (even if it appears
+elsewhere in Regular) genuinely isn't in that font file. `font_extend.py`
+handles this for real: it downloads/instances a matching open-source donor
+font (currently Source Sans 3 and IBM Plex Sans — the families this has been
+tested against), copies the missing glyph's outline into the embedded subset,
+extends the PDF's `/W` width array (both inline- and indirect-reference
+forms), and patches the `/ToUnicode` CMap so the new character also
+extracts/copies/searches correctly — not just renders correctly. Falls back to
+an honest refusal for unknown families or anything that fails to resolve.
+
+This was found the hard way: a first pass reported success while silently
+corrupting text-extraction for the new character (visually correct, but
+extracted as U+FFFD) — caught by re-verifying against a **fresh reopen** of
+the edited bytes rather than the live in-memory session, which is now how
+every check in this tier works. A second pass under-verified length-changing
+edits against a bbox sized for the *old* text, flagging the field's own
+legitimate extra width as a false violation — fixed by using the union of the
+old and new field extents as the exclusion zone.
+
+### Verified (spikes/test_inplace.py — 8 cases; spikes/test_font_extend.py — extend tier)
 
 | Case | Result |
 |---|---|
@@ -44,15 +73,24 @@ The engine now:
 | Kerning split inside one instruction | honestly refused |
 | Ragged boundary (unrelated text sharing a token) | honestly refused |
 | Simple (non-CID) font, split across instructions | pixel-perfect |
-| New character not in the subset | honestly refused ("extend") |
 | `analyze()` per-field editability probe | correct on all of the above |
+| **New character, donor family known** (extend tier) | pixel-perfect, `tier=extend`, ToUnicode correct |
+| New character, unknown/unresolvable family | honestly refused |
+| Extend + text gets shorter/longer in the same edit | pixel-perfect (fair bbox) |
 
-Run it: `backend/.venv/bin/python spikes/test_inplace.py`
+Run them: `backend/.venv/bin/python spikes/test_inplace.py` and
+`backend/.venv/bin/python spikes/test_font_extend.py` (needs network — skips
+cleanly if unavailable).
 
 ### Known, named limits (as of this version)
 
-- **Form XObjects** (logos/stamps/repeated headers drawn as embedded objects)
-  aren't searched — only the page's own top-level content stream.
+- **Only 2 donor font families known** (Source Sans 3 / Source Sans Pro, IBM
+  Plex Sans) — any other family's missing-glyph case still refuses honestly
+  rather than guess. Adding a family means one entry in
+  `font_extend._DONOR_FONTS`.
+- Only glyf-outline (TrueType) subset fonts are supported for the extend tier;
+  CFF/OpenType-CFF embeds refuse cleanly.
+- Only one level of Form XObject nesting is walked from the page.
 - **Vector-outlined "text"** (converted to filled curves, no text operator at
   all) can't be found or edited as text by *any* tool — it no longer exists as
   text in the file. If a field looks editable but styling is clearly custom

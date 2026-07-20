@@ -181,12 +181,17 @@
           $("btn-edit").disabled = false;
           showPdf(editUrl, "edit");
           const b = $("banner");
+          const extended = r.extended_chars && r.extended_chars.length;
           b.className = "banner " + (r.guarantee ? "ok" : "bad");
           b.textContent = r.guarantee
-            ? `✓ Edited in place (${r.case === "multi_run" ? "spanned multiple drawing instructions" : "single instruction"}) — ${r.diff_outside} pixels changed outside the edit. Nothing else moved.`
+            ? `✓ Edited in place (${r.case === "multi_run" ? "spanned multiple drawing instructions" : "single instruction"})`
+              + (extended ? ` — injected new glyph(s) [${r.extended_chars.join(", ")}] from an open-source donor font` : "")
+              + ` — ${r.diff_outside} pixels changed outside the edit. Nothing else moved.`
             : `Edited — but ${r.diff_outside} pixels changed outside the edit (investigate).`;
           note.className = "note " + (r.guarantee ? "ok" : "warn"); note.style.display = "block";
-          note.textContent = r.guarantee ? "Pixel-perfect: only the text changed." : "Applied, but check the diff above.";
+          note.textContent = r.guarantee
+            ? (extended ? "Pixel-perfect — including the newly-injected character(s)." : "Pixel-perfect: only the text changed.")
+            : "Applied, but check the diff above.";
         } else {
           note.className = "note " + (r.reason === "extend" ? "warn" : "err");
           note.style.display = "block";
