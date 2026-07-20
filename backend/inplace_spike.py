@@ -35,10 +35,29 @@ So the engine here does NOT search "within one instruction". It:
                                                       why, rather than risk a
                                                       subtly wrong splice.
 
+TEXT INSIDE FORM XOBJECTS (very common — read this one)
+----------------------------------------------------------------
+Many real PDFs — anything exported by a headless-browser print-to-PDF
+pipeline, and a lot of resume builders / design tools — draw the ENTIRE page
+as a single Form XObject: the page's own content stream is just
+"q ... /X11 Do ... Q", and ALL the actual text lives inside object X11's own,
+separate content stream. Treating "the page's content stream" as the only
+place to look (an earlier version of this file did exactly that) means such
+a PDF finds ZERO editable text, not "some fields, some not" — every field
+fails identically. So this engine searches the page's own stream AND every
+Form XObject it uses (Image XObjects are skipped — their "stream" is raw
+pixel data, not PDF operators, and tokenizing it would be garbage). Each
+found run remembers which physical object it came from, so an edit is
+written back to the RIGHT object.
+
 KNOWN, NAMED LIMITS (as of this version) — read before assuming a failure is
 a bug:
-  - Text drawn inside a Form XObject (common for logos/stamps/repeated
-    headers) isn't searched — only the page's own top-level content stream.
+  - Only ONE level of Form XObject nesting is walked from the page (a Form
+    XObject that itself invokes a further nested Form XObject is not
+    followed). Not yet observed in practice; would show as "no_runs_for_font".
+  - A match that would require editing across two DIFFERENT physical objects
+    (e.g. half on the page, half inside an XObject — not a realistic
+    document, but guarded against) is refused, not risked.
   - Text that has been converted to vector outlines (no text operator at
     all, just filled curves shaped like letters) cannot be found here at
     all — and cannot, in principle, be edited as "text" by ANY tool, because
@@ -116,6 +135,46 @@ def _gid_maps(doc):
 def _page_font_refmap(page):
     """PDF resource name (e.g. 'F0') -> display font name (subset prefix stripped)."""
     return {f[4]: f[3].split("+")[-1] for f in page.get_fonts(full=True)}
+
+
+# ── every physical content stream text can live in: the page's own stream,
+# PLUS every Form XObject it uses (see module docstring — this is what makes
+# whole-page-as-one-XObject exports, e.g. many headless-browser PDF exports,
+# actually searchable instead of reporting zero editable text). ──────────────
+def _content_streams(doc, page):
+    streams = []
+    page.clean_contents()
+    for pxref in page.get_contents():
+        data = doc.xref_stream(pxref)
+        if data:
+            streams.append({"xref": pxref, "data": data})
+    seen = {s["xref"] for s in streams}
+    for xo in page.get_xobjects():
+        xref = xo[0]
+        if xref in seen:
+            continue
+        try:
+            subtype = doc.xref_get_key(xref, "Subtype")
+        except Exception:  # noqa: BLE001
+            subtype = None
+        if subtype and subtype[1] == "/Form":
+            data = doc.xref_stream(xref)
+            if data:
+                streams.append({"xref": xref, "data": data})
+                seen.add(xref)
+    return streams
+
+
+def _all_runs(streams):
+    """_text_runs() per stream, each run tagged with the xref/bytes it came
+    from, so a located edit is written back to the right physical object."""
+    runs = []
+    for s in streams:
+        for r in _text_runs(s["data"]):
+            r["xref"] = s["xref"]
+            r["data"] = s["data"]
+            runs.append(r)
+    return runs
 
 
 # ── a minimal PDF content-stream tokenizer (enough to find text runs) ────────
@@ -318,6 +377,9 @@ def _locate(runs, refmap, font_name, old_codes, is_cid):
             touched.append(ri)
     r_first, r_last = touched[0], touched[-1]
 
+    if len({runs[ri]["xref"] for ri in touched}) > 1:
+        return {"ok": False, "reason": "spans_multiple_streams"}
+
     if r_first == r_last:
         ti0, ci0 = loc[p][1], loc[p][2]
         ti1, ci1 = loc[p + L - 1][1], loc[p + L - 1][2]
@@ -337,9 +399,10 @@ def _locate(runs, refmap, font_name, old_codes, is_cid):
 
 
 # ── apply (mutating — given a successful locate result) ─────────────────────
-def _apply(doc, xref, data, runs, loc_result, new_codes, is_cid):
+def _apply(doc, runs, loc_result, new_codes, is_cid):
     if loc_result["case"] == "single_token":
         run = runs[loc_result["run"]]
+        xref, data = run["xref"], run["data"]
         tok = run["str_toks"][loc_result["tok"]]
         ci0, ci1 = loc_result["code_lo"], loc_result["code_hi"]
         merged = tok["codes"][:ci0] + new_codes + tok["codes"][ci1 + 1:]
@@ -348,6 +411,7 @@ def _apply(doc, xref, data, runs, loc_result, new_codes, is_cid):
     else:
         touched = loc_result["touched"]
         r_first = touched[0]
+        xref, data = runs[r_first]["xref"], runs[r_first]["data"]
         new_hex = _codes_to_bytes(new_codes, is_cid)
         first_repl = b"[<" + new_hex + b">]TJ"
         edits = [(runs[r_first]["full_start"], runs[r_first]["full_end"], first_repl)]
@@ -362,12 +426,15 @@ def _apply(doc, xref, data, runs, loc_result, new_codes, is_cid):
 
 
 _REASON_MSG = {
-    "no_runs_for_font": ("This text isn't in the page's own content stream under this font — it may be "
-                        "drawn inside an embedded object (a logo, stamp, or certain design-tool exports). "
-                        "This test doesn't search inside those yet."),
+    "no_runs_for_font": ("Couldn't find any text drawn with this font in the page's own content stream "
+                        "or the Form XObjects it uses (nested more than one level deep, or drawn in some "
+                        "other way this test doesn't parse yet)."),
     "sequence_not_found": ("Found the field via text extraction, but couldn't locate the exact glyph "
-                          "sequence in the content stream (unusual encoding, or it's drawn through "
-                          "something this test doesn't parse)."),
+                          "sequence in the content (unusual encoding, or it's drawn through something "
+                          "this test doesn't parse)."),
+    "spans_multiple_streams": ("This text would need to be edited across two different embedded objects "
+                              "at once (e.g. partly on the page, partly inside an embedded object) — "
+                              "refusing rather than risk a mismatched edit."),
     "kerning_split_within_run": ("This text has custom letter-spacing INSIDE a single drawing instruction "
                                 "(a kerning-adjusted run) — splicing that safely needs spacing-aware "
                                 "reconstruction, not built yet."),
@@ -391,10 +458,7 @@ def analyze(pdf_bytes: bytes) -> dict:
     fields, simple, cid = [], 0, 0
     for pno in range(doc.page_count):
         page = doc[pno]
-        page.clean_contents()
-        xrefs = page.get_contents()
-        data = doc.xref_stream(xrefs[0]) if xrefs else b""
-        runs = _text_runs(data) if data else []
+        runs = _all_runs(_content_streams(doc, page))
         refmap = _page_font_refmap(page)
         for s in _spans(page):
             nm = s["font"].split("+")[-1]
@@ -455,7 +519,6 @@ def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
     nm = target["font"].split("+")[-1]
     is_cid = subtype.get(nm) == "Type0"
     page = doc[tpage]
-    page.clean_contents()
 
     if is_cid:
         fm = _gid_maps(doc).get(nm, {})
@@ -479,13 +542,11 @@ def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
             doc.close()
             return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
 
-    xrefs = page.get_contents()
-    if not xrefs:
+    streams = _content_streams(doc, page)
+    if not streams:
         doc.close()
         return {"ok": False, "reason": "no_content_stream", "message": _REASON_MSG["no_content_stream"]}
-    xref = xrefs[0]
-    data = doc.xref_stream(xref)
-    runs = _text_runs(data)
+    runs = _all_runs(streams)
     refmap = _page_font_refmap(page)
 
     loc_result = _locate(runs, refmap, nm, old_codes, is_cid)
@@ -494,7 +555,7 @@ def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
         reason = loc_result["reason"]
         return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
 
-    _apply(doc, xref, data, runs, loc_result, new_codes, is_cid)
+    _apply(doc, runs, loc_result, new_codes, is_cid)
     edited = doc.tobytes(garbage=4, deflate=True)
     doc.close()
     diff = _pixel_diff(pdf_bytes, edited, fitz.Rect(target["bbox"]), tpage)
