@@ -6,6 +6,7 @@
     { "source": "/templates", "destination": "/templates.html" },
     { "source": "/modifier-pdf", "destination": "/modifier-pdf.html" },
     { "source": "/edit-pdf", "destination": "/edit-pdf.html" },
-    { "source": "/mail-merge", "destination": "/mail-merge.html" }
+    { "source": "/mail-merge", "destination": "/mail-merge.html" },
+    { "source": "/lab", "destination": "/lab.html" }
   ]
 }

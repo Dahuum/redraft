@@ -1457,6 +1457,42 @@ async def annex_generate(template: UploadFile = File(...),
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPERIMENTAL — in-place editing sandbox (research toward lossless editing).
+# Not wired into the real editor; a route to test the approach on real PDFs.
+#   POST /spike/analyze   PDF                → per-field font + editability
+#   POST /spike/edit      PDF + old + new    → true in-place swap + pixel proof
+# ─────────────────────────────────────────────────────────────────────────────
+import inplace_spike as _spike  # noqa: E402
+
+
+@app.post("/spike/analyze")
+async def spike_analyze(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
+    try:
+        return await run_in_threadpool(_spike.analyze, data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
+
+
+@app.post("/spike/edit")
+async def spike_edit(file: UploadFile = File(...), old: str = Form(...),
+                     new: str = Form(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
+    if not old:
+        raise HTTPException(400, "Provide the text to replace.")
+    try:
+        return await run_in_threadpool(_spike.edit, data, old, new)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"In-place edit failed ({type(exc).__name__}).")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)

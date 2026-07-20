@@ -22,6 +22,8 @@ function appRewrite() {
           req.url = "/edit-pdf.html";
         } else if (url === "/mail-merge") {
           req.url = "/mail-merge.html";
+        } else if (url === "/lab") {
+          req.url = "/lab.html";
         }
         next();
       });
@@ -45,6 +47,7 @@ export default defineConfig({
         modifierPdf: "modifier-pdf.html", // SEO: modifier un PDF (FR)
         editPdf: "edit-pdf.html",         // SEO: edit a PDF (EN)
         mailMerge: "mail-merge.html",     // SEO: mail merge to PDF (EN)
+        lab: "lab.html",                  // EXPERIMENTAL: in-place editing test
       },
     },
   },
