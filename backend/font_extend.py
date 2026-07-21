@@ -37,6 +37,8 @@ _DONOR_FONTS = {
                     "italic": "SourceSans3-Italic[wght].ttf"},
     "ibmplexsans": {"folder": "ibmplexsans", "upright": "IBMPlexSans[wdth,wght].ttf",
                     "italic": "IBMPlexSans-Italic[wdth,wght].ttf"},
+    "opensans": {"folder": "opensans", "upright": "OpenSans[wdth,wght].ttf",
+                "italic": "OpenSans-Italic[wdth,wght].ttf"},
 }
 
 _donor_cache: dict = {}  # (family_key, weight, style) -> bytes | None

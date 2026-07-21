@@ -491,14 +491,17 @@ def analyze(pdf_bytes: bytes) -> dict:
                 limitation = None if editable else _REASON_MSG.get(res["reason"], res["reason"])
 
             fields.append({
-                "page": pno, "text": text, "font": nm, "subtype": st,
+                "id": len(fields), "page": pno, "text": text, "font": nm, "subtype": st,
                 "simple": bool(is_simple),
                 "bbox": [round(v, 1) for v in s["bbox"]],
                 "editable": editable, "limitation": limitation,
             })
+    page_sizes = [{"width": doc[i].rect.width, "height": doc[i].rect.height}
+                 for i in range(doc.page_count)]
     n_pages = doc.page_count
     doc.close()
-    return {"pages": n_pages, "count": len(fields), "simple": simple, "cid": cid, "fields": fields}
+    return {"pages": n_pages, "page_sizes": page_sizes,
+            "count": len(fields), "simple": simple, "cid": cid, "fields": fields}
 
 
 # ── "extend" tier: inject a missing glyph via font_extend.py ────────────────
