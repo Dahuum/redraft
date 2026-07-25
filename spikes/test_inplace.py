@@ -168,6 +168,49 @@ def build_simple_font_split(phrase):
     return doc.tobytes(garbage=4, deflate=True)
 
 
+def build_word_gap_split(phrase, size=13):
+    """One TJ array, one string token per WORD, with NO literal space
+    character anywhere — the inter-word gap is pure positioning, e.g.
+    [(Google)-250(Brain)]TJ. This is exactly how dvips/pdfTeX (and other
+    space-saving typesetters) draw ordinary justified text with a SIMPLE
+    (non-CID) font; a search for the phrase WITH its normal spaces must
+    still find it. (Scoped to simple fonts — see _SPACE_GAP_THRESHOLD's use
+    in _flatten — since that's where this was found on a real document; a
+    CID font never renders a space glyph either way in this synthetic
+    fixture, which is a separate, not-yet-addressed gap.)"""
+    doc = fitz.open(); page = doc.new_page(width=595, height=200)
+    page.insert_text((72, 20), " ", fontname="helv", fontsize=size)
+    words = phrase.split(" ")
+    parts = [b"q BT /helv %g Tf 0.1 0.1 0.15 rg 1 0 0 1 72 100 Tm [" % size]
+    for i, w in enumerate(words):
+        if i > 0:
+            parts.append(b"-250")
+        parts.append(b"(%s)" % w.encode("latin-1"))
+    parts.append(b"]TJ ET Q")
+    raw = b"".join(parts)
+    xref = page.get_contents()[0]
+    doc.update_stream(xref, raw)
+    return doc.tobytes(garbage=4, deflate=True)
+
+
+def build_octal_escaped_literal(phrase):
+    """A simple-font literal string where the FIRST character is written as a
+    PDF octal escape (\\ddd) instead of the raw byte — the same mechanism
+    real PDF writers use for non-printable font codes (e.g. a ligature glyph
+    packed into byte 2, written as the four characters \\002). Uses a
+    printable stand-in so the fixture doesn't need a custom-encoded font,
+    but exercises the exact same tokenizer path."""
+    doc = fitz.open(); page = doc.new_page(width=595, height=200)
+    page.insert_text((72, 20), " ", fontname="helv", fontsize=13)
+    escaped_first = ("\\%03o" % ord(phrase[0])).encode()
+    rest = phrase[1:].encode("latin-1")
+    raw = (b"q BT /helv 13 Tf 0.1 0.1 0.15 rg 1 0 0 1 72 100 Tm (%s%s) Tj ET Q"
+          % (escaped_first, rest))
+    xref = page.get_contents()[0]
+    doc.update_stream(xref, raw)
+    return doc.tobytes(garbage=4, deflate=True)
+
+
 def prove(label, pdf_bytes, old, new, expect_ok, expect_reason=None, expect_case=None):
     r = sp.edit(pdf_bytes, old, new)
     shown = {k: v for k, v in r.items() if k != "pdf_b64"}
@@ -224,6 +267,14 @@ check("analyze: word-split field reports editable=True", all(f["editable"] for f
 a2 = sp.analyze(kern)
 check("analyze: kerning-split field reports editable=False",
      any(not f["editable"] for f in a2["fields"]))
+
+print("\n=== 9) word-space drawn as pure positioning, no space glyph (dvips/pdfTeX-style) ===")
+gap_split = build_word_gap_split(PHRASE)
+prove("word-gap-split", gap_split, PHRASE, "Facture N W2099 99 999", True, expect_case="multi_token")
+
+print("\n=== 10) PDF octal-escaped literal-string byte (\\\\ddd) decodes correctly ===")
+octal_fixture = build_octal_escaped_literal("Reference REF 2026 001")
+prove("octal-escape", octal_fixture, "Reference REF 2026 001", "Reference REF 2099 777", True)
 
 print(f"\n{'='*70}")
 if FAIL:
