@@ -40,12 +40,13 @@ exports, many resume builders) draw the ENTIRE page as one embedded object,
 so skipping this made every field on such a document fail identically. See
 `_content_streams()` in inplace_spike.py.
 
-### Three more real-document bugs (found by downloading actual PDFs, not just synthetic fixtures)
+### Four more real-document bugs (found by downloading actual PDFs, not just synthetic fixtures)
 
-Testing against a real LaTeX/pdfTeX paper (a classic, extremely common real
-document type) surfaced three separate, previously-invisible bugs — synthetic
-test fixtures hadn't reproduced any of them because they didn't reproduce how
-real typesetters actually write content streams:
+Testing against real documents from different generation pipelines — a
+LaTeX/pdfTeX paper, an Acrobat/Distiller-generated IRS form — surfaced four
+separate, previously-invisible bugs — synthetic test fixtures hadn't
+reproduced any of them because they didn't reproduce how real writers
+actually encode and lay out a content stream:
 
 1. **Ligatures / custom `/Encoding /Differences`.** LaTeX Type1 fonts commonly
    remap byte codes to arbitrary glyph names — most famously, "fi" and "fl"
@@ -80,11 +81,26 @@ real typesetters actually write content streams:
    instead of decoding it, so it never matched a decoded search sequence at
    all. Fixed with `_decode_pdf_literal()`, a real PDF-string-escape decoder
    (octal escapes + the standard `\n\r\t\b\f\(\)\\` set + line continuations).
+4. **`/Encoding /WinAnsiEncoding` treated as Latin-1.** A font with NO
+   `/ToUnicode` at all and a plain `/Encoding /WinAnsiEncoding` name (not a
+   `/Differences` array) — a real Acrobat/Distiller-generated fillable form
+   is exactly this — hit the same blind `latin-1` fallback as everything
+   else. But WinAnsiEncoding is Windows-1252, not Latin-1/ISO-8859-1, in the
+   0x80–0x9F byte range: exactly where ordinary smart-quote/en-dash/bullet
+   characters live in everyday Word/Acrobat prose (’, –, •, ...) — `latin-1`
+   can't encode them AT ALL (raises outright), so every field containing one
+   failed completely. Fixed by reading the font's own declared encoding name
+   (already exposed by PyMuPDF's `get_fonts()`) and using the matching real
+   codec (`cp1252` for WinAnsiEncoding, `mac_roman` for MacRomanEncoding)
+   before ever falling back to plain latin-1 — only triggers when the font
+   itself confirms one of these names, so a `/Differences`-encoded font (like
+   the LaTeX case above, which PyMuPDF reports with an empty encoding name)
+   is untouched by this path.
 
 Locked in permanently against the real documents that found them, not just
 synthetic fixtures, in `spikes/test_real_world_pdfs.py` (downloads a LaTeX
-paper and a headless-Chrome-exported Wikipedia page fresh each run; skips
-cleanly without network).
+paper, a headless-Chrome-exported Wikipedia page, and an IRS fillable form
+fresh each run; skips cleanly without network).
 
 ### The "extend" tier — injecting a genuinely new glyph
 
@@ -153,6 +169,7 @@ instead of a single catch-all.
 | Extend + text gets shorter/longer in the same edit | pixel-perfect (fair bbox) |
 | **Word space as pure TJ positioning, no space glyph** | pixel-perfect, `case=multi_token` |
 | **PDF octal-escaped literal-string byte (`\ddd`)** | pixel-perfect |
+| **WinAnsiEncoding special chars (smart quote/en-dash/bullet)** | pixel-perfect |
 
 `spikes/test_font_extend_broad.py` — the FULL edit() pipeline (not just
 resolve_donor) against 4 structurally different real families: Roboto
@@ -165,9 +182,11 @@ reports `extend_reason="not_glyf"`, not a generic refusal.
 
 `spikes/test_real_world_pdfs.py` — real, freshly-downloaded documents (see
 above): a LaTeX/pdfTeX paper (67% of its 2610 text fields editable, up from
-completely broken on this document class before this round of fixes) and a
-headless-Chrome-exported Wikipedia page (98% of 2892 fields editable),
-plus one real pixel-perfect edit against each.
+completely broken on this document class before this round of fixes), a
+headless-Chrome-exported Wikipedia page (98% of 2892 fields editable), and
+an Acrobat/Distiller-generated IRS fillable form (99% of 936 fields editable,
+up from 89% before the WinAnsiEncoding fix) — plus one real pixel-perfect
+edit against each.
 
 Run them: `python3 spikes/test_inplace.py`, `spikes/test_font_extend.py`,
 `spikes/test_font_extend_broad.py`, and `spikes/test_real_world_pdfs.py` (the

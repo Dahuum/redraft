@@ -243,6 +243,46 @@ def _encode_simple_text(text, rev, max_len):
     return codes
 
 
+# A font with NO /ToUnicode at all (common on Acrobat/Distiller-generated
+# forms — real example: an IRS fillable form's Helvetica/WinAnsiEncoding
+# text) has no empirical code map to build from _simple_font_code_maps at
+# all. The prior fallback in that case was a blind `text.encode("latin-1")`
+# — WRONG for the ubiquitous case of a font that explicitly declares
+# /Encoding /WinAnsiEncoding, because WinAnsiEncoding is Windows-1252, NOT
+# Latin-1/ISO-8859-1, in the 0x80-0x9F range: exactly where ordinary
+# smart-quote/en-dash/bullet characters live in everyday Word/Acrobat
+# documents (U+2019 '’', U+2013 '–', U+2022 '•', ...) — latin-1
+# can't encode them at all (raises), so every field containing one used to
+# fail outright. Only applied when the font's OWN declared encoding name
+# confirms it (get_fonts()'s encoding field) — for a custom /Differences
+# font (reported as "" by PyMuPDF) this never triggers, leaving that path
+# untouched.
+_ENCODING_CODECS = {"WinAnsiEncoding": "cp1252", "MacRomanEncoding": "mac_roman"}
+
+
+def _simple_font_encodings(doc):
+    out = {}
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            name = f[3].split("+")[-1]
+            if name not in out and f[5]:
+                out[name] = f[5]
+    return out
+
+
+def _encode_fallback(text, encoding_name):
+    codec = _ENCODING_CODECS.get(encoding_name)
+    if codec:
+        try:
+            return list(text.encode(codec))
+        except UnicodeEncodeError:
+            pass
+    try:
+        return list(text.encode("latin-1"))
+    except UnicodeEncodeError:
+        return None
+
+
 def _page_font_refmap(page):
     """PDF resource name (e.g. 'F0') -> display font name (subset prefix stripped)."""
     return {f[4]: f[3].split("+")[-1] for f in page.get_fonts(full=True)}
@@ -681,6 +721,7 @@ def analyze(pdf_bytes: bytes) -> dict:
     subtype, used = _font_info(doc)
     gid_maps = None
     simple_maps = None
+    simple_encodings = None
     fields, simple, cid = [], 0, 0
     for pno in range(doc.page_count):
         page = doc[pno]
@@ -698,13 +739,12 @@ def analyze(pdf_bytes: bytes) -> dict:
             if is_simple:
                 if simple_maps is None:
                     simple_maps = _simple_font_code_maps(doc)
+                if simple_encodings is None:
+                    simple_encodings = _simple_font_encodings(doc)
                 cm = simple_maps.get(nm)
                 codes = _encode_simple_text(text, cm["rev"], cm["max_len"]) if cm else None
                 if codes is None:
-                    try:
-                        codes = list(text.encode("latin-1"))
-                    except UnicodeEncodeError:
-                        codes = None
+                    codes = _encode_fallback(text, simple_encodings.get(nm))
             else:
                 if gid_maps is None:
                     gid_maps = _gid_maps(doc)
@@ -923,18 +963,17 @@ def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
             return {"ok": False, "reason": "unmappable", "message": _REASON_MSG["unmappable"]}
     else:
         cm = _simple_font_code_maps(doc).get(nm)
+        enc_name = _simple_font_encodings(doc).get(nm)
         old_codes = _encode_simple_text(old_n, cm["rev"], cm["max_len"]) if cm else None
         new_codes = _encode_simple_text(new, cm["rev"], cm["max_len"]) if cm else None
         if old_codes is None:
-            try:
-                old_codes = list(old_n.encode("latin-1"))
-            except UnicodeEncodeError:
+            old_codes = _encode_fallback(old_n, enc_name)
+            if old_codes is None:
                 doc.close()
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
         if new_codes is None:
-            try:
-                new_codes = list(new.encode("latin-1"))
-            except UnicodeEncodeError:
+            new_codes = _encode_fallback(new, enc_name)
+            if new_codes is None:
                 doc.close()
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
 

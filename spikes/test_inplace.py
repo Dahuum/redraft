@@ -211,6 +211,27 @@ def build_octal_escaped_literal(phrase):
     return doc.tobytes(garbage=4, deflate=True)
 
 
+def build_winansi_special_chars(phrase):
+    """A simple font declaring /Encoding /WinAnsiEncoding (PyMuPDF's own
+    base-14 Helvetica does this) with text containing characters common in
+    everyday documents but OUTSIDE Latin-1's range in the 0x80-0x9F byte
+    slots WinAnsiEncoding (~= Windows-1252) actually uses for them: a smart
+    quote, an en-dash, a bullet. `text.encode("latin-1")` raises outright on
+    these — this is a real, ubiquitous Word/Acrobat-document pattern, not an
+    edge case. Writes the WinAnsi byte codes directly (page.insert_text()'s
+    own Unicode handling for base-14 fonts substitutes an unrelated
+    placeholder glyph for them rather than the real WinAnsi byte — a
+    fixture-construction quirk, not something being tested here)."""
+    winansi_byte = {"’": 0x92, "–": 0x96, "•": 0x95}
+    doc = fitz.open(); page = doc.new_page(width=595, height=200)
+    page.insert_text((72, 20), " ", fontname="helv", fontsize=13)  # registers /helv
+    raw_bytes = bytes(winansi_byte.get(ch, ord(ch)) for ch in phrase)
+    raw = (b"q BT /helv 13 Tf 0.1 0.1 0.15 rg 1 0 0 1 72 100 Tm (%s) Tj ET Q" % raw_bytes)
+    xref = page.get_contents()[0]
+    doc.update_stream(xref, raw)
+    return doc.tobytes(garbage=4, deflate=True)
+
+
 def prove(label, pdf_bytes, old, new, expect_ok, expect_reason=None, expect_case=None):
     r = sp.edit(pdf_bytes, old, new)
     shown = {k: v for k, v in r.items() if k != "pdf_b64"}
@@ -275,6 +296,10 @@ prove("word-gap-split", gap_split, PHRASE, "Facture N W2099 99 999", True, expec
 print("\n=== 10) PDF octal-escaped literal-string byte (\\\\ddd) decodes correctly ===")
 octal_fixture = build_octal_escaped_literal("Reference REF 2026 001")
 prove("octal-escape", octal_fixture, "Reference REF 2026 001", "Reference REF 2099 777", True)
+
+print("\n=== 11) WinAnsiEncoding special chars (smart quote / en-dash / bullet) ===")
+winansi = build_winansi_special_chars("What’s New – test •")
+prove("winansi-special-chars", winansi, "What’s New – test •", "What’s Old – demo •", True)
 
 print(f"\n{'='*70}")
 if FAIL:

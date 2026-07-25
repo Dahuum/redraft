@@ -1,6 +1,6 @@
 """
 test_real_world_pdfs.py — regression test against real, downloaded documents
-from two structurally different generation pipelines, locking in three bugs
+from three structurally different generation pipelines, locking in four bugs
 found this way (synthetic fixtures alone didn't catch any of them):
 
   1. LaTeX/pdfTeX ligatures ("fi"/"fl" etc packed into a SINGLE byte via a
@@ -14,11 +14,16 @@ found this way (synthetic fixtures alone didn't catch any of them):
      instead of the one real byte 0x02) — silently broke matching for ANY
      text containing an escaped byte, which is exactly how ligature bytes
      (and other non-printable font codes) get written into a literal string.
+  4. /Encoding /WinAnsiEncoding (declared directly, no /Differences, no
+     /ToUnicode at all — an Acrobat/Distiller-generated form is a real
+     example) treated as if it were Latin-1 — wrong for the ubiquitous
+     smart-quote/en-dash/bullet characters WinAnsiEncoding (~= Windows-1252)
+     assigns to the 0x80-0x9F byte range, which Latin-1 can't encode at all.
 
-Downloads two real PDFs (a LaTeX paper, a headless-Chrome print-to-PDF
-Wikipedia export) fresh each run rather than committing them — consistent
-with this repo's convention of not committing test/private PDFs. Skips
-cleanly if network is unavailable.
+Downloads three real PDFs (a LaTeX paper, a headless-Chrome print-to-PDF
+Wikipedia export, an IRS fillable form) fresh each run rather than committing
+them — consistent with this repo's convention of not committing test/private
+PDFs. Skips cleanly if network is unavailable.
 """
 import os
 import sys
@@ -54,6 +59,12 @@ try:
 except Exception as e:  # noqa: BLE001
     wiki = None
     print(f"[wiki export unavailable, skipping that part: {e}]")
+
+try:
+    irs_form = fetch("https://www.irs.gov/pub/irs-pdf/fw9.pdf")
+except Exception as e:  # noqa: BLE001
+    irs_form = None
+    print(f"[IRS form unavailable, skipping that part: {e}]")
 
 print("=== arXiv paper (LaTeX/pdfTeX, dvips-style word spacing + ligatures) ===")
 r = sp.analyze(arxiv)
@@ -91,6 +102,19 @@ if wiki is not None:
     print("  [edit]", {k: v for k, v in re_.items() if k != "pdf_b64"})
     check("wiki: edit ok", re_.get("ok") is True)
     check("wiki: edit guarantee", re_.get("guarantee") is True)
+
+if irs_form is not None:
+    print("\n=== IRS W-9 form (Acrobat/Distiller, WinAnsiEncoding, no /ToUnicode) ===")
+    ri = sp.analyze(irs_form)
+    editable_i = sum(1 for f in ri["fields"] if f["editable"])
+    pcti = editable_i / ri["count"] * 100
+    print(f"  {editable_i}/{ri['count']} editable ({pcti:.1f}%)")
+    check("IRS form: majority of fields editable (>= 90%)", pcti >= 90, f"{pcti:.1f}%")
+
+    ri_edit = sp.edit(irs_form, "What’s New", "What’s Changed")
+    print("  [smart-quote edit]", {k: v for k, v in ri_edit.items() if k != "pdf_b64"})
+    check("IRS form: smart-quote edit ok", ri_edit.get("ok") is True)
+    check("IRS form: smart-quote edit guarantee", ri_edit.get("guarantee") is True)
 
 print(f"\n{'='*70}")
 if FAIL:
