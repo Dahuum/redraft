@@ -919,23 +919,56 @@ def _try_extend(doc, font_display_name, missing_chars):
     return result["gid"], None
 
 
-def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
+def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
-    it succeeds, the edited PDF (base64) + a pixel-diff proof."""
+    it succeeds, the edited PDF (base64) + a pixel-diff proof.
+
+    `page` (optional): restrict the search to this page only. Without it,
+    duplicate occurrences of the exact same text elsewhere in the document
+    are ambiguous — the /lab tool never hits this (a human picks one field
+    at a time), but a caller driving this from an index-addressed span list
+    (e.g. the production /edit route) already KNOWS exactly which field it
+    means and should say so.
+    `bbox` (optional, most useful together with `page`): when more than one
+    span on that page contains `old` (e.g. a repeated label), prefer the one
+    whose bbox is closest to this one instead of just the first found — the
+    same disambiguation the caller's own span list already carries.
+    Passing neither preserves the exact prior first-match-in-document-order
+    behavior (still the deliberate, honest choice for genuinely ambiguous
+    duplicate text — see the "known limits" note in spikes/README.md).
+
+    `verify` (default True): rasterize before/after to prove nothing outside
+    the field changed (`diff_outside`/`guarantee`). This is a genuine (if
+    already thoroughly regression-tested) proof step, not something the
+    edit's own success depends on — `ok` is decided purely by whether
+    `_locate` found a safe splice, before this ever runs. A caller applying
+    MANY edits to the same document in a loop (production's /edit route) can
+    pass False to skip two full-page rasterizations per field; `diff_outside`/
+    `diff_inside`/`guarantee` come back as None in that case."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     subtype, used = _font_info(doc)
     old_n = _norm(old)
-    target, tpage = None, 0
-    for pno in range(doc.page_count):
+    page_range = [page] if page is not None else range(doc.page_count)
+    candidates = []
+    for pno in page_range:
+        if pno < 0 or pno >= doc.page_count:
+            continue
         for s in _spans(doc[pno]):
             if old_n in _norm(s["text"]):
-                target, tpage = s, pno
-                break
-        if target:
-            break
-    if not target:
+                candidates.append((pno, s))
+    if not candidates:
         doc.close()
         return {"ok": False, "reason": "not_found", "message": _REASON_MSG["not_found"]}
+    if bbox is not None and len(candidates) > 1:
+        bx = fitz.Rect(bbox)
+
+        def _dist(item):
+            sb = fitz.Rect(item[1]["bbox"])
+            return (abs(sb.x0 - bx.x0) + abs(sb.y0 - bx.y0)
+                   + abs(sb.x1 - bx.x1) + abs(sb.y1 - bx.y1))
+
+        candidates.sort(key=_dist)
+    tpage, target = candidates[0]
 
     nm = target["font"].split("+")[-1]
     is_cid = subtype.get(nm) == "Type0"
@@ -994,29 +1027,32 @@ def edit(pdf_bytes: bytes, old: str, new: str) -> dict:
     edited = doc.tobytes(garbage=4, deflate=True)
     doc.close()
 
-    # The exclusion zone for "did anything ELSE on the page change" must cover
-    # where the edited text NOW sits, not just its old extent — a longer/
-    # shorter replacement legitimately occupies a different amount of space;
-    # that alone isn't a violation, only something outside BOTH extents is.
-    # Read this from a FRESH reopen of the serialized bytes, not the live
-    # in-session `doc` — PyMuPDF can cache font/CMap interpretation per
-    # session, so text extracted right after update_stream() on the same
-    # object may not reflect the just-written data (e.g. a ToUnicode fix)
-    # even though the bytes themselves are already correct.
-    excl_bbox = fitz.Rect(target["bbox"])
-    new_n = _norm(new)
-    edoc = fitz.open(stream=edited, filetype="pdf")
-    for s2 in _spans(edoc[tpage]):
-        if new_n and new_n in _norm(s2["text"]):
-            excl_bbox |= fitz.Rect(s2["bbox"])
-            break
-    edoc.close()
+    diff = {"outside": None, "inside": None}
+    if verify:
+        # The exclusion zone for "did anything ELSE on the page change" must
+        # cover where the edited text NOW sits, not just its old extent — a
+        # longer/shorter replacement legitimately occupies a different amount
+        # of space; that alone isn't a violation, only something outside
+        # BOTH extents is. Read this from a FRESH reopen of the serialized
+        # bytes, not the live in-session `doc` — PyMuPDF can cache font/CMap
+        # interpretation per session, so text extracted right after
+        # update_stream() on the same object may not reflect the just-
+        # written data (e.g. a ToUnicode fix) even though the bytes
+        # themselves are already correct.
+        excl_bbox = fitz.Rect(target["bbox"])
+        new_n = _norm(new)
+        edoc = fitz.open(stream=edited, filetype="pdf")
+        for s2 in _spans(edoc[tpage]):
+            if new_n and new_n in _norm(s2["text"]):
+                excl_bbox |= fitz.Rect(s2["bbox"])
+                break
+        edoc.close()
+        diff = _pixel_diff(pdf_bytes, edited, excl_bbox, tpage)
 
-    diff = _pixel_diff(pdf_bytes, edited, excl_bbox, tpage)
     return {"ok": True, "tier": ("extend" if extended_chars else ("remap" if is_cid else "clean")),
             "page": tpage, "case": loc_result["case"], "extended_chars": extended_chars,
             "diff_outside": diff["outside"], "diff_inside": diff["inside"],
-            "guarantee": diff["outside"] == 0,
+            "guarantee": (diff["outside"] == 0) if verify else None,
             "pdf_b64": base64.b64encode(edited).decode()}
 
 
