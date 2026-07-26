@@ -998,10 +998,22 @@ class PDFEditor:
             all_spans  = get_spans(self.doc, page_num)
             align_map  = _detect_alignments(all_spans)
 
-            # Erase originals
+            # Erase originals — TRUE redaction (removes the underlying text
+            # operators from the content stream), not just a rectangle
+            # painted on top of them. A cosmetic paint-over leaves the
+            # original text fully present and extractable underneath —
+            # copy/paste, text search, or programmatic extraction all still
+            # see it — which defeats the entire purpose of "erasing" a field
+            # for a document editor. images/graphics are explicitly left
+            # untouched (only text is removed) to match this step's original,
+            # narrower intent — a photo or decorative line under a text
+            # field isn't this method's business to alter.
             for span, _ in items:
-                page.draw_rect(span["bbox"], color=None,
-                               fill=_sample_bg(pix, span["bbox"]), overlay=True)
+                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
+                                      cross_out=False)
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                                  graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                  text=fitz.PDF_REDACT_TEXT_REMOVE)
 
             # Build stamp
             stamp_doc  = fitz.open()

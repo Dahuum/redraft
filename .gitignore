@@ -11,3 +11,10 @@ redraft_extracted/
 frontend/.env.local
 frontend/dist/
 frontend/node_modules/
+
+# local backend virtualenv (created for dev; not committed)
+backend/.venv/
+
+# Spike research artifacts (generated PDFs/PNGs + user test files)
+spikes/*.pdf
+spikes/*.png

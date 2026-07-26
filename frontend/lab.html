@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Redraft Lab — in-place editing test</title>
+<script>
+  try { if (localStorage.getItem("redraft-theme") === "light") document.documentElement.setAttribute("data-theme","light"); } catch (e) {}
+</script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧪</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet" />
+<style>
+  :root { --bg:#080c14; --card:#0e131d; --card2:#131a26; --ink:#e7ebf3; --muted:#9aa4b5;
+          --line:#232c3b; --accent:#00f5ff; --accent-ink:#04121a; --brand:#2563eb;
+          --ok:#34d399; --warn:#fbbf24; --err:#f87171; }
+  :root[data-theme="light"] { --bg:#eef1f6; --card:#fff; --card2:#f6f8fb; --ink:#101725;
+          --muted:#5a6474; --line:#e2e6ee; --accent:#0aa5ad; --accent-ink:#fff; }
+  * { box-sizing:border-box; } html,body { margin:0; height:100%; }
+  body { background:var(--bg); color:var(--ink); font-family:Inter,system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:14px; padding:12px 18px; border-bottom:1px solid var(--line); }
+  .brand { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:17px; }
+  .pill { font-size:11px; font-weight:700; letter-spacing:.05em; color:var(--accent); border:1px solid var(--line); border-radius:999px; padding:3px 9px; }
+  .sub { color:var(--muted); font-size:13px; margin-left:auto; }
+  main { flex:1; display:grid; grid-template-columns:1fr 460px; min-height:0; }
+  .viewer { border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .vbar { display:flex; align-items:center; gap:10px; padding:8px 14px; border-bottom:1px solid var(--line); font-size:13px; }
+  .vbar button { background:transparent; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:5px 10px; font:inherit; font-size:12.5px; cursor:pointer; }
+  .vbar button.on { background:var(--accent); color:var(--accent-ink); border-color:transparent; font-weight:700; }
+  .vbar button:disabled { opacity:.35; cursor:not-allowed; }
+  .banner { padding:8px 14px; font-size:13px; font-weight:600; display:none; border-bottom:1px solid var(--line); }
+  .banner.ok { display:block; background:rgba(52,211,153,.12); color:var(--ok); }
+  .banner.bad { display:block; background:rgba(248,113,113,.12); color:var(--err); }
+  .canvas-wrap { flex:1; overflow:auto; display:flex; justify-content:center; padding:20px; background:var(--bg); }
+  .stage { position:relative; box-shadow:0 8px 30px rgba(0,0,0,.35); background:#fff; height:fit-content; }
+  .stage canvas { display:block; }
+  .ov { position:absolute; border-radius:2px; cursor:pointer; transition:background .12s,border-color .12s; }
+  .ov.ready { border:1.5px solid rgba(52,211,153,.55); background:rgba(52,211,153,.08); }
+  .ov.blocked { border:1.5px solid rgba(248,113,113,.45); background:rgba(248,113,113,.06); }
+  .ov:hover { background:rgba(0,245,255,.16) !important; border-color:var(--accent) !important; }
+  .ov.selected { background:rgba(0,245,255,.22) !important; border:2px solid var(--accent) !important; }
+  .empty { margin:auto; color:var(--muted); font-size:14px; text-align:center; padding:40px; }
+  .panel { display:flex; flex-direction:column; min-height:0; }
+  .drop { margin:16px; border:2px dashed var(--line); border-radius:14px; padding:26px; text-align:center; cursor:pointer; }
+  .drop:hover { border-color:var(--accent); }
+  .drop b { color:var(--accent); }
+  .summary { padding:10px 16px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--line); }
+  .summary b { color:var(--ink); }
+  .fields { overflow:auto; flex:1; }
+  .f { padding:12px 16px; border-bottom:1px solid var(--line); scroll-margin-top:8px; transition:background .5s; }
+  .f.dim { opacity:.72; }
+  .f.flash { background:rgba(0,245,255,.10); }
+  .f .row1 { display:flex; align-items:center; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  .badge { font-size:10px; font-weight:700; letter-spacing:.04em; border-radius:6px; padding:3px 7px; white-space:nowrap; }
+  .badge.simple { background:rgba(52,211,153,.14); color:var(--ok); }
+  .badge.cid { background:rgba(251,191,36,.14); color:var(--warn); }
+  .badge.ready { background:rgba(52,211,153,.14); color:var(--ok); }
+  .badge.blocked { background:rgba(248,113,113,.14); color:var(--err); }
+  .pg { font-size:11px; color:var(--muted); margin-left:auto; }
+  .f input { width:100%; background:var(--card2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; }
+  .f .why { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.4; }
+  .f .act { display:flex; gap:8px; margin-top:8px; align-items:center; }
+  .f .apply { background:var(--brand); color:#fff; border:none; border-radius:8px; padding:7px 14px; font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+  .f .apply[disabled] { opacity:.4; cursor:not-allowed; }
+  .f .note { font-size:12px; margin-top:8px; line-height:1.45; }
+  .f .note.ok { color:var(--ok); } .f .note.warn { color:var(--warn); } .f .note.err { color:var(--err); }
+  .hint { padding:16px; color:var(--muted); font-size:13px; line-height:1.5; }
+  code { background:var(--card2); padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand">Redraft</span><span class="pill">LAB · in-place editing</span>
+    <span class="sub" id="api-note"></span>
+  </header>
+  <main>
+    <div class="viewer">
+      <div class="vbar">
+        <span>Preview:</span>
+        <button id="btn-orig" class="on">Original</button>
+        <button id="btn-edit" disabled>Edited</button>
+        <span style="width:1px;height:16px;background:var(--line);margin:0 4px"></span>
+        <button id="btn-prev" disabled>&larr;</button>
+        <span class="pg" id="pgindicator">–</span>
+        <button id="btn-next" disabled>&rarr;</button>
+        <span class="pg" id="vhint" style="margin-left:auto">Click any highlighted text to edit it</span>
+      </div>
+      <div class="banner" id="banner"></div>
+      <div class="canvas-wrap" id="canvasWrap">
+        <div class="empty" id="empty">Drop a PDF on the right to preview it here — every field will be highlighted and clickable.</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="drop" id="drop">
+        <p>Drop a PDF here or <b>click to choose</b></p>
+        <p style="color:var(--muted);font-size:12.5px;margin:6px 0 0">Click any highlighted text directly on the PDF to jump straight to editing it.</p>
+        <input id="file" type="file" accept=".pdf" hidden />
+      </div>
+      <div class="summary" id="summary" style="display:none"></div>
+      <div class="fields" id="fields"></div>
+      <div class="hint" id="starthint">
+        <b style="color:var(--ok)">Ready</b> (green outline) = this field's own text was located precisely in
+        the content stream (however many separate drawing instructions it's split across) — editing it is
+        proven pixel-perfect outside the edit.<br/><br/>
+        <b style="color:var(--err)">Blocked</b> (red outline) fields show exactly why when clicked — a
+        specific, named reason, not a generic failure.
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import * as pdfjsLib from "pdfjs-dist";
+    import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+    pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+
+    const API = new URLSearchParams(location.search).get("api")
+      || (location.hostname === "localhost" || location.hostname === "127.0.0.1"
+            ? "http://localhost:8000" : "https://dahuum-radraft.hf.space");
+    document.getElementById("api-note").textContent = "backend: " + API;
+
+    const $ = (id) => document.getElementById(id);
+    let file = null, origBuf = null, editBuf = null, analysis = null;
+    let showing = "orig"; // "orig" | "edit"
+    let pageIndex = 0;
+    let pdfDoc = null; // currently-loaded pdf.js document (matches `showing`)
+
+    const drop = $("drop"), input = $("file");
+    drop.addEventListener("click", () => input.click());
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); });
+    drop.addEventListener("drop", (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]); });
+    input.addEventListener("change", (e) => e.target.files[0] && load(e.target.files[0]));
+
+    $("btn-orig").addEventListener("click", () => switchView("orig"));
+    $("btn-edit").addEventListener("click", () => editBuf && switchView("edit"));
+    $("btn-prev").addEventListener("click", () => { if (pageIndex > 0) { pageIndex--; renderPage(); } });
+    $("btn-next").addEventListener("click", () => { if (analysis && pageIndex < analysis.pages - 1) { pageIndex++; renderPage(); } });
+
+    async function switchView(which) {
+      showing = which;
+      $("btn-orig").classList.toggle("on", which === "orig");
+      $("btn-edit").classList.toggle("on", which === "edit");
+      await renderPage();
+    }
+
+    async function load(f) {
+      file = f;
+      origBuf = await f.arrayBuffer();
+      editBuf = null;
+      pageIndex = 0;
+      showing = "orig";
+      $("btn-edit").disabled = true;
+      $("btn-orig").classList.add("on"); $("btn-edit").classList.remove("on");
+      $("banner").className = "banner";
+      $("starthint").style.display = "none";
+      $("fields").innerHTML = "<div class='hint'>Analyzing…</div>";
+      try {
+        const fd = new FormData(); fd.append("file", f);
+        const res = await fetch(API + "/spike/analyze", { method: "POST", body: fd });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+        analysis = await res.json();
+        renderFieldList();
+        await renderPage();
+      } catch (e) {
+        $("fields").innerHTML = "<div class='hint' style='color:var(--err)'>" + (e.message || "Couldn't analyze.") + "</div>";
+      }
+    }
+
+    // ---- Canvas rendering + clickable field overlays ----
+    async function renderPage() {
+      const buf = showing === "edit" ? editBuf : origBuf;
+      if (!buf || !analysis) return;
+      const emptyEl = $("empty");
+      if (emptyEl) emptyEl.style.display = "none"; // only present before the first render
+      const pageCount = analysis.pages;
+      $("btn-prev").disabled = pageIndex <= 0;
+      $("btn-next").disabled = pageIndex >= pageCount - 1;
+      $("pgindicator").textContent = `${pageIndex + 1} / ${pageCount}`;
+
+      const bytes = new Uint8Array(buf.slice(0));
+      pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
+      const page = await pdfDoc.getPage(pageIndex + 1);
+      const unscaled = page.getViewport({ scale: 1 });
+      const wrapW = $("canvasWrap").clientWidth - 40;
+      const scale = Math.max(0.3, Math.min(wrapW / unscaled.width, 2.2));
+      const viewport = page.getViewport({ scale });
+      const dpr = window.devicePixelRatio || 1;
+
+      const wrap = $("canvasWrap");
+      wrap.innerHTML = "";
+      const stage = document.createElement("div");
+      stage.className = "stage";
+      stage.style.width = viewport.width + "px";
+      stage.style.height = viewport.height + "px";
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width * dpr);
+      canvas.height = Math.floor(viewport.height * dpr);
+      canvas.style.width = viewport.width + "px";
+      canvas.style.height = viewport.height + "px";
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      stage.appendChild(canvas);
+      wrap.appendChild(stage);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      // overlay every field on THIS page, clickable
+      analysis.fields.filter((f) => f.page === pageIndex).forEach((f) => {
+        const [x0, y0, x1, y1] = f.bbox;
+        const box = document.createElement("div");
+        box.className = "ov " + (f.editable ? "ready" : "blocked");
+        box.style.left = (x0 * scale) + "px";
+        box.style.top = (y0 * scale) + "px";
+        box.style.width = Math.max(2, (x1 - x0) * scale) + "px";
+        box.style.height = Math.max(2, (y1 - y0) * scale) + "px";
+        box.title = f.text;
+        box.dataset.fieldId = f.id;
+        box.addEventListener("click", () => selectField(f.id));
+        stage.appendChild(box);
+      });
+    }
+
+    function selectField(id) {
+      document.querySelectorAll(".ov").forEach((el) => el.classList.toggle("selected", Number(el.dataset.fieldId) === id));
+      const card = document.getElementById("field-" + id);
+      if (!card) return;
+      card.scrollIntoView({ block: "center", behavior: "smooth" });
+      card.classList.add("flash");
+      setTimeout(() => card.classList.remove("flash"), 900);
+      const inp = card.querySelector("input");
+      if (inp) { inp.focus(); inp.select(); }
+    }
+
+    // ---- Field list (right panel) ----
+    function renderFieldList() {
+      const a = analysis;
+      const readyCount = a.fields.filter((f) => f.editable).length;
+      const s = $("summary");
+      s.style.display = "block";
+      s.innerHTML = `<b>${a.count}</b> text field(s) over ${a.pages} page(s) — `
+        + `<b style="color:var(--ok)">${readyCount} ready</b>, `
+        + `<b style="color:var(--err)">${a.count - readyCount} blocked</b> · `
+        + `${a.simple} simple-font, ${a.cid} Type0/CID.`;
+      const box = $("fields"); box.innerHTML = "";
+      a.fields.forEach((f) => {
+        const el = document.createElement("div");
+        el.className = "f" + (f.editable ? "" : " dim");
+        el.id = "field-" + f.id;
+        const fontBadge = f.simple ? `<span class="badge simple">simple</span>` : `<span class="badge cid">Type0/CID</span>`;
+        const readyBadge = f.editable ? `<span class="badge ready">✓ ready</span>` : `<span class="badge blocked">blocked</span>`;
+        el.innerHTML =
+          `<div class="row1">${readyBadge}${fontBadge}<span class="pg">p${f.page + 1}</span></div>`
+          + `<input value="${escapeHtml(f.text)}" />`
+          + (f.editable
+              ? `<div class="act"><button class="apply">Apply in place</button></div>`
+              : `<div class="why">${escapeHtml(f.limitation || "not editable")}</div>`)
+          + `<div class="note" style="display:none"></div>`;
+        el.addEventListener("mouseenter", () => {
+          document.querySelectorAll(".ov").forEach((ov) => ov.classList.toggle("selected", Number(ov.dataset.fieldId) === f.id));
+        });
+        box.appendChild(el);
+        if (f.editable) {
+          const inp = el.querySelector("input");
+          const btn = el.querySelector(".apply");
+          const note = el.querySelector(".note");
+          inp.addEventListener("focus", () => {
+            if (f.page !== pageIndex) { pageIndex = f.page; renderPage(); }
+          });
+          btn.addEventListener("click", () => applyEdit(f.text, inp.value, btn, note));
+        }
+      });
+    }
+
+    async function applyEdit(oldText, newText, btn, note) {
+      note.style.display = "none";
+      btn.disabled = true; btn.textContent = "Applying…";
+      try {
+        const fd = new FormData(); fd.append("file", file); fd.append("old", oldText); fd.append("new", newText);
+        const res = await fetch(API + "/spike/edit", { method: "POST", body: fd });
+        const r = await res.json();
+        if (!res.ok) throw new Error(r.detail || res.statusText);
+        if (r.ok) {
+          const bin = atob(r.pdf_b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          editBuf = bytes.buffer;
+          $("btn-edit").disabled = false;
+          await switchView("edit");
+          const b = $("banner");
+          const extended = r.extended_chars && r.extended_chars.length;
+          b.className = "banner " + (r.guarantee ? "ok" : "bad");
+          b.textContent = r.guarantee
+            ? `✓ Edited in place (${r.case === "multi_run" ? "spanned multiple drawing instructions" : "single instruction"})`
+              + (extended ? ` — injected new glyph(s) [${r.extended_chars.join(", ")}] from an open-source donor font` : "")
+              + ` — ${r.diff_outside} pixels changed outside the edit. Nothing else moved.`
+            : `Edited — but ${r.diff_outside} pixels changed outside the edit (investigate).`;
+          note.className = "note " + (r.guarantee ? "ok" : "warn"); note.style.display = "block";
+          note.textContent = r.guarantee
+            ? (extended ? "Pixel-perfect — including the newly-injected character(s)." : "Pixel-perfect: only the text changed.")
+            : "Applied, but check the diff above.";
+        } else {
+          note.className = "note " + (r.reason === "extend" ? "warn" : "err");
+          note.style.display = "block";
+          note.textContent = r.message || ("blocked: " + r.reason);
+        }
+      } catch (e) {
+        note.className = "note err"; note.style.display = "block";
+        note.textContent = e.message || "Failed.";
+      } finally {
+        btn.disabled = false; btn.textContent = "Apply in place";
+      }
+    }
+
+    window.addEventListener("resize", () => { if (analysis) renderPage(); });
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+  </script>
+</body>
+</html>

@@ -45,6 +45,7 @@ from starlette.concurrency import run_in_threadpool
 sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
+import inplace_spike as _spike  # noqa: E402  — true in-place editing, tried before redraw-and-restamp
 from annex_model import (  # noqa: E402  — annex rules
     build_model, plan_edits, plan_header_edits, parse_num, detect_template,
 )
@@ -490,17 +491,67 @@ def page_dims(pdf_bytes: bytes) -> list:
     return dims
 
 
+def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
+    """Attempt every (span_dict, new_text) as a true in-place edit — same
+    font/size/weight/position guaranteed byte-for-byte, not just visually
+    close — anchored to its own page+bbox (so duplicate text elsewhere in
+    the document is never mistaken for it). `verify=False`: this is the
+    interactive editor's hot path, applied per-field in a loop over a single
+    document, and the pixel-diff proof is a reporting extra, not something
+    the edit's own correctness depends on (see edit()'s docstring).
+
+    Returns (current_bytes, in_place_count, still_needed) — `still_needed`
+    is every replacement this engine honestly refused (an unsupported font/
+    encoding shape, a kerning split it can't safely reconstruct, etc — see
+    spikes/README.md's "known limits"), for the caller to fall back to the
+    redraw-and-restamp engine exactly as every edit used to work before this
+    existed. Never raises — a crash in the experimental engine falls back
+    for that field rather than failing the whole request."""
+    current = pdf_bytes
+    in_place_count = 0
+    still_needed = []
+    for sd, new_text in replacements:
+        try:
+            r = _spike.edit(current, sd["text"], new_text,
+                            page=sd["page"], bbox=sd["bbox"], verify=False)
+        except Exception:  # noqa: BLE001
+            r = {"ok": False}
+        if r.get("ok"):
+            current = base64.b64decode(r["pdf_b64"])
+            in_place_count += 1
+        else:
+            still_needed.append((sd, new_text))
+    return current, in_place_count, still_needed
+
+
 def apply_replacements(pdf_bytes: bytes, replacements: list,
-                       preserve_size: bool = True) -> tuple:
+                       preserve_size: bool = True, try_inplace: bool = False) -> tuple:
     """Apply [(span_dict, new_text), …] → (edited_bytes, font_report).
+
+    `try_inplace` (default False): first attempt every replacement as a true
+    in-place edit (see _try_inplace_batch) before falling back to the
+    redraw-and-restamp engine below for whatever it couldn't safely handle.
+    Off by default so bulk/annex generation (many rows through the SAME
+    template) keeps its original performance and behavior unchanged; the
+    interactive single-document /edit route opts in explicitly.
 
     `preserve_size` (default True) keeps each edited span's original font size
     exactly — in-place editing must never silently resize text. Set False for
     fit-to-box generation where long values should shrink into a fixed column.
 
     font_report mirrors the Streamlit UI's report so the client can surface
-    substituted/fallback fonts instead of silently rendering something else.
+    substituted/fallback fonts instead of silently rendering something else;
+    it also carries an `in_place` count of how many fields got the stronger,
+    byte-for-byte guarantee instead of a redraw.
     """
+    in_place_count = 0
+    if try_inplace:
+        pdf_bytes, in_place_count, replacements = _try_inplace_batch(pdf_bytes, replacements)
+        if not replacements:
+            return pdf_bytes, {"fonts": [], "warnings": [],
+                               "in_place": {"count": in_place_count, "total": in_place_count}}
+
+    total = in_place_count + len(replacements)
     with _TmpPDF(pdf_bytes) as in_path:
         fd, out_path = tempfile.mkstemp(suffix=".pdf")
         os.close(fd)
@@ -547,7 +598,8 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
             with open(out_path, "rb") as f:
                 edited = f.read()
             return edited, {"fonts": report,
-                            "warnings": [str(w.message) for w in caught]}
+                            "warnings": [str(w.message) for w in caught],
+                            "in_place": {"count": in_place_count, "total": total}}
         finally:
             if os.path.exists(out_path):
                 try: os.unlink(out_path)
@@ -962,7 +1014,7 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
 
     try:
         if replacements:
-            edited, report = apply_replacements(data, replacements)
+            edited, report = apply_replacements(data, replacements, try_inplace=True)
         else:
             edited, report = data, {"fonts": [], "warnings": []}
         edited = _apply_stamps(edited, stamp_list)
@@ -1455,6 +1507,39 @@ async def annex_generate(template: UploadFile = File(...),
             "X-Redraft-Failed": str(failed),
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /spike/* — direct access to the in-place engine (also used by apply_replacements
+# above, and by the /lab test page) for manual single-field testing on a real PDF.
+#   POST /spike/analyze   PDF                → per-field font + editability
+#   POST /spike/edit      PDF + old + new    → true in-place swap + pixel proof
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/spike/analyze")
+async def spike_analyze(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
+    try:
+        return await run_in_threadpool(_spike.analyze, data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
+
+
+@app.post("/spike/edit")
+async def spike_edit(file: UploadFile = File(...), old: str = Form(...),
+                     new: str = Form(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
+    if not old:
+        raise HTTPException(400, "Provide the text to replace.")
+    try:
+        return await run_in_threadpool(_spike.edit, data, old, new)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"In-place edit failed ({type(exc).__name__}).")
 
 
 if __name__ == "__main__":
