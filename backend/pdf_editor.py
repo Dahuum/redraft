@@ -182,6 +182,14 @@ _FONT_SUBSTITUTES: dict = {
     "Revive80Signature": ("AlexBrush",  "Brush signature style"),
     "Amsterdam":      ("Allura",        "Formal calligraphy script"),
     "Amsterdam-Three": ("Allura",       "Formal calligraphy script"),
+    # URW/Nimbus — the classic PostScript clones pdfLaTeX/dvips embed by
+    # default (not on Google Fonts under this name; found live on a real
+    # LaTeX document this session). These are THEMSELVES metric clones of
+    # Times/Helvetica/Courier, so their own Google Fonts clones are an exact
+    # style and near-exact metric match, not just "similar".
+    "NimbusRomNo9L":  ("Tinos",         "Metric-compatible Times/Nimbus Roman clone"),
+    "NimbusSanL":     ("Arimo",         "Metric-compatible Helvetica/Nimbus Sans clone"),
+    "NimbusMonL":     ("Cousine",       "Metric-compatible Courier/Nimbus Mono clone"),
 }
 
 
@@ -229,9 +237,15 @@ _WEIGHT_MAP = {
     "Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400,
     "Medium": 500, "SemiBold": 600, "Bold": 700, "ExtraBold": 800,
     "Black": 900,
+    # URW/Nimbus PostScript naming (pdfLaTeX/dvips default embed) —
+    # "Regu"/"Medi" instead of "Regular"/"Medium". See the italic-detection
+    # comment above for why this family matters.
+    "Regu": 400, "Medi": 500,
 }
 _WEIGHT_NAME = {v: k for k, v in _WEIGHT_MAP.items()}
 _WEIGHT_NAME[400] = "Regular"
+_WEIGHT_NAME[500] = "Medium"  # keep the reverse map on the canonical Google
+                              # Fonts filename word, not the URW "Medi" abbreviation
 
 
 def _weight_name(w: int) -> str:
@@ -257,8 +271,16 @@ def _parse_font_name(fontname: str) -> tuple:
         is_italic = False
         return (family, weight, "normal")
 
-    is_italic = bare.endswith(("Italic", "Oblique"))
-    name = re.sub(r"(Italic|Oblique)$", "", bare).rstrip("-")
+    # "Ital" (not just "Italic"/"Oblique"): the URW/Nimbus PostScript naming
+    # convention pdfLaTeX/dvips embed by default — e.g. "NimbusRomNo9L-ReguItal"
+    # — an extremely common real-document shape (found live on an actual
+    # LaTeX paper this session) that silently fell through both italic AND
+    # weight detection below, leaving the family as the whole raw string
+    # ("NimbusRomNo9L-ReguItal") which matches nothing, forcing a
+    # SUBSET-FALLBACK (missing/boxed glyphs) for a document using one of the
+    # most common classic LaTeX font families there is.
+    is_italic = bare.endswith(("Italic", "Oblique", "Ital"))
+    name = re.sub(r"(Italic|Oblique|Ital)$", "", bare).rstrip("-")
 
     weight = 400
     family = name
@@ -501,6 +523,18 @@ def _fetch_google_font(family: str, weight: int, style: str) -> bytes | None:
             f"({reason})"
         )
         data = _fetch_google_font(sub_family, weight, style)
+        if data is None and weight not in (400, 700):
+            # Many substitute families (esp. classic metric clones like
+            # Tinos/Arimo/Cousine, which only ship Regular+Bold) have no file
+            # at an in-between weight — found live via NimbusRomNo9L-Medi
+            # (weight 500), a real, common LaTeX font-weight name that
+            # otherwise fell all the way back to SUBSET-FALLBACK (missing/
+            # boxed glyphs) despite a perfectly good substitute existing.
+            # Snap to the nearest of the two weights every family is
+            # guaranteed to have rather than failing outright.
+            snapped = 700 if weight >= 500 else 400
+            _dbg(f"SUBSTITUTE weight snap: {weight} has no file for {sub_family!r}, trying {snapped}")
+            data = _fetch_google_font(sub_family, snapped, style)
         if data is not None:
             # Annotate that this came via a substitute, not the original family.
             prev = _LAST_PATH["value"] or ""
