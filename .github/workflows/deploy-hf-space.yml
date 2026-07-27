@@ -1,0 +1,50 @@
+name: Deploy backend to Hugging Face Space
+
+# The live backend (dahuum-radraft.hf.space) is a SEPARATE git repo hosted on
+# Hugging Face, not something that auto-updates just because this repo's
+# `main` changes. Found the hard way: the Space sat 22 commits behind for
+# weeks (including a security fix) with no error anywhere, because nothing
+# was pushing to it. This workflow is that push, running automatically on
+# every change to backend/ so this can't silently drift again.
+#
+# Requires a repo secret HF_TOKEN: a Hugging Face access token with WRITE
+# access to the Dahuum/radraft Space (huggingface.co -> Settings -> Access
+# Tokens). Without it this job fails loudly on the push step, rather than
+# silently doing nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-hf-space.yml'
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push backend/ to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "::error::HF_TOKEN secret is not set — cannot deploy. Add a Hugging Face write-access token as a repo secret named HF_TOKEN."
+            exit 1
+          fi
+
+          rm -rf /tmp/hf_space
+          mkdir -p /tmp/hf_space
+          cp -r backend/. /tmp/hf_space/
+
+          cd /tmp/hf_space
+          git init -q -b main
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add -A
+          git commit -q -m "Deploy from ${{ github.sha }}"
+          git remote add space "https://Dahuum:${HF_TOKEN}@huggingface.co/spaces/Dahuum/radraft"
+          git push --force space main
