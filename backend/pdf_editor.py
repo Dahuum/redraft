@@ -807,22 +807,37 @@ def _detect_alignments(spans: list) -> dict:
     For each span we look for *column mates* — other spans that share the same
     horizontal anchor within a ±3 pt tolerance:
 
-    *Right-aligned*: another span shares the same **right edge** (x1) within
-    3 pt, AND has a **different left edge** (x0 differs by > 3 pt).  This means
-    different-width texts all ending at the same column boundary.
+    *Right-aligned*: AT LEAST TWO other spans share the same **right edge**
+    (x1) within 3 pt, each with a **different left edge** (x0 differs by
+    > 3 pt) — different-width texts all ending at the same column boundary.
 
-    *Centered*: another span shares the same **bbox midpoint** ((x0+x1)/2)
-    within 3 pt, AND has a different left edge (x0 differs by > 3 pt) AND a
-    different right edge (x1 differs by > 3 pt).  Equal-width texts that happen
-    to share the same midpoint are excluded (they'd fall into left or right).
+    *Centered*: AT LEAST TWO other spans share the same **bbox midpoint**
+    ((x0+x1)/2) within 3 pt, each with a different left edge AND a different
+    right edge. Equal-width texts that happen to share the same midpoint are
+    excluded (they'd fall into left or right).
 
     *Left-aligned*: everything else (default).
 
     Priority: right > center > left.
+
+    Why AT LEAST TWO, not one: a real repeating column (a date/price down the
+    page, right-aligned across many rows) naturally has several entries
+    sharing the same edge. A single coincidental match doesn't — and DOES
+    happen in practice (found live: a page-wide name header's right edge
+    landing within 3pt of one unrelated right-aligned date field purely by
+    chance). Requiring one match alone misclassified plainly left-aligned
+    text as right/center-aligned, which on an EDIT sends `ox` to
+    `bbox.x1 - text_w` — the wrong end of the page entirely for a shorter
+    replacement, leaving the original spot blank and drawing the new text
+    wherever that miscalculated position happened to land, sometimes on top
+    of unrelated content. Needing two independent corroborating spans makes
+    a one-off coincidence exceedingly unlikely while still catching every
+    genuine column pattern (which has more than one row by definition).
     """
-    X1_TOL  = 3.0   # pt — right-edge tolerance for right-alignment
-    CX_TOL  = 3.0   # pt — midpoint tolerance for centering
-    X0_MIN  = 3.0   # pt — minimum x0 difference to distinguish from same-text
+    X1_TOL   = 3.0   # pt — right-edge tolerance for right-alignment
+    CX_TOL   = 3.0   # pt — midpoint tolerance for centering
+    X0_MIN   = 3.0   # pt — minimum x0 difference to distinguish from same-text
+    MIN_MATES = 2    # other spans required to corroborate a column, not just one
 
     n = len(spans)
     x0s = [s["bbox"].x0 for s in spans]
@@ -837,26 +852,26 @@ def _detect_alignments(spans: list) -> dict:
         x1_i   = x1s[i]
         cx_i   = cxs[i]
 
-        # ── Right: shares x1, different x0 ────────────────────────────────
-        is_right = any(
-            j != i
+        # ── Right: shares x1, different x0 — needs >= 2 corroborating mates ─
+        right_mates = sum(
+            1 for j in range(n)
+            if j != i
             and abs(x1s[j] - x1_i) <= X1_TOL
             and abs(x0s[j] - x0_i) > X0_MIN
-            for j in range(n)
         )
-        if is_right:
+        if right_mates >= MIN_MATES:
             result[key] = "right"
             continue
 
-        # ── Center: shares midpoint, different x0 AND different x1 ────────
-        is_center = any(
-            j != i
+        # ── Center: shares midpoint, different x0 AND x1 — same threshold ──
+        center_mates = sum(
+            1 for j in range(n)
+            if j != i
             and abs(cxs[j] - cx_i) <= CX_TOL
             and abs(x0s[j] - x0_i) > X0_MIN
             and abs(x1s[j] - x1_i) > X0_MIN
-            for j in range(n)
         )
-        if is_center:
+        if center_mates >= MIN_MATES:
             result[key] = "center"
             continue
 
