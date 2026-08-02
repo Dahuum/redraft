@@ -4,7 +4,7 @@ import { cloudEnabled, listProjects, deleteProject, openProjectFile } from "../l
 import { renderThumb } from "../lib/thumb.js";
 import { composeDoc } from "../api.js";
 import ThemeToggle from "./ThemeToggle.jsx";
-import { Tabs, Button } from "@heroui/react";
+import { Tabs, Button, Dropdown, Avatar, Label } from "@heroui/react";
 
 const STATUS = {
   Draft: "bg-accent-cyan/10 text-accent-cyan",
@@ -19,10 +19,8 @@ const STATUS = {
  */
 export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error, onSignOut, guest = false }) {
   const inputRef = useRef(null);
-  const menuRef = useRef(null);
   const [drag, setDrag] = useState(false);
   const [tab, setTab] = useState("editor"); // "editor" | "history"
-  const [menuOpen, setMenuOpen] = useState(false);
   const docs = useHistory();
 
   // Cloud-saved templates (your account, max 3 on free).
@@ -84,16 +82,6 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     await deleteProject(p);
     loadProjects();
   }
-
-  // Close the account menu on any outside click.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [menuOpen]);
 
   const pick = (f) => f && onUpload(f);
 
@@ -182,35 +170,28 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               Sign in
             </button>
           ) : (
-            <div className="relative ml-xs" ref={menuRef}>
-              <button
-                onClick={() => setMenuOpen((v) => !v)}
+            <Dropdown>
+              <Dropdown.Trigger
                 title="Account"
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 overflow-hidden cursor-pointer hover:border-accent-cyan/50 transition-colors flex items-center justify-center"
+                className="ml-xs rounded-full border border-outline-variant/50 hover:border-accent-cyan/50 transition-colors"
               >
-                <img
-                  alt="User avatar"
-                  className="w-full h-full object-cover"
-                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
-                />
-              </button>
-              {menuOpen && (
-                <div className="absolute right-0 mt-2 w-40 rounded-lg bg-surface-container border border-outline-variant/40 shadow-panel py-1 z-50 animate-drop">
-                  <button
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onSignOut?.();
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-left font-label-md text-[13px] text-on-surface hover:bg-surface-container-high transition-colors"
-                  >
+                <Avatar>
+                  <Avatar.Image
+                    alt="User avatar"
+                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
+                  />
+                  <Avatar.Fallback>U</Avatar.Fallback>
+                </Avatar>
+              </Dropdown.Trigger>
+              <Dropdown.Popover placement="bottom end">
+                <Dropdown.Menu onAction={() => onSignOut?.()}>
+                  <Dropdown.Item id="log-out" textValue="Log out">
                     <span className="material-symbols-outlined text-[18px]">logout</span>
-                    Log out
-                  </button>
-                </div>
-              )}
-            </div>
+                    <Label>Log out</Label>
+                  </Dropdown.Item>
+                </Dropdown.Menu>
+              </Dropdown.Popover>
+            </Dropdown>
           )}
         </div>
       </nav>
