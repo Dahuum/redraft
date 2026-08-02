@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // Dev-only: mirror the Vercel rewrite `/app/(.*)` → `/app.html`, so refreshing a
 // deep client route (e.g. /app/editor/xyz) serves the React app instead of
@@ -35,7 +36,7 @@ function appRewrite() {
 // the React tool (served at /app via vercel.json rewrites). The React dev server
 // runs on :5173 and talks to the FastAPI backend (VITE_API_BASE, default :8000).
 export default defineConfig({
-  plugins: [react(), appRewrite()],
+  plugins: [tailwindcss(), react(), appRewrite()],
   server: { port: 5173, host: true },
   build: {
     rollupOptions: {

@@ -266,7 +266,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               <h2 className="font-display-md text-[20px] text-on-surface mb-xs font-semibold tracking-tight">
                 {busy ? "Reading PDF…" : "Drop PDF here"}
               </h2>
-              <p className="font-body-md text-sm text-on-surface-variant mb-md text-center max-w-sm">
+              <p className="font-body-md text-sm text-on-surface-variant mb-md text-center max-w-[24rem]">
                 Edit values in place, generate hundreds of documents from a spreadsheet, or
                 automate billing annexes — all from one PDF.
               </p>
@@ -285,7 +285,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                 Your files are processed in memory and never stored.
               </p>
               {error && (
-                <p className="mt-md text-sm text-error text-center max-w-sm">{error}</p>
+                <p className="mt-md text-sm text-error text-center max-w-[24rem]">{error}</p>
               )}
             </div>
           )}
@@ -456,7 +456,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade"
           onMouseDown={(e) => e.target === e.currentTarget && !composing && setShowText(false)}
         >
-          <div className="w-full max-w-2xl bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop">
+          <div className="w-full max-w-[42rem] bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop">
             <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between">
               <h3 className="font-display-md text-lg font-bold flex items-center gap-2">
                 <span className="material-symbols-outlined text-[20px] text-accent-cyan">edit_note</span>
