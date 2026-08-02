@@ -199,6 +199,48 @@
   --c-accent-cyan: 8 145 178; /* cyan-600 */
 }
 
+/* HeroUI theme bridge — maps HeroUI's own semantic variables to the SAME
+   runtime tokens above, so any HeroUI component picks up this app's real
+   brand colors (dark navy + cyan accent) instead of HeroUI's own default
+   palette, and switches with [data-theme="light"] the same way everything
+   else already does. Success/warning have no existing token (only ad hoc
+   Tailwind classes on a couple of status badges) — reused those same
+   emerald/amber shades here for consistency. */
+:root {
+  --background: rgb(var(--c-page));
+  --foreground: rgb(var(--c-on-background));
+  --surface: rgb(var(--c-surface));
+  --surface-foreground: rgb(var(--c-on-surface));
+  --surface-secondary: rgb(var(--c-surface-container-low));
+  --surface-secondary-foreground: rgb(var(--c-on-surface));
+  --surface-tertiary: rgb(var(--c-surface-container));
+  --surface-tertiary-foreground: rgb(var(--c-on-surface));
+  --overlay: rgb(var(--c-surface-container-high));
+  --overlay-foreground: rgb(var(--c-on-surface));
+  --muted: rgb(var(--c-on-surface-variant));
+  --default: rgb(var(--c-surface-container-high));
+  --default-foreground: rgb(var(--c-on-surface));
+  --accent: rgb(var(--c-accent-cyan));
+  --accent-foreground: #080c14;
+  --field-background: rgb(var(--c-surface-container-low));
+  --field-foreground: rgb(var(--c-on-surface));
+  --field-placeholder: rgb(var(--c-on-surface-variant));
+  --field-border: rgb(var(--c-outline-variant));
+  --success: #10b981;
+  --success-foreground: #052e21;
+  --warning: #f59e0b;
+  --warning-foreground: #3d2600;
+  --danger: rgb(var(--c-error));
+  --danger-foreground: rgb(var(--c-on-error));
+  --segment: rgb(var(--c-surface-container-low));
+  --segment-foreground: rgb(var(--c-on-surface));
+  --border: rgb(var(--c-outline-variant));
+  --separator: rgb(var(--c-outline-variant));
+  --focus: rgb(var(--c-accent-cyan));
+  --link: rgb(var(--c-accent-cyan));
+  --backdrop: rgb(0 0 0 / 0.5);
+}
+
 html,
 body,
 #root {

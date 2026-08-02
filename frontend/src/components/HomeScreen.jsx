@@ -4,6 +4,7 @@ import { cloudEnabled, listProjects, deleteProject, openProjectFile } from "../l
 import { renderThumb } from "../lib/thumb.js";
 import { composeDoc } from "../api.js";
 import ThemeToggle from "./ThemeToggle.jsx";
+import { Tabs, Button } from "@heroui/react";
 
 const STATUS = {
   Draft: "bg-accent-cyan/10 text-accent-cyan",
@@ -146,28 +147,27 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
         </div>
 
         {/* Center Mode Toggle */}
-        <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center bg-surface-container-low rounded-lg p-1 border border-outline-variant/30">
-          <button
-            onClick={() => setTab("editor")}
-            className={`px-md py-1.5 rounded-md font-label-md text-sm transition-all ${
-              tab === "editor"
-                ? "bg-surface-variant text-on-surface shadow-sm"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            Editor
-          </button>
-          <button
-            onClick={() => setTab("history")}
-            className={`px-md py-1.5 rounded-md font-label-md text-sm transition-all ${
-              tab === "history"
-                ? "bg-surface-variant text-on-surface shadow-sm"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            History
-          </button>
-        </div>
+        <Tabs
+          className="absolute left-1/2 -translate-x-1/2 hidden md:flex"
+          selectedKey={tab}
+          onSelectionChange={(key) => setTab(key)}
+        >
+          <Tabs.ListContainer className="rounded-lg bg-surface-container-low border border-outline-variant/30">
+            <Tabs.List
+              aria-label="View"
+              className="p-1 **:data-[slot=tabs-tab]:rounded-md **:data-[slot=tabs-tab]:font-label-md **:data-[slot=tabs-tab]:text-sm **:data-[slot=tabs-tab]:px-md **:data-[slot=tabs-tab]:py-1.5 **:data-[slot=tabs-indicator]:rounded-md **:data-[slot=tabs-indicator]:bg-surface-variant **:data-[slot=tabs-indicator]:shadow-sm"
+            >
+              <Tabs.Tab id="editor">
+                Editor
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="history">
+                History
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs.ListContainer>
+        </Tabs>
 
         {/* Trailing Actions */}
         <div className="flex items-center gap-sm">
@@ -270,16 +270,13 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                 Edit values in place, generate hundreds of documents from a spreadsheet, or
                 automate billing annexes — all from one PDF.
               </p>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  inputRef.current?.click();
-                }}
-                disabled={busy}
-                className="font-label-md text-sm px-lg py-2 rounded-lg bg-accent-cyan text-[#080c14] hover:bg-[#00d0d9] shadow-[0_0_15px_rgba(0,245,255,0.2)] transition-all font-semibold active:scale-95 disabled:opacity-50"
+              <Button
+                onPress={() => inputRef.current?.click()}
+                isDisabled={busy}
+                className="font-label-md shadow-[0_0_15px_rgba(0,245,255,0.2)]"
               >
                 Browse Files
-              </button>
+              </Button>
               <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant/70">
                 <span className="material-symbols-outlined text-[14px]">lock</span>
                 Your files are processed in memory and never stored.
