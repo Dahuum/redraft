@@ -54,7 +54,7 @@
       <li><a href="#pricing">Pricing</a></li>
     </ul>
     <div class="nav__cta">
-      <div id="nav-signin-root" data-heroui-scope></div>
+      <div id="nav-signin-root" data-heroui-scope><button class="nav__signin" data-modal="signin">Sign In</button></div>
       <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark mode">
         <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="5"></circle>
@@ -71,7 +71,7 @@
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
         </svg>
       </button>
-      <div id="nav-getstarted-root" data-heroui-scope></div>
+      <div id="nav-getstarted-root" data-heroui-scope><button class="btn btn--primary btn--pill" data-modal="signup">Get Started</button></div>
     </div>
     <button class="nav__burger" aria-label="Open menu" aria-expanded="false">
       <span></span><span></span><span></span>
@@ -201,8 +201,15 @@
     </p>
 
     <div class="hero__actions">
-      <div id="hero-primary-cta-root" data-heroui-scope></div>
-      <div id="hero-secondary-cta-root" data-heroui-scope></div>
+      <div id="hero-primary-cta-root" data-heroui-scope><button class="btn btn--primary btn--lg" data-modal="signup">Start Editing Free</button></div>
+      <div id="hero-secondary-cta-root" data-heroui-scope>
+        <a href="#product" class="btn btn--ghost btn--lg">
+          See how it works
+          <svg width="14" height="14" viewBox="0 0 13.333 13.333" fill="currentColor" aria-hidden="true">
+            <path d="M 10.146 7.5 L 0 7.5 L 0 5.833 L 10.146 5.833 L 5.479 1.167 L 6.667 0 L 13.333 6.667 L 6.667 13.333 L 5.479 12.167 L 10.146 7.5 L 10.146 7.5" />
+          </svg>
+        </a>
+      </div>
     </div>
 
     <div class="social-proof">
@@ -312,7 +319,7 @@
           <p class="pricing-card__billed-note">&nbsp;</p>
           <p class="pricing-card__tagline">Edit, sign and create documents — great for occasional use.</p>
         </div>
-        <div id="pricing-free-cta-root" data-heroui-scope></div>
+        <div id="pricing-free-cta-root" data-heroui-scope><a href="#get-started" class="btn btn--ghost btn--block" data-modal="signup">Get Started Free</a></div>
         <ul class="pricing-card__list">
           <li>30 documents per month</li>
           <li>Edit any PDF — change text in place</li>
@@ -335,7 +342,7 @@
           <p class="pricing-card__billed-note" id="pro-billed">No card — free while we're in beta</p>
           <p class="pricing-card__tagline">Everything, unlimited — for people who send documents every week.</p>
         </div>
-        <div id="pricing-pro-cta-root" data-heroui-scope></div>
+        <div id="pricing-pro-cta-root" data-heroui-scope><a href="#get-started" class="btn btn--primary btn--block" data-modal="signup">Get Pro free</a></div>
         <ul class="pricing-card__list">
           <li>Unlimited documents per month</li>
           <li>Bulk generate from a spreadsheet (ZIP or one merged PDF)</li>
