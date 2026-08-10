@@ -1,0 +1,69 @@
+/*
+ * HeroUI v3 styles for the landing page's React-mounted button islands
+ * ONLY. Deliberately selective — no global preflight/reset import, no
+ * default-theme color file — to avoid clobbering public/styles.css's
+ * own :root tokens (--accent, --surface, etc), which already own the
+ * whole rest of this page with a different palette.
+ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "@heroui/styles/themes/shared/theme.css" layer(theme);
+@import "@heroui/styles/utilities";
+@import "@heroui/styles/components/button.css" layer(components);
+@import "@heroui/styles/components/link.css" layer(components);
+
+/*
+ * Scoped HeroUI theme tokens, applied only to each island's mount
+ * wrapper via `data-heroui-scope` (a dedicated attribute — distinct
+ * from this page's own `data-theme="light"` light/dark switch on
+ * <html>, so the two never collide). Values mirror the landing
+ * page's existing dark/light palettes (public/styles.css :root and
+ * public/theme.css [data-theme="light"]) so converted buttons stay
+ * visually identical to the ones they replace.
+ */
+[data-heroui-scope] {
+  display: contents;
+
+  --radius: 8px;
+  --border-width: 1px;
+  --disabled-opacity: 0.6;
+  --cursor-interactive: pointer;
+  --cursor-disabled: not-allowed;
+  --ring-offset-width: 2px;
+
+  --background: #020617;
+  --foreground: #ffffff;
+  --surface: #0f172a;
+  --surface-foreground: #ffffff;
+  --default: rgba(255, 255, 255, 0.08);
+  --default-hover: rgba(255, 255, 255, 0.14);
+  --default-foreground: #ffffff;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-foreground: #ffffff;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --danger-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.1);
+  --focus: #3b82f6;
+  --link: #3b82f6;
+}
+
+[data-theme="light"] [data-heroui-scope] {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --surface: #ffffff;
+  --surface-foreground: #0f172a;
+  --default: rgba(0, 0, 0, 0.06);
+  --default-hover: rgba(0, 0, 0, 0.1);
+  --default-foreground: #0f172a;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-foreground: #ffffff;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --danger-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.08);
+  --focus: #2563eb;
+  --link: #2563eb;
+}
