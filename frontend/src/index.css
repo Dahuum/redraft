@@ -262,20 +262,27 @@ html.theme-switching * {
   font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
 }
 
-/* Custom Scrollbar for dark theme */
+/* Custom scrollbar. The thumb is inset from the track via a transparent
+   border + background-clip: padding-box, so even when it fills nearly the
+   whole track (a short page with barely any scroll room — easy to hit,
+   e.g. a shorter browser window) it still reads as a slim rounded pill
+   with visible edges, not a flush solid stripe painted along the window. */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: rgb(var(--c-outline-variant));
-  border-radius: 4px;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgb(var(--c-outline));
+  background-clip: padding-box;
 }
 
 /* Theme-aware shadows — natural directional drop shadows (not flat glows). */
