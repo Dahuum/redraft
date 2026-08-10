@@ -19,7 +19,6 @@
 <link rel="stylesheet" href="/tour.css" />
 <link rel="stylesheet" href="/theme.css" />
 <link rel="stylesheet" href="/modal.css" />
-<link rel="stylesheet" href="/figma-preview/fig-assets.css" />
 <script>
   window.REDRAFT_SB = {
     url: "https://gjqnllmvqncfnlunjzrp.supabase.co",
@@ -34,9 +33,6 @@
 </script>
 <script src="/analytics.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="/figma-preview/Components.bundle.js"></script>
 </head>
 <body data-screen-label="Redraft Landing">
 
@@ -225,7 +221,13 @@
 <section class="showcase" id="product" aria-label="Product preview" data-screen-label="Showcase">
 
   <figure class="showcase__frame showcase__frame--figma" id="showcase-frame">
-    <div id="figma-preview-root" style="width:100%;line-height:0;"></div>
+    <img
+      class="showcase__preview-img"
+      src="/figma-preview/assets/product-preview.png"
+      alt="Redraft editor open on an invoice, editing the client name in place with the field panel and live preview visible"
+      width="1466" height="634"
+      loading="eager"
+    />
   </figure>
 
 </section>
@@ -404,7 +406,7 @@
   </div>
 
   <div class="footer__bottom">
-    <span>© 2024 Redraft. Powering the future of document intelligence.</span>
+    <span>© <span id="footer-year">2024</span> Redraft. Powering the future of document intelligence.</span>
     <span class="footer__credit">
       Designed with
       <span class="footer__credit-icon" aria-hidden="true"></span>
@@ -555,25 +557,8 @@
 <script src="/app.js" defer></script>
 <script src="/modal.js" defer></script>
 <script>
-  (function mountFigmaPreview() {
-    var root = document.getElementById('figma-preview-root');
-    if (!root || !window.Screen) return;
-    ReactDOM.createRoot(root).render(React.createElement(window.Screen));
-    // Scale the rendered component to fill the container width
-    function scalePreview() {
-      var child = root.firstElementChild;
-      if (!child) return;
-      var naturalW = 916; // Figma frame width
-      var containerW = root.offsetWidth;
-      var scale = containerW / naturalW;
-      child.style.transform = 'scale(' + scale + ')';
-      child.style.transformOrigin = 'top left';
-      root.style.height = (612.716 * scale) + 'px';
-    }
-    // Wait for React to render then scale
-    setTimeout(scalePreview, 50);
-    window.addEventListener('resize', scalePreview);
-  })();
+  var footerYear = document.getElementById("footer-year");
+  if (footerYear) footerYear.textContent = new Date().getFullYear();
 </script>
 </body>
 </html>
