@@ -1,11 +1,139 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import "@heroui/styles";
 
 /* ───────────────────────────────────────────────────────────────────────────
-   Theme tokens — every Tailwind color token reads `rgb(var(--c-*) / alpha)`.
+   Tailwind v4 theme bridge — `inline` keeps each token as a live `var(--c-*)`
+   reference instead of a build-time-frozen value, so the SAME generated
+   utility classes (bg-primary, text-on-surface, ...) keep responding to the
+   [data-theme="light"] override below at runtime, exactly as they did with
+   the old v3 JS config. Static (non-theme-switched) tokens are plain @theme.
+   ─────────────────────────────────────────────────────────────────────────── */
+@theme inline {
+  --color-page: rgb(var(--c-page));
+  --color-background: rgb(var(--c-background));
+  --color-surface: rgb(var(--c-surface));
+  --color-surface-variant: rgb(var(--c-surface-variant));
+  --color-surface-dim: rgb(var(--c-surface-dim));
+  --color-surface-bright: rgb(var(--c-surface-bright));
+  --color-surface-container-lowest: rgb(var(--c-surface-container-lowest));
+  --color-surface-container-low: rgb(var(--c-surface-container-low));
+  --color-surface-container: rgb(var(--c-surface-container));
+  --color-surface-container-high: rgb(var(--c-surface-container-high));
+  --color-surface-container-highest: rgb(var(--c-surface-container-highest));
+  --color-on-surface: rgb(var(--c-on-surface));
+  --color-on-surface-variant: rgb(var(--c-on-surface-variant));
+  --color-on-background: rgb(var(--c-on-background));
+  --color-outline: rgb(var(--c-outline));
+  --color-outline-variant: rgb(var(--c-outline-variant));
+  --color-primary: rgb(var(--c-primary));
+  --color-on-primary: rgb(var(--c-on-primary));
+  --color-on-primary-container: rgb(var(--c-on-primary-container));
+  --color-secondary: rgb(var(--c-secondary));
+  --color-secondary-container: rgb(var(--c-secondary-container));
+  --color-on-secondary: rgb(var(--c-on-secondary));
+  --color-on-secondary-container: rgb(var(--c-on-secondary-container));
+  --color-error: rgb(var(--c-error));
+  --color-error-container: rgb(var(--c-error-container));
+  --color-on-error: rgb(var(--c-on-error));
+  --color-on-error-container: rgb(var(--c-on-error-container));
+  --color-accent-cyan: rgb(var(--c-accent-cyan));
+}
+
+/* Named spacing keys below (xs/sm/md/lg/xl/2xl/3xl) collide with the
+   built-in max-width/min-width scale in this Tailwind version, so
+   max-w-sm/max-w-2xl in HomeScreen.jsx use arbitrary values instead.
+   Keep comments right before @theme SHORT — a long one here has been
+   observed to silently drop the whole block that follows it. */
+@theme {
+  /* Static Material tokens — not theme-switched, same fixed values as before. */
+  --color-primary-fixed: #dfe2ee;
+  --color-inverse-primary: #5a5e68;
+  --color-secondary-fixed: #dbe1ff;
+  --color-on-tertiary-fixed: #261911;
+  --color-inverse-surface: #e5e2e2;
+  --color-on-primary-fixed-variant: #434750;
+  --color-on-secondary-fixed: #00174b;
+  --color-primary-fixed-dim: #c3c6d2;
+  --color-tertiary-fixed-dim: #dac2b6;
+  --color-primary-container: #080c14;
+  --color-on-tertiary-fixed-variant: #54433a;
+  --color-surface-tint: #c3c6d2;
+  --color-inverse-on-surface: #313031;
+  --color-on-tertiary-container: #8a766c;
+  --color-tertiary: #dac2b6;
+  --color-on-primary-fixed: #181c24;
+  --color-on-secondary-fixed-variant: #003ea8;
+  --color-tertiary-fixed: #f7ddd1;
+  --color-on-tertiary: #3c2d25;
+  --color-secondary-fixed-dim: #b4c5ff;
+  --color-tertiary-container: #140904;
+
+  --radius: 0.25rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 9999px;
+
+  --spacing-unit: 4px;
+  --spacing-margin-desktop: 80px;
+  --spacing-xs: 4px;
+  --spacing-md: 16px;
+  --spacing-3xl: 100px;
+  --spacing-lg: 24px;
+  --spacing-2xl: 64px;
+  --spacing-sm: 8px;
+  --spacing-margin-mobile: 20px;
+  --spacing-gutter: 24px;
+  --spacing-xl: 40px;
+
+  --font-display-md: "Plus Jakarta Sans";
+  --font-display-lg: "Plus Jakarta Sans";
+  --font-caption: "Inter";
+  --font-body-md: "Inter";
+  --font-body-lg: "Inter";
+  --font-label-md: "Inter";
+  --font-headline-lg-mobile: "Plus Jakarta Sans";
+  --font-headline-lg: "Plus Jakarta Sans";
+
+  --text-display-md: 48px;
+  --text-display-md--line-height: 1.1;
+  --text-display-md--letter-spacing: -0.03em;
+  --text-display-md--font-weight: 700;
+  --text-display-lg: 64px;
+  --text-display-lg--line-height: 1.1;
+  --text-display-lg--letter-spacing: -0.04em;
+  --text-display-lg--font-weight: 700;
+  --text-caption: 12px;
+  --text-caption--line-height: 1.4;
+  --text-caption--letter-spacing: 0em;
+  --text-caption--font-weight: 400;
+  --text-body-md: 16px;
+  --text-body-md--line-height: 1.6;
+  --text-body-md--letter-spacing: 0em;
+  --text-body-md--font-weight: 400;
+  --text-body-lg: 18px;
+  --text-body-lg--line-height: 1.6;
+  --text-body-lg--letter-spacing: -0.01em;
+  --text-body-lg--font-weight: 400;
+  --text-label-md: 14px;
+  --text-label-md--line-height: 1;
+  --text-label-md--letter-spacing: 0.05em;
+  --text-label-md--font-weight: 600;
+  --text-headline-lg-mobile: 28px;
+  --text-headline-lg-mobile--line-height: 1.2;
+  --text-headline-lg-mobile--letter-spacing: -0.02em;
+  --text-headline-lg-mobile--font-weight: 600;
+  --text-headline-lg: 32px;
+  --text-headline-lg--line-height: 1.2;
+  --text-headline-lg--letter-spacing: -0.02em;
+  --text-headline-lg--font-weight: 600;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Theme tokens — every Tailwind color token above reads `rgb(var(--c-*))`.
    Dark is the default (:root); light overrides via [data-theme="light"] on
-   <html>. Values are space-separated RGB channels so opacity utilities work.
+   <html>. Values are space-separated RGB channels (Tailwind v4 applies
+   opacity modifiers like bg-primary/50 via color-mix(), which works on any
+   valid color value, not just this specific channel format).
    ─────────────────────────────────────────────────────────────────────────── */
 :root {
   color-scheme: dark;
@@ -71,6 +199,48 @@
   --c-accent-cyan: 8 145 178; /* cyan-600 */
 }
 
+/* HeroUI theme bridge — maps HeroUI's own semantic variables to the SAME
+   runtime tokens above, so any HeroUI component picks up this app's real
+   brand colors (dark navy + cyan accent) instead of HeroUI's own default
+   palette, and switches with [data-theme="light"] the same way everything
+   else already does. Success/warning have no existing token (only ad hoc
+   Tailwind classes on a couple of status badges) — reused those same
+   emerald/amber shades here for consistency. */
+:root {
+  --background: rgb(var(--c-page));
+  --foreground: rgb(var(--c-on-background));
+  --surface: rgb(var(--c-surface));
+  --surface-foreground: rgb(var(--c-on-surface));
+  --surface-secondary: rgb(var(--c-surface-container-low));
+  --surface-secondary-foreground: rgb(var(--c-on-surface));
+  --surface-tertiary: rgb(var(--c-surface-container));
+  --surface-tertiary-foreground: rgb(var(--c-on-surface));
+  --overlay: rgb(var(--c-surface-container-high));
+  --overlay-foreground: rgb(var(--c-on-surface));
+  --muted: rgb(var(--c-on-surface-variant));
+  --default: rgb(var(--c-surface-container-high));
+  --default-foreground: rgb(var(--c-on-surface));
+  --accent: rgb(var(--c-accent-cyan));
+  --accent-foreground: #080c14;
+  --field-background: rgb(var(--c-surface-container-low));
+  --field-foreground: rgb(var(--c-on-surface));
+  --field-placeholder: rgb(var(--c-on-surface-variant));
+  --field-border: rgb(var(--c-outline-variant));
+  --success: #10b981;
+  --success-foreground: #052e21;
+  --warning: #f59e0b;
+  --warning-foreground: #3d2600;
+  --danger: rgb(var(--c-error));
+  --danger-foreground: rgb(var(--c-on-error));
+  --segment: rgb(var(--c-surface-container-low));
+  --segment-foreground: rgb(var(--c-on-surface));
+  --border: rgb(var(--c-outline-variant));
+  --separator: rgb(var(--c-outline-variant));
+  --focus: rgb(var(--c-accent-cyan));
+  --link: rgb(var(--c-accent-cyan));
+  --backdrop: rgb(0 0 0 / 0.5);
+}
+
 html,
 body,
 #root {
@@ -92,20 +262,27 @@ html.theme-switching * {
   font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
 }
 
-/* Custom Scrollbar for dark theme */
+/* Custom scrollbar. The thumb is inset from the track via a transparent
+   border + background-clip: padding-box, so even when it fills nearly the
+   whole track (a short page with barely any scroll room — easy to hit,
+   e.g. a shorter browser window) it still reads as a slim rounded pill
+   with visible edges, not a flush solid stripe painted along the window. */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: rgb(var(--c-outline-variant));
-  border-radius: 4px;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgb(var(--c-outline));
+  background-clip: padding-box;
 }
 
 /* Theme-aware shadows — natural directional drop shadows (not flat glows). */

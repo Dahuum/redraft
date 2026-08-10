@@ -4,6 +4,7 @@ import { cloudEnabled, listProjects, deleteProject, openProjectFile } from "../l
 import { renderThumb } from "../lib/thumb.js";
 import { composeDoc } from "../api.js";
 import ThemeToggle from "./ThemeToggle.jsx";
+import { Tabs, Button, Dropdown, Avatar, Label } from "@heroui/react";
 
 const STATUS = {
   Draft: "bg-accent-cyan/10 text-accent-cyan",
@@ -18,10 +19,8 @@ const STATUS = {
  */
 export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error, onSignOut, guest = false }) {
   const inputRef = useRef(null);
-  const menuRef = useRef(null);
   const [drag, setDrag] = useState(false);
   const [tab, setTab] = useState("editor"); // "editor" | "history"
-  const [menuOpen, setMenuOpen] = useState(false);
   const docs = useHistory();
 
   // Cloud-saved templates (your account, max 3 on free).
@@ -84,16 +83,6 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     loadProjects();
   }
 
-  // Close the account menu on any outside click.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [menuOpen]);
-
   const pick = (f) => f && onUpload(f);
 
   // ---- Start from text → clean PDF → opens in the editor ----
@@ -146,28 +135,27 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
         </div>
 
         {/* Center Mode Toggle */}
-        <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center bg-surface-container-low rounded-lg p-1 border border-outline-variant/30">
-          <button
-            onClick={() => setTab("editor")}
-            className={`px-md py-1.5 rounded-md font-label-md text-sm transition-all ${
-              tab === "editor"
-                ? "bg-surface-variant text-on-surface shadow-sm"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            Editor
-          </button>
-          <button
-            onClick={() => setTab("history")}
-            className={`px-md py-1.5 rounded-md font-label-md text-sm transition-all ${
-              tab === "history"
-                ? "bg-surface-variant text-on-surface shadow-sm"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            History
-          </button>
-        </div>
+        <Tabs
+          className="absolute left-1/2 -translate-x-1/2 hidden md:flex"
+          selectedKey={tab}
+          onSelectionChange={(key) => setTab(key)}
+        >
+          <Tabs.ListContainer className="rounded-lg bg-surface-container-low border border-outline-variant/30">
+            <Tabs.List
+              aria-label="View"
+              className="p-1 **:data-[slot=tabs-tab]:rounded-md **:data-[slot=tabs-tab]:font-label-md **:data-[slot=tabs-tab]:text-sm **:data-[slot=tabs-tab]:px-md **:data-[slot=tabs-tab]:py-1.5 **:data-[slot=tabs-indicator]:rounded-md **:data-[slot=tabs-indicator]:bg-surface-variant **:data-[slot=tabs-indicator]:shadow-sm"
+            >
+              <Tabs.Tab id="editor">
+                Editor
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="history">
+                History
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs.ListContainer>
+        </Tabs>
 
         {/* Trailing Actions */}
         <div className="flex items-center gap-sm">
@@ -182,35 +170,28 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               Sign in
             </button>
           ) : (
-            <div className="relative ml-xs" ref={menuRef}>
-              <button
-                onClick={() => setMenuOpen((v) => !v)}
+            <Dropdown>
+              <Dropdown.Trigger
                 title="Account"
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                className="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant/50 overflow-hidden cursor-pointer hover:border-accent-cyan/50 transition-colors flex items-center justify-center"
+                className="ml-xs rounded-full border border-outline-variant/50 hover:border-accent-cyan/50 transition-colors"
               >
-                <img
-                  alt="User avatar"
-                  className="w-full h-full object-cover"
-                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
-                />
-              </button>
-              {menuOpen && (
-                <div className="absolute right-0 mt-2 w-40 rounded-lg bg-surface-container border border-outline-variant/40 shadow-panel py-1 z-50 animate-drop">
-                  <button
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onSignOut?.();
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-left font-label-md text-[13px] text-on-surface hover:bg-surface-container-high transition-colors"
-                  >
+                <Avatar>
+                  <Avatar.Image
+                    alt="User avatar"
+                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
+                  />
+                  <Avatar.Fallback>U</Avatar.Fallback>
+                </Avatar>
+              </Dropdown.Trigger>
+              <Dropdown.Popover placement="bottom end">
+                <Dropdown.Menu onAction={() => onSignOut?.()}>
+                  <Dropdown.Item id="log-out" textValue="Log out">
                     <span className="material-symbols-outlined text-[18px]">logout</span>
-                    Log out
-                  </button>
-                </div>
-              )}
-            </div>
+                    <Label>Log out</Label>
+                  </Dropdown.Item>
+                </Dropdown.Menu>
+              </Dropdown.Popover>
+            </Dropdown>
           )}
         </div>
       </nav>
@@ -266,26 +247,23 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               <h2 className="font-display-md text-[20px] text-on-surface mb-xs font-semibold tracking-tight">
                 {busy ? "Reading PDF…" : "Drop PDF here"}
               </h2>
-              <p className="font-body-md text-sm text-on-surface-variant mb-md text-center max-w-sm">
+              <p className="font-body-md text-sm text-on-surface-variant mb-md text-center max-w-[24rem]">
                 Edit values in place, generate hundreds of documents from a spreadsheet, or
                 automate billing annexes — all from one PDF.
               </p>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  inputRef.current?.click();
-                }}
-                disabled={busy}
-                className="font-label-md text-sm px-lg py-2 rounded-lg bg-accent-cyan text-[#080c14] hover:bg-[#00d0d9] shadow-[0_0_15px_rgba(0,245,255,0.2)] transition-all font-semibold active:scale-95 disabled:opacity-50"
+              <Button
+                onPress={() => inputRef.current?.click()}
+                isDisabled={busy}
+                className="font-label-md shadow-[0_0_15px_rgba(0,245,255,0.2)]"
               >
                 Browse Files
-              </button>
+              </Button>
               <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant/70">
                 <span className="material-symbols-outlined text-[14px]">lock</span>
                 Your files are processed in memory and never stored.
               </p>
               {error && (
-                <p className="mt-md text-sm text-error text-center max-w-sm">{error}</p>
+                <p className="mt-md text-sm text-error text-center max-w-[24rem]">{error}</p>
               )}
             </div>
           )}
@@ -456,7 +434,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade"
           onMouseDown={(e) => e.target === e.currentTarget && !composing && setShowText(false)}
         >
-          <div className="w-full max-w-2xl bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop">
+          <div className="w-full max-w-[42rem] bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop">
             <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between">
               <h3 className="font-display-md text-lg font-bold flex items-center gap-2">
                 <span className="material-symbols-outlined text-[20px] text-accent-cyan">edit_note</span>
