@@ -67,3 +67,24 @@
   --focus: #2563eb;
   --link: #2563eb;
 }
+
+/*
+ * HeroUI's base .button class hard-codes its own box-model opinions
+ * (height: h-10/md:h-9, border-radius: rounded-3xl) that the site's
+ * own classes don't always contest — e.g. .nav__signin never declares
+ * a border-radius at all, and none of .btn/.nav__signin declare an
+ * explicit height (they rely on padding + content to size the box
+ * naturally) — so HeroUI's values silently won wherever the site had
+ * nothing competing, squashing every converted button to a fixed 36px
+ * height regardless of its intended size.
+ *
+ * :where() zeroes this rule's specificity so it only ever acts as a
+ * fallback default: it's unlayered (beats HeroUI's @layer components
+ * rule regardless of specificity), but any real site selector
+ * (.btn--pill, .btn--lg, etc — specificity > 0) still overrides it
+ * normally wherever the site does specify its own value.
+ */
+:where([data-heroui-scope] .button) {
+  height: auto;
+  border-radius: 0;
+}
