@@ -570,23 +570,140 @@ body {
   .sr { opacity: 1 !important; transform: none !important; transition: none !important; }
 }
 
-/* ─────────── PRODUCT PREVIEW FRAME ───────────
-   A real screenshot of the editor (frontend/public/figma-preview/assets/
-   product-preview.png) inside the showcase's rounded, shadowed frame. */
+/* ─────────── FIGMA BROWSER FRAME ─────────── */
+.figma-browser {
+  width: 100%;
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.06);
+}
+.figma-browser__toolbar {
+  height: 31.5px;
+  background: #fff;
+  border-bottom: 0.5px solid rgb(237,239,245);
+  display: flex;
+  align-items: center;
+  padding: 0 15px;
+  gap: 0;
+  position: relative;
+}
+.figma-browser__lights {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.figma-browser__dot {
+  width: 6.8px;
+  height: 6.8px;
+  border-radius: 50%;
+  background: #000;
+  display: block;
+}
+.figma-browser__dividers {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-left: 18px;
+  flex-shrink: 0;
+}
+.figma-browser__divider {
+  width: 0.85px;
+  height: 10px;
+  background: #000;
+  opacity: 0.15;
+}
+.figma-browser__urlwrap {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(0,0,0,0.4);
+}
+.figma-browser__urlbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(167,175,205,0.20);
+  border-radius: 4px;
+  padding: 2px 10px;
+  height: 17px;
+  width: 368px;
+  font-family: 'Mulish', -apple-system, sans-serif;
+  font-weight: 700;
+  font-size: 9.4px;
+  color: #000;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.figma-browser__lock {
+  width: 5px;
+  height: 7.5px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.figma-browser__content {
+  width: 100%;
+  line-height: 0;
+}
+.figma-browser__content img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 0 0 8px 8px;
+}
+
+/* keep the outer showcase frame glow but no extra bg */
+.showcase__frame:has(.figma-browser),
 .showcase__frame--figma {
   background: transparent;
   padding: 0;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(148,163,184,0.12);
-}
-[data-theme="light"] .showcase__frame--figma {
   box-shadow: 0 32px 80px rgba(0,0,0,0.35), 0 0 0 1px rgba(0,0,0,0.06);
 }
-.showcase__preview-img {
-  display: block;
+
+/* ── Browser chrome follows the site theme toggle ──
+   Site default is dark (no [data-theme]) → dark chrome.
+   [data-theme="light"] on <html> → revert to the bundle's
+   built-in light chrome (var fallbacks). */
+.showcase__frame--figma {
+  --bw-chrome: rgb(30, 35, 48);     /* chrome surface */
+  --bw-fg: rgb(203, 213, 225);      /* icons + text */
+  --bw-divider: rgb(51, 63, 84);    /* tab/address divider */
+  --bw-urlbar: rgb(120, 132, 168);  /* url pill */
+  box-shadow: 0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(148,163,184,0.12);
+}
+/* invert the placeholder content to read as a dark document */
+.showcase__frame--figma .fig-asset-6c0776333f9662c0 {
+  filter: invert(0.92) hue-rotate(180deg);
+}
+[data-theme="light"] .showcase__frame--figma {
+  --bw-chrome: initial;
+  --bw-fg: initial;
+  --bw-divider: initial;
+  --bw-urlbar: initial;
+  box-shadow: 0 32px 80px rgba(0,0,0,0.35), 0 0 0 1px rgba(0,0,0,0.06);
+}
+[data-theme="light"] .showcase__frame--figma .fig-asset-6c0776333f9662c0 {
+  filter: none;
+}
+.showcase__frame--figma::before,
+.showcase__frame--figma::after {
+  display: none;
+}
+/* Scale Figma component to fill container */
+#figma-preview-root {
   width: 100%;
-  height: auto;
+  overflow: hidden;
+  position: relative;
+}
+#figma-preview-root > div {
+  transform-origin: top left;
+  /* JS will set the scale dynamically */
 }
 /* The paragraph is rebuilt as many small <span class="reveal-word">
    elements. Each word is painted with a moving gradient — left
