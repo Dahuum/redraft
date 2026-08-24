@@ -135,6 +135,13 @@
   function goApp() { window.location.href = APP_URL; }
 
   /* ── Wire everything once DOM ready ── */
+  // `signedIn` gates the delegated click handler below rather than baking
+  // "already signed in" behavior into a one-time per-element listener, so
+  // it stays correct even for elements that don't exist yet at
+  // DOMContentLoaded (e.g. the landing page's React-mounted HeroUI buttons,
+  // which the querySelectorAll relabel pass below can otherwise miss).
+  var signedIn = false;
+
   document.addEventListener('DOMContentLoaded', function () {
     var client = getSb();
 
@@ -142,12 +149,11 @@
     if (client) {
       client.auth.getSession().then(function (res) {
         if (res && res.data && res.data.session) {
+          signedIn = true;
           var u = res.data.session.user;
           if (u && window.rdIdentify) window.rdIdentify(u.id, { email: u.email });
           document.querySelectorAll('[data-modal]').forEach(function (el) {
             el.textContent = 'Open app';
-            el.dataset.modal = '';
-            el.addEventListener('click', function (e) { e.preventDefault(); goApp(); });
           });
         }
       });
@@ -161,23 +167,27 @@
       });
     }
 
-    document.querySelectorAll('[data-modal]').forEach(function (el) {
-      el.addEventListener('click', function (e) {
+    // Delegated (not per-element) so this keeps working for elements added
+    // to the DOM after DOMContentLoaded — module-script-mounted React
+    // islands aren't guaranteed to exist yet when this handler is wired.
+    // Capture phase (3rd arg `true`): HeroUI/React Aria's press handling
+    // stops propagation of the native click during the bubble phase, which
+    // would otherwise make a bubble-phase delegated listener never fire.
+    document.addEventListener('click', function (e) {
+      var modalTrigger = e.target.closest('[data-modal]');
+      if (modalTrigger) {
         e.preventDefault();
-        if (el.dataset.modal) openModal(el.dataset.modal);
-      });
-    });
-    document.querySelectorAll('[data-open-modal]').forEach(function (el) {
-      el.addEventListener('click', function () { openModal(el.dataset.openModal); });
-    });
-    document.querySelectorAll('[data-goto]').forEach(function (el) {
-      el.addEventListener('click', function () {
-        goToStep(el.closest('.auth-modal'), el.dataset.goto);
-      });
-    });
-    document.querySelectorAll('.auth-modal__close').forEach(function (btn) {
-      btn.addEventListener('click', closeModal);
-    });
+        if (signedIn) { goApp(); return; }
+        if (modalTrigger.dataset.modal) openModal(modalTrigger.dataset.modal);
+        return;
+      }
+      var openTrigger = e.target.closest('[data-open-modal]');
+      if (openTrigger) { openModal(openTrigger.dataset.openModal); return; }
+      var gotoTrigger = e.target.closest('[data-goto]');
+      if (gotoTrigger) { goToStep(gotoTrigger.closest('.auth-modal'), gotoTrigger.dataset.goto); return; }
+      var closeTrigger = e.target.closest('.auth-modal__close');
+      if (closeTrigger) { closeModal(); }
+    }, true);
     overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(); });
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && overlay.classList.contains('is-open')) closeModal();
