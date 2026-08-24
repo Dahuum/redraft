@@ -68,6 +68,29 @@ function autoMapHeaders(headers, columns) {
  * annex per client (/annex/generate): a 0/empty quantity removes that line and
  * the Total HT is recomputed. Engine untouched.
  */
+function NumField({ label, value, onChange }) {
+  return (
+    <label className="flex items-center gap-1.5 text-caption text-on-surface-variant">
+      <span className="shrink-0">{label}</span>
+      <input
+        type="number"
+        step="0.5"
+        value={Number.isFinite(value) ? value : ""}
+        onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+        className="w-[72px] bg-surface-container-lowest border border-outline-variant/50 rounded-md py-1 px-1.5 text-[13px] text-on-surface tabular-nums focus:outline-none focus:ring-1 focus:ring-secondary-container"
+      />
+    </label>
+  );
+}
+
+const ADJUST_COLS = [
+  ["qty", "Qty"],
+  ["price", "Price"],
+  ["amount", "Amount"],
+  ["unit", "Unit"],
+  ["label", "Label ends before"],
+];
+
 export default function AnnexWorkspace({ file, spans, data, pages }) {
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
@@ -98,6 +121,12 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+
+  // Layout adjustment — fix what detect_template got wrong, then re-scan.
+  const [adjusting, setAdjusting] = useState(false);
+  const [draftTmpl, setDraftTmpl] = useState(null);
+  const [armCol, setArmCol] = useState(null); // column awaiting a canvas click
+  const [scanning, setScanning] = useState(false);
 
   const pageCount = (pages && pages.length) || 1;
 
@@ -296,6 +325,12 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
       setHoverHeader(null);
       return;
     }
+    if (adjusting && armCol) {
+      const sp = spanById.get(spanId);
+      if (sp) assignSpanToColumn(sp, armCol);
+      setArmCol(null);
+      return;
+    }
     const idx = idToItem.get(spanId);
     if (idx != null) {
       setHoverLine(idx);
@@ -334,6 +369,111 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   function impLoadPaste() {
     if (!impText.trim()) return setError("Paste some rows first.");
     ingestParsed(Papa.parse(impText.trim(), { header: true, skipEmptyLines: true }));
+  }
+
+  // ---- Layout adjustment ----
+  function openAdjust() {
+    setDraftTmpl(template ? JSON.parse(JSON.stringify(template)) : null);
+    setArmCol(null);
+    setAdjusting(true);
+  }
+  function closeAdjust() {
+    setAdjusting(false);
+    setArmCol(null);
+    setDraftTmpl(null);
+  }
+
+  function patchColumn(col, patch) {
+    setDraftTmpl((t) => {
+      if (!t) return t;
+      const cols = { ...(t.columns || {}) };
+      cols[col] = { ...(cols[col] || {}), ...patch };
+      return { ...t, columns: cols };
+    });
+  }
+  function patchRegion(key, value) {
+    setDraftTmpl((t) =>
+      t ? { ...t, tableRegion: { ...(t.tableRegion || {}), [key]: value } } : t
+    );
+  }
+
+  // Re-point a column band from one real cell the user clicked: numeric cols
+  // match on the right edge (x1), unit on the centre (xc), label on where the
+  // label zone ends. Floors fall back into the inter-column gap.
+  function assignSpanToColumn(span, colKey) {
+    const b = span.bbox;
+    if (!b || !draftTmpl) return;
+    if (colKey === "label") {
+      patchColumn("label", { by: "x0", max: b[2] + 4 });
+      return;
+    }
+    if (colKey === "unit") {
+      patchColumn("unit", { by: "xc", min: b[0] - 10, max: b[2] + 10 });
+      return;
+    }
+    const floor = Math.max(draftTmpl?.tableEdges?.x0 ?? 0, b[0] - 36);
+    patchColumn(colKey, { by: "x1", min: b[0] - 8, max: b[2] + 8, floor });
+  }
+
+  // Re-run the fuzzy label↔column matching against a freshly scanned model,
+  // so a layout fix doesn't throw away an already-loaded data file.
+  function remapFromModel(m) {
+    if (!impHeaders.length) {
+      setMapping({});
+      setHeaderMapping({});
+      return;
+    }
+    setMapping(autoMap(m.items || [], impHeaders));
+    setHeaderMapping(autoMapHeaders(m.headers || [], impHeaders));
+  }
+
+  async function persistTemplate(tmpl) {
+    try {
+      localStorage.setItem(tplKey(file.name), JSON.stringify(tmpl));
+    } catch {
+      /* storage blocked — reuse just won't persist locally */
+    }
+    saveTemplate(file.name, tmpl); // best-effort account sync
+  }
+
+  async function applyRescan() {
+    if (!file || !draftTmpl) return;
+    setScanning(true);
+    setError(null);
+    try {
+      const m = await annexModel(file, draftTmpl);
+      const tmpl = m.template || draftTmpl;
+      setModel(m);
+      setTemplate(tmpl);
+      await persistTemplate(tmpl);
+      remapFromModel(m);
+      setResult(null);
+      window.rdTrack?.("annex_layout_adjusted");
+      closeAdjust();
+    } catch (e) {
+      setError(e.message || "Couldn't re-scan with this layout.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function redetectFresh() {
+    if (!file) return;
+    setScanning(true);
+    setError(null);
+    try {
+      const m = await annexModel(file, null);
+      const tmpl = m.template || null;
+      setModel(m);
+      setTemplate(tmpl);
+      remapFromModel(m);
+      setResult(null);
+      setDraftTmpl(tmpl ? JSON.parse(JSON.stringify(tmpl)) : null);
+    } catch (e) {
+      setError(e.message || "Couldn't re-detect.");
+    } finally {
+      setScanning(false);
+    }
   }
 
   // ---- Generate ----
@@ -418,7 +558,11 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           <span className="material-symbols-outlined text-[14px] text-accent-cyan">
             {reused ? "bookmark" : "rule"}
           </span>
-          {modelStatus === "ready"
+          {adjusting
+            ? armCol
+              ? `Click a ${armCol} cell on the page…`
+              : "Pick a column chip, then click its first data cell"
+            : modelStatus === "ready"
             ? `${items.length} line${items.length === 1 ? "" : "s"} detected${
                 reused ? " · saved layout" : ""
               } — hover a row to find it`
@@ -457,26 +601,38 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                 Total&nbsp;HT recomputes.
               </p>
             </div>
-            {modelStatus === "ready" && (
-              <button
-                onClick={() => {
-                  setShowImport((v) => !v);
-                  setError(null);
-                }}
-                className={`shrink-0 px-3 py-1.5 rounded-lg border text-label-md flex items-center gap-1.5 transition-colors ${
-                  showImport
-                    ? "bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan"
-                    : "border-outline-variant/40 text-on-surface-variant hover:text-on-surface"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[16px]">table_chart</span>
-                {dataLoaded ? `${impRows.length} clients` : "Load data"}
-              </button>
+            {modelStatus === "ready" && !adjusting && (
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  onClick={openAdjust}
+                  title="Fix what was auto-detected"
+                  aria-label="Adjust layout"
+                  className="shrink-0 px-2.5 py-2 rounded-lg border border-outline-variant/40 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">tune</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowImport((v) => !v);
+                    setError(null);
+                  }}
+                  className={`shrink-0 px-3 py-1.5 rounded-lg border text-label-md flex items-center gap-1.5 transition-colors ${
+                    showImport
+                      ? "bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan"
+                      : "border-outline-variant/40 text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">table_chart</span>
+                  {dataLoaded ? `${impRows.length} clients` : "Load data"}
+                </button>
+              </div>
             )}
           </div>
         </div>
 
         <div className="flex-1 overflow-auto">
+          {!adjusting && (
+          <>
           {modelStatus === "loading" && (
             <div className="h-full flex flex-col items-center justify-center text-on-surface-variant animate-fade">
               <span className="material-symbols-outlined text-[40px] animate-pulse">rule</span>
@@ -698,6 +854,134 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+          </>
+          )}
+
+          {adjusting && draftTmpl && (
+            <div className="p-4 space-y-4 animate-drop">
+              <p className="text-caption text-on-surface-variant">
+                Wrong column or missing lines? Click a chip, then click one real
+                cell of that column on the page — or nudge the numbers below.
+              </p>
+
+              <div className="flex flex-wrap gap-1.5">
+                {ADJUST_COLS.map(([k, lbl]) => (
+                  <button
+                    key={k}
+                    onClick={() => setArmCol(armCol === k ? null : k)}
+                    aria-pressed={armCol === k}
+                    className={`px-2.5 py-1 rounded-lg border text-label-md text-[12px] transition-colors ${
+                      armCol === k
+                        ? "bg-secondary-container text-white border-transparent"
+                        : "border-outline-variant/50 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50"
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              {armCol && (
+                <p className="text-caption text-accent-cyan flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[14px]">ads_click</span>
+                  Now click a “{armCol}” cell on the document.
+                </p>
+              )}
+
+              <div className="space-y-2 rounded-lg border border-outline-variant/30 bg-surface-container-low p-3">
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5 pb-2 border-b border-outline-variant/20">
+                  <NumField
+                    label="Table top y>"
+                    value={draftTmpl.tableRegion?.yTop}
+                    onChange={(v) => patchRegion("yTop", v)}
+                  />
+                  <NumField
+                    label="bottom y<"
+                    value={draftTmpl.tableRegion?.yBottom}
+                    onChange={(v) => patchRegion("yBottom", v)}
+                  />
+                </div>
+                {["qty", "price", "amount", "unit", "label"]
+                  .filter((k) => draftTmpl.columns?.[k])
+                  .map((k) => {
+                    const c = draftTmpl.columns[k];
+                    return (
+                      <div
+                        key={k}
+                        className="flex flex-wrap items-center gap-x-4 gap-y-1.5 py-1.5 border-b border-outline-variant/15 last:border-0"
+                      >
+                        <span className="w-16 shrink-0 font-label-md text-[12px] font-semibold capitalize text-on-surface">
+                          {k}
+                        </span>
+                        {c.min != null && (
+                          <NumField label="min x>" value={c.min} onChange={(v) => patchColumn(k, { min: v })} />
+                        )}
+                        {c.max != null && (
+                          <NumField
+                            label={k === "label" ? "up to x<" : "max x<"}
+                            value={c.max}
+                            onChange={(v) => patchColumn(k, { max: v })}
+                          />
+                        )}
+                        {c.floor != null && (
+                          <NumField label="floor x>" value={c.floor} onChange={(v) => patchColumn(k, { floor: v })} />
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={redetectFresh}
+                  disabled={scanning}
+                  title="Throw this layout away and auto-detect from scratch"
+                  className="shrink-0 px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors text-label-md text-sm disabled:opacity-40"
+                >
+                  Re-detect
+                </button>
+                <span className="flex-1" />
+                <button
+                  onClick={closeAdjust}
+                  disabled={scanning}
+                  className="shrink-0 px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors text-label-md text-sm disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={applyRescan}
+                  disabled={scanning || !draftTmpl}
+                  className="shrink-0 px-4 py-2 rounded-lg bg-secondary-container hover:bg-[#003ea8] text-white font-label-md text-sm transition-all disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <span
+                    className={`material-symbols-outlined text-[16px] ${
+                      scanning ? "animate-spin" : ""
+                    }`}
+                  >
+                    {scanning ? "progress_activity" : "radar"}
+                  </span>
+                  {scanning ? "Scanning…" : "Apply & re-scan"}
+                </button>
+              </div>
+            </div>
+          )}
+          {adjusting && !draftTmpl && (
+            <div className="h-full flex flex-col items-center justify-center gap-3 text-center p-6 text-on-surface-variant">
+              <span className="material-symbols-outlined text-[36px] opacity-40">tune</span>
+              <p className="text-body-md max-w-[280px]">
+                No saved layout to adjust yet — run the detector first, then fix what it found.
+              </p>
+              <button
+                onClick={redetectFresh}
+                disabled={scanning}
+                className="px-4 py-2 rounded-lg bg-secondary-container text-white text-label-md text-sm flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <span className={`material-symbols-outlined text-[16px] ${scanning ? "animate-spin" : ""}`}>
+                  {scanning ? "progress_activity" : "radar"}
+                </span>
+                {scanning ? "Scanning…" : "Detect layout now"}
+              </button>
             </div>
           )}
         </div>
