@@ -291,13 +291,13 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
             className="relative rounded-xl bg-white border border-outline-variant/40 shadow-inner overflow-hidden"
             style={{ height: 180 }}
           >
-            <div className="absolute left-6 right-6 bottom-10 border-b border-dashed border-slate-300 pointer-events-none" />
-            <span className="absolute left-6 bottom-4 text-[11px] text-slate-400 pointer-events-none">
+            <div className="absolute left-6 right-6 bottom-10 border-b border-dashed border-outline-variant pointer-events-none" />
+            <span className="absolute left-6 bottom-4 text-[11px] text-on-surface-variant/70 pointer-events-none">
               Sign here
             </span>
             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full touch-none cursor-crosshair" />
             {!hasInk && (
-              <span className="material-symbols-outlined absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60%] text-[40px] text-slate-200 pointer-events-none">
+              <span className="material-symbols-outlined absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60%] text-[40px] text-on-surface-variant/30 pointer-events-none">
                 gesture
               </span>
             )}
@@ -346,7 +346,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
             {preview ? (
               <img src={preview} alt="signature preview" className="max-h-20 max-w-full object-contain" />
             ) : (
-              <span className="text-slate-300 text-sm">Type your name to preview</span>
+              <span className="text-on-surface-variant/70 text-sm">Type your name to preview</span>
             )}
           </div>
 
@@ -421,7 +421,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
                   <button
                     onClick={() => removeSig(s)}
                     title="Delete"
-                    className="shrink-0 w-8 h-8 rounded-lg text-slate-400 hover:text-error hover:bg-error/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                    className="shrink-0 w-8 h-8 rounded-lg text-on-surface-variant hover:text-error hover:bg-error/10 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-all"
                   >
                     <span className="material-symbols-outlined text-[18px]">delete</span>
                   </button>

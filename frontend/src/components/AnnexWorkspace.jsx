@@ -380,6 +380,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           <button
             disabled={pageIndex === 0}
             onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+            aria-label="Previous page"
             className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
           >
             <span className="material-symbols-outlined text-[18px]">chevron_left</span>
@@ -390,6 +391,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           <button
             disabled={pageIndex >= pageCount - 1}
             onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
+            aria-label="Next page"
             className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
           >
             <span className="material-symbols-outlined text-[18px]">chevron_right</span>
@@ -397,6 +399,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           <div className="w-px h-4 bg-outline-variant"></div>
           <button
             onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
+            aria-label="Zoom out"
             className="text-on-surface-variant hover:text-primary transition-colors"
           >
             <span className="material-symbols-outlined text-[18px]">zoom_out</span>
@@ -404,6 +407,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           <span className="text-caption font-medium">{Math.round(zoom * 100)}%</span>
           <button
             onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(2)))}
+            aria-label="Zoom in"
             className="text-on-surface-variant hover:text-primary transition-colors"
           >
             <span className="material-symbols-outlined text-[18px]">zoom_in</span>

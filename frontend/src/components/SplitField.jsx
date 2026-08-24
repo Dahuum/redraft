@@ -95,7 +95,7 @@ export default function SplitField({
         <button
           onClick={onEnterSplit}
           title="Split — edit only part of this field"
-          className="opacity-0 group-hover:opacity-100 transition-opacity text-on-surface-variant hover:text-secondary-container shrink-0"
+          className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-opacity text-on-surface-variant hover:text-secondary-container shrink-0"
         >
           <span className="material-symbols-outlined text-[16px]">more_horiz</span>
         </button>

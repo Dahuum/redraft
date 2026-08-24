@@ -153,6 +153,28 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     return () => window.removeEventListener("keydown", onKey);
   }, [showText, composing]);
 
+  const composerRef = useRef(null);
+  function trapComposerTab(e) {
+    if (e.key !== "Tab") return;
+    const root = composerRef.current;
+    if (!root) return;
+    const focusables = [
+      ...root.querySelectorAll(
+        'button, input, textarea, select, [tabindex]:not([tabindex="-1"])'
+      ),
+    ].filter((el) => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   return (
     <>
       <input
@@ -301,7 +323,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               >
                 Browse Files
               </Button>
-              <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant/70">
+              <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant">
                 <span className="material-symbols-outlined text-[14px]">lock</span>
                 Your files are processed in memory and never stored.
               </p>
@@ -314,7 +336,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           {/* Start from text → clean PDF, straight into the editor */}
           {tab === "editor" && (
             <div className="-mt-sm mb-lg flex items-center justify-center gap-2">
-              <span className="text-caption text-on-surface-variant/60">or</span>
+              <span className="text-caption text-on-surface-variant">or</span>
               <button
                 onClick={() => {
                   setTxtError(null);
@@ -353,7 +375,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                         removeProject(p);
                       }}
                       title="Remove from account"
-                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
+                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
                     >
                       <span className="material-symbols-outlined text-[16px]">delete</span>
                     </button>
@@ -428,7 +450,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                         e.stopPropagation();
                         removeDocUndoable(d.id, d.name);
                       }}
-                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
+                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
                       title="Remove from history"
                     >
                       <span className="material-symbols-outlined text-[16px]">close</span>
@@ -477,7 +499,14 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade"
           onMouseDown={(e) => e.target === e.currentTarget && !composing && setShowText(false)}
         >
-          <div className="w-full max-w-[42rem] bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop">
+          <div
+            ref={composerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Start from text"
+            onKeyDown={trapComposerTab}
+            className="w-full max-w-[42rem] bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop"
+          >
             <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between">
               <h3 className="font-display-md text-lg font-bold flex items-center gap-2">
                 <span className="material-symbols-outlined text-[20px] text-accent-cyan">edit_note</span>
@@ -485,6 +514,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               </h3>
               <button
                 onClick={() => !composing && setShowText(false)}
+                aria-label="Close"
                 className="text-on-surface-variant hover:text-on-surface transition-colors"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>

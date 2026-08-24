@@ -409,6 +409,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
           <button
             disabled={pageIndex === 0}
             onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+            aria-label="Previous page"
             className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
           >
             <span className="material-symbols-outlined text-[18px]">chevron_left</span>
@@ -419,6 +420,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
           <button
             disabled={pageIndex >= pageCount - 1}
             onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
+            aria-label="Next page"
             className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
           >
             <span className="material-symbols-outlined text-[18px]">chevron_right</span>
@@ -426,6 +428,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
           <div className="w-px h-4 bg-outline-variant"></div>
           <button
             onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
+            aria-label="Zoom out"
             className="text-on-surface-variant hover:text-primary transition-colors"
           >
             <span className="material-symbols-outlined text-[18px]">zoom_out</span>
@@ -433,6 +436,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
           <span className="text-caption font-medium">{Math.round(zoom * 100)}%</span>
           <button
             onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(2)))}
+            aria-label="Zoom in"
             className="text-on-surface-variant hover:text-primary transition-colors"
           >
             <span className="material-symbols-outlined text-[18px]">zoom_in</span>
@@ -730,7 +734,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                             className={`transition-all ${
                               splitEditId === s.id
                                 ? "text-secondary-container"
-                                : "opacity-0 group-hover:opacity-100 text-on-surface-variant hover:text-secondary-container"
+                                : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 text-on-surface-variant hover:text-secondary-container"
                             }`}
                           >
                             <span className="material-symbols-outlined text-[16px]">more_horiz</span>
@@ -738,7 +742,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                           <button
                             onClick={() => togglePick(s.id)}
                             title="Remove this field"
-                            className="opacity-0 group-hover:opacity-100 text-on-surface-variant hover:text-error transition-all"
+                            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 text-on-surface-variant hover:text-error transition-all"
                           >
                             <span className="material-symbols-outlined text-[16px]">close</span>
                           </button>
@@ -783,7 +787,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                         );
                       })}
                       <td className="px-1 text-center border-b border-outline-variant/10">
-                        <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-opacity">
                           <button
                             onClick={() => dupDoc(r)}
                             title="Duplicate this copy"

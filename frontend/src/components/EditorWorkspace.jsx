@@ -171,6 +171,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
               <button
                 disabled={pageIndex === 0}
                 onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+                aria-label="Previous page"
                 className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
               >
                 <span className="material-symbols-outlined text-[18px]">chevron_left</span>
@@ -181,6 +182,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
               <button
                 disabled={pageIndex >= pageCount - 1}
                 onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
+                aria-label="Next page"
                 className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
               >
                 <span className="material-symbols-outlined text-[18px]">chevron_right</span>
@@ -190,6 +192,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
           )}
           <button
             className="text-on-surface-variant hover:text-primary transition-colors"
+            aria-label="Zoom out"
             onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
           >
             <span className="material-symbols-outlined text-[18px]">zoom_out</span>
@@ -197,6 +200,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
           <span className="text-caption font-medium">{Math.round(zoom * 100)}%</span>
           <button
             className="text-on-surface-variant hover:text-primary transition-colors"
+            aria-label="Zoom in"
             onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(2)))}
           >
             <span className="material-symbols-outlined text-[18px]">zoom_in</span>
@@ -206,6 +210,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
             className="text-on-surface-variant hover:text-primary transition-colors"
             onClick={() => setZoom(1)}
             title="Fit width"
+            aria-label="Fit width"
           >
             <span className="material-symbols-outlined text-[18px]">fit_screen</span>
           </button>
