@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import SignaturePad from "signature_pad";
 import { cloudEnabled, listSignatures, saveSignature, deleteSignature } from "../lib/cloud.js";
 import { toast } from "./Toast.jsx";
+import Notice from "./Notice.jsx";
 
 // Real signature-style script fonts (loaded in app.html) — not casual handwriting.
 const SIG_FONTS = [
@@ -322,7 +323,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
             <button
               onClick={saveDrawn}
               disabled={!hasInk}
-              className="flex-1 bg-secondary-container hover:bg-[#003ea8] text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
+              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
             >
               <span className="material-symbols-outlined text-[18px]">check</span>
               Save signature
@@ -385,7 +386,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
           <button
             onClick={saveTyped}
             disabled={!name.trim()}
-            className="w-full bg-secondary-container hover:bg-[#003ea8] text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
+            className="w-full bg-secondary-container hover:bg-secondary-container-hover text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
           >
             <span className="material-symbols-outlined text-[18px]">check</span>
             Save signature
@@ -413,7 +414,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
                   <button
                     onClick={() => place(s.url, s.ratio)}
                     title="Place on document"
-                    className="shrink-0 px-3 py-1.5 rounded-lg bg-secondary-container text-white text-label-md flex items-center gap-1.5 hover:bg-[#003ea8] transition-colors"
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-secondary-container text-white text-label-md flex items-center gap-1.5 hover:bg-secondary-container-hover transition-colors"
                   >
                     <span className="material-symbols-outlined text-[16px]">ink_pen</span>
                     Place
@@ -432,12 +433,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
         </div>
       )}
 
-      {note && (
-        <div className="rounded-lg px-3 py-2 text-caption flex items-center gap-2 border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan">
-          <span className="material-symbols-outlined text-[16px]">info</span>
-          {note}
-        </div>
-      )}
+      {note && <Notice tone="info">{note}</Notice>}
     </div>
   );
 }

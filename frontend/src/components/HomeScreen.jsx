@@ -229,7 +229,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
             <button
               onClick={() => { window.location.href = "/"; }}
               title="Sign in to save your work and unlock bulk & annex"
-              className="ml-xs h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-[#003ea8] transition-colors inline-flex items-center gap-1.5"
+              className="ml-xs h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-secondary-container-hover transition-colors inline-flex items-center gap-1.5"
             >
               <span className="material-symbols-outlined text-[18px]">login</span>
               Sign in
@@ -277,7 +277,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               </span>
               <button
                 onClick={() => { window.location.href = "/"; }}
-                className="shrink-0 px-3 py-1 rounded-md bg-secondary-container text-white font-label-md text-[12px] hover:bg-[#003ea8] transition-colors"
+                className="shrink-0 px-3 py-1 rounded-md bg-secondary-container text-white font-label-md text-[12px] hover:bg-secondary-container-hover transition-colors"
               >
                 Sign in
               </button>
@@ -552,7 +552,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               <button
                 onClick={createFromText}
                 disabled={composing || !txtBody.trim()}
-                className="px-4 py-2 rounded-lg bg-accent-cyan text-[#080c14] font-semibold hover:bg-[#00d0d9] transition-all font-label-md text-sm flex items-center gap-2 disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-secondary-container text-white font-semibold hover:bg-secondary-container-hover transition-all font-label-md text-sm flex items-center gap-2 disabled:opacity-50"
               >
                 <span className={`material-symbols-outlined text-[18px] ${composing ? "animate-spin" : ""}`}>
                   {composing ? "progress_activity" : "auto_awesome"}

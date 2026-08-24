@@ -37,6 +37,7 @@
   --color-on-error: rgb(var(--c-on-error));
   --color-on-error-container: rgb(var(--c-on-error-container));
   --color-accent-cyan: rgb(var(--c-accent-cyan));
+  --color-secondary-container-hover: rgb(var(--c-secondary-container-hover));
 }
 
 /* Named spacing keys below (xs/sm/md/lg/xl/2xl/3xl) collide with the
@@ -158,6 +159,7 @@
   --c-on-primary-container: 118 122 133; /* #767a85 */
   --c-secondary: 180 197 255; /* #b4c5ff */
   --c-secondary-container: 0 83 219; /* #0053db */
+  --c-secondary-container-hover: 0 62 168; /* #003ea8 */
   --c-on-secondary: 0 42 120; /* #002a78 */
   --c-on-secondary-container: 205 215 255; /* #cdd7ff */
   --c-error: 255 180 171; /* #ffb4ab */
@@ -190,6 +192,7 @@
   --c-on-primary-container: 100 116 139; /* slate-500 */
   --c-secondary: 37 99 235; /* blue-600 */
   --c-secondary-container: 37 99 235;
+  --c-secondary-container-hover: 29 78 216; /* blue-700 */
   --c-on-secondary: 255 255 255;
   --c-on-secondary-container: 239 246 255;
   --c-error: 220 38 38; /* red-600 */

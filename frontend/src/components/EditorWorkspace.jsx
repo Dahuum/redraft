@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import PdfCanvas from "./PdfCanvas.jsx";
+import CanvasToolbar from "./CanvasToolbar.jsx";
 import FontPanel from "./FontPanel.jsx";
 import SignaturePanel from "./SignaturePanel.jsx";
 import SplitField from "./SplitField.jsx";
@@ -165,56 +166,13 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
       {/* Left Pane: Document Preview (65%) */}
       <div className="flex-[0.65] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
         {/* Toolbar overlay */}
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
-          {pageCount > 1 && (
-            <>
-              <button
-                disabled={pageIndex === 0}
-                onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-                aria-label="Previous page"
-                className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
-              >
-                <span className="material-symbols-outlined text-[18px]">chevron_left</span>
-              </button>
-              <span className="text-caption font-medium">
-                {pageIndex + 1} / {pageCount}
-              </span>
-              <button
-                disabled={pageIndex >= pageCount - 1}
-                onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
-                aria-label="Next page"
-                className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
-              >
-                <span className="material-symbols-outlined text-[18px]">chevron_right</span>
-              </button>
-              <div className="w-px h-4 bg-outline-variant"></div>
-            </>
-          )}
-          <button
-            className="text-on-surface-variant hover:text-primary transition-colors"
-            aria-label="Zoom out"
-            onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
-          >
-            <span className="material-symbols-outlined text-[18px]">zoom_out</span>
-          </button>
-          <span className="text-caption font-medium">{Math.round(zoom * 100)}%</span>
-          <button
-            className="text-on-surface-variant hover:text-primary transition-colors"
-            aria-label="Zoom in"
-            onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(2)))}
-          >
-            <span className="material-symbols-outlined text-[18px]">zoom_in</span>
-          </button>
-          <div className="w-px h-4 bg-outline-variant"></div>
-          <button
-            className="text-on-surface-variant hover:text-primary transition-colors"
-            onClick={() => setZoom(1)}
-            title="Fit width"
-            aria-label="Fit width"
-          >
-            <span className="material-symbols-outlined text-[18px]">fit_screen</span>
-          </button>
-        </div>
+        <CanvasToolbar
+          pageIndex={pageIndex}
+          pageCount={pageCount}
+          setPageIndex={setPageIndex}
+          zoom={zoom}
+          setZoom={setZoom}
+        />
 
         {/* Font report — surfaced after a preview/download so substitutions are visible */}
         {problemFonts.length > 0 && !hideFontNote && (
@@ -420,7 +378,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
                       onClick={replaceAllMatches}
                       disabled={!matches.length}
                       title="Replace in every matching field"
-                      className="shrink-0 rounded-lg bg-secondary-container px-2.5 py-1.5 font-label-md text-[12px] text-white transition-colors hover:bg-[#003ea8] disabled:opacity-40"
+                      className="shrink-0 rounded-lg bg-secondary-container px-2.5 py-1.5 font-label-md text-[12px] text-white transition-colors hover:bg-secondary-container-hover disabled:opacity-40"
                     >
                       All
                     </button>
@@ -498,7 +456,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
             <button
               onClick={preview}
               disabled={nEdits === 0 || busy}
-              className="flex-1 bg-secondary-container hover:bg-[#003ea8] text-on-secondary-container py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
+              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-on-secondary-container py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
             >
               <span className="material-symbols-outlined text-[18px]">visibility</span>
               {busy ? "Working…" : "Preview"}

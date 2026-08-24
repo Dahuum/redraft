@@ -6,6 +6,9 @@ import { bulkGenerate, editPdf } from "../api.js";
 import { effectiveSplit } from "../lib/split.js";
 import { cloudEnabled, saveProject, updateProjectSetup } from "../lib/cloud.js";
 import SplitPicker from "./SplitPicker.jsx";
+import CanvasToolbar from "./CanvasToolbar.jsx";
+import Notice from "./Notice.jsx";
+import ImportSource from "./ImportSource.jsx";
 import { toast } from "./Toast.jsx";
 
 const MAX_ROWS = 500;
@@ -48,7 +51,6 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
   const [impHeaders, setImpHeaders] = useState([]);
   const [impRows, setImpRows] = useState([]);
   const [impMap, setImpMap] = useState({}); // { spanId: header }
-  const impUploadRef = useRef(null);
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -405,43 +407,13 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
       {/* Left: the document — click spots to make them editable */}
       <div className="flex-[0.58] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
         {/* Toolbar */}
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
-          <button
-            disabled={pageIndex === 0}
-            onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-            aria-label="Previous page"
-            className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
-          >
-            <span className="material-symbols-outlined text-[18px]">chevron_left</span>
-          </button>
-          <span className="text-caption font-medium">
-            {pageIndex + 1} / {pageCount}
-          </span>
-          <button
-            disabled={pageIndex >= pageCount - 1}
-            onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
-            aria-label="Next page"
-            className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
-          >
-            <span className="material-symbols-outlined text-[18px]">chevron_right</span>
-          </button>
-          <div className="w-px h-4 bg-outline-variant"></div>
-          <button
-            onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
-            aria-label="Zoom out"
-            className="text-on-surface-variant hover:text-primary transition-colors"
-          >
-            <span className="material-symbols-outlined text-[18px]">zoom_out</span>
-          </button>
-          <span className="text-caption font-medium">{Math.round(zoom * 100)}%</span>
-          <button
-            onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(2)))}
-            aria-label="Zoom in"
-            className="text-on-surface-variant hover:text-primary transition-colors"
-          >
-            <span className="material-symbols-outlined text-[18px]">zoom_in</span>
-          </button>
-        </div>
+        <CanvasToolbar
+          pageIndex={pageIndex}
+          pageCount={pageCount}
+          setPageIndex={setPageIndex}
+          zoom={zoom}
+          setZoom={setZoom}
+        />
 
         {/* Preview banner — step through generated documents */}
         {previewIdx != null && (
@@ -565,74 +537,25 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
           ) : showImport ? (
             /* ---- Import panel ---- */
             <div className="p-4 space-y-4 animate-drop">
-              <div className="flex items-center gap-1 bg-surface-container-low rounded-lg p-1 border border-outline-variant/20 w-max">
-                {[
-                  ["upload", "upload_file", "Upload"],
-                  ["paste", "content_paste", "Paste"],
-                ].map(([k, icon, lbl]) => (
-                  <button
-                    key={k}
-                    onClick={() => setImpTab(k)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-label-md text-sm transition-all ${
-                      impTab === k
-                        ? "bg-surface-variant text-on-surface shadow-sm"
-                        : "text-on-surface-variant hover:text-on-surface"
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[16px]">{icon}</span>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
-
-              <label className="flex items-center gap-2 text-caption text-on-surface-variant cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={impFirstRow}
-                  onChange={(e) => setImpFirstRow(e.target.checked)}
-                  className="accent-secondary-container w-4 h-4"
-                />
-                First row is the header
-              </label>
-
-              {impTab === "upload" ? (
-                <div
-                  onClick={() => impUploadRef.current?.click()}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    impUpload(e.dataTransfer.files?.[0]);
-                  }}
-                  className="border-2 border-dashed border-outline-variant/50 hover:border-secondary-container rounded-xl p-6 flex flex-col items-center gap-2 cursor-pointer transition-colors text-center"
-                >
-                  <span className="material-symbols-outlined text-[24px] text-on-surface-variant">
-                    cloud_upload
-                  </span>
-                  <p className="text-body-md text-on-surface">Drop a CSV / TSV or click to browse</p>
-                  <input
-                    ref={impUploadRef}
-                    type="file"
-                    accept=".csv,.tsv,.txt"
-                    className="hidden"
-                    onChange={(e) => impUpload(e.target.files?.[0])}
-                  />
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <textarea
-                    value={impText}
-                    onChange={(e) => setImpText(e.target.value)}
-                    placeholder={"Paste rows from Excel / Sheets or CSV…"}
-                    className="w-full h-28 bg-surface-container-lowest border border-outline-variant/50 rounded-lg p-3 text-sm text-on-surface font-mono focus:outline-none focus:ring-1 focus:ring-secondary-container resize-y"
-                  />
-                  <button
-                    onClick={impLoadPaste}
-                    className="px-3 py-1.5 bg-surface-container-highest border border-outline-variant rounded-lg text-label-md text-on-surface hover:border-secondary-container transition-colors"
-                  >
-                    Load
-                  </button>
-                </div>
-              )}
+              <ImportSource
+                tab={impTab}
+                setTab={setImpTab}
+                onFile={impUpload}
+                onLoadPaste={impLoadPaste}
+                text={impText}
+                setText={setImpText}
+                top={
+                  <label className="flex items-center gap-2 text-caption text-on-surface-variant cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={impFirstRow}
+                      onChange={(e) => setImpFirstRow(e.target.checked)}
+                      className="accent-secondary-container w-4 h-4"
+                    />
+                    First row is the header
+                  </label>
+                }
+              />
 
               {impHeaders.length > 0 && (
                 <div className="space-y-2">
@@ -829,23 +752,13 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
         {/* Footer: generate */}
         <div className="p-4 border-t border-outline-variant/30 bg-surface/80 backdrop-blur-xl space-y-2">
           {file && <FontPanel file={file} />}
-          {(error || result) && (
-            <div
-              className={`rounded-lg px-3 py-2 text-caption flex items-center gap-2 border ${
-                error
-                  ? "border-error/30 bg-error/10 text-error"
-                  : "border-secondary-container/30 bg-secondary-container/10 text-secondary"
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">
-                {error ? "error" : "check_circle"}
-              </span>
-              {error
-                ? error
-                : `Generated ${result.generated} PDF(s)${
-                    result.failed ? ` · ${result.failed} skipped` : ""
-                  } — ${result.merged ? "merged PDF" : "ZIP"} downloaded.`}
-            </div>
+          {error && <Notice tone="error">{error}</Notice>}
+          {result && (
+            <Notice tone="success">
+              Generated {result.generated} PDF(s)
+              {result.failed ? ` · ${result.failed} skipped` : ""} —{" "}
+              {result.merged ? "merged PDF" : "ZIP"} downloaded.
+            </Notice>
           )}
           {picked.length > 0 && (
             <div className="flex items-center gap-2 px-0.5 text-caption text-on-surface-variant">
@@ -934,18 +847,9 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
             </div>
           )}
           {saveNote && (
-            <div
-              className={`rounded-lg px-3 py-2 text-caption flex items-start gap-2 border ${
-                saveNote.ok
-                  ? "border-secondary-container/30 bg-secondary-container/10 text-secondary"
-                  : "border-error/40 bg-error/10 text-error"
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px] shrink-0">
-                {saveNote.ok ? "cloud_done" : "warning"}
-              </span>
-              <span>{saveNote.text}</span>
-            </div>
+            <Notice tone={saveNote.ok ? "success" : "error"} icon={saveNote.ok ? "cloud_done" : "warning"}>
+              {saveNote.text}
+            </Notice>
           )}
           <div className="flex gap-2">
             <button
@@ -960,7 +864,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
             <button
               onClick={process}
               disabled={busy || !picked.length || !rows.length}
-              className="flex-1 bg-secondary-container hover:bg-[#003ea8] text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
+              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
             >
               <span className="material-symbols-outlined text-[18px]">bolt</span>
               {busy
