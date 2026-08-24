@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useHistory, removeDoc, ago } from "../lib/history.js";
-import { cloudEnabled, listProjects, deleteProject, openProjectFile } from "../lib/cloud.js";
+import { useHistory, removeDoc, ago, getRecord, putRecord } from "../lib/history.js";
+import { cloudEnabled, listProjects, deleteProject, openProjectFile, saveProject } from "../lib/cloud.js";
 import { renderThumb } from "../lib/thumb.js";
 import { composeDoc } from "../api.js";
 import ThemeToggle from "./ThemeToggle.jsx";
+import { toast } from "./Toast.jsx";
 import { Tabs, Button, Dropdown, Avatar, Label } from "@heroui/react";
 
 const STATUS = {
@@ -79,8 +80,41 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     }
   }
   async function removeProject(p) {
+    let bytes = null;
+    try {
+      const f = await openProjectFile(p);
+      bytes = await f.arrayBuffer();
+    } catch {
+      /* deletion proceeds without undo if the file can't be fetched */
+    }
     await deleteProject(p);
     loadProjects();
+    if (bytes) {
+      toast(`Removed template “${p.name}”`, {
+        actionLabel: "Undo",
+        onAction: async () => {
+          try {
+            await saveProject(
+              new File([bytes], `${p.name}.pdf`, { type: "application/pdf" }),
+              { name: p.name, kind: p.kind || "bulk", setup: p.setup || {}, pages: p.pages || 1 }
+            );
+          } catch {
+            /* free cap may be filled meanwhile — template stays deleted */
+          }
+          loadProjects();
+        },
+      });
+    }
+  }
+
+  async function removeDocUndoable(id, name) {
+    const rec = await getRecord(id);
+    if (!rec) return;
+    await removeDoc(id);
+    toast(`Removed “${name}” from history`, {
+      actionLabel: "Undo",
+      onAction: () => putRecord(rec),
+    });
   }
 
   const pick = (f) => f && onUpload(f);
@@ -109,6 +143,15 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
       setComposing(false);
     }
   }
+
+  useEffect(() => {
+    if (!showText || composing) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") setShowText(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showText, composing]);
 
   return (
     <>
@@ -383,7 +426,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        removeDoc(d.id);
+                        removeDocUndoable(d.id, d.name);
                       }}
                       className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
                       title="Remove from history"
@@ -455,6 +498,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               <input
                 value={txtTitle}
                 onChange={(e) => setTxtTitle(e.target.value)}
+                autoFocus
                 placeholder="Title (optional) — e.g. Service Agreement"
                 className="w-full bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-2 px-3 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-accent-cyan"
               />

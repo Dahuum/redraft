@@ -110,6 +110,11 @@ export async function removeDoc(id) {
   await refresh();
 }
 
+export async function putRecord(rec) {
+  await run("readwrite", (s) => s.put(rec));
+  await refresh();
+}
+
 export function useHistory() {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

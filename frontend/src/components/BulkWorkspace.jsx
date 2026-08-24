@@ -6,6 +6,9 @@ import { bulkGenerate, editPdf } from "../api.js";
 import { effectiveSplit } from "../lib/split.js";
 import { cloudEnabled, saveProject, updateProjectSetup } from "../lib/cloud.js";
 import SplitPicker from "./SplitPicker.jsx";
+import { toast } from "./Toast.jsx";
+
+const MAX_ROWS = 500;
 
 // Make a list of column names unique by suffixing duplicates: a, a (2), a (3).
 function uniquify(names) {
@@ -265,6 +268,10 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
     if (!file) return setError("Load a template PDF in the PDF Editor tab first.");
     if (!picked.length) return setError("Click a place on the document to make it editable.");
     if (!rows.length) return setError("Add at least one document.");
+    if (rows.length > MAX_ROWS)
+      return setError(
+        `Too many documents (${rows.length}). The limit is ${MAX_ROWS} per batch — import fewer rows.`
+      );
 
     setBusy(true);
     const headers = uniquify(pickedSpans.map(headerName));
@@ -355,8 +362,9 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
     setError(null);
   }
 
-  // Wipe the saved setup for this template and start fresh.
+  // Wipe the saved setup for this template and start fresh (undoable).
   function startOver() {
+    const prev = { picked, rows, impMap, filenameId, splits };
     setPicked([]);
     setRows([]);
     setImpMap({});
@@ -373,6 +381,16 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
         /* ignore */
       }
     }
+    toast("Setup cleared", {
+      actionLabel: "Undo",
+      onAction: () => {
+        setPicked(prev.picked);
+        setRows(prev.rows);
+        setImpMap(prev.impMap);
+        setFilenameId(prev.filenameId);
+        setSplits(prev.splits);
+      },
+    });
   }
 
   const pageHasPicks = pickedSpans.some((s) => s.page === pageIndex);

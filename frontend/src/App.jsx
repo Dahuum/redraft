@@ -9,6 +9,7 @@ import EditorWorkspace from "./components/EditorWorkspace.jsx";
 import BulkWorkspace from "./components/BulkWorkspace.jsx";
 import AnnexWorkspace from "./components/AnnexWorkspace.jsx";
 import ThemeToggle from "./components/ThemeToggle.jsx";
+import GlobalOverlays from "./components/GlobalOverlays.jsx";
 import { useAuth } from "./lib/useAuth.js";
 import { usePlan } from "./lib/usePlan.js";
 import { openProjectFile } from "./lib/cloud.js";
@@ -168,6 +169,25 @@ export default function App() {
     };
   }, [ed.previewData, docId]);
 
+  const hasUnsaved = view === "editor" && ed.hasChanges;
+
+  function confirmLeaveEditor() {
+    if (!ed.hasChanges) return true;
+    return window.confirm(
+      "You have changes that aren't exported yet. Leave and discard them?"
+    );
+  }
+
+  useEffect(() => {
+    if (!hasUnsaved) return;
+    const onBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasUnsaved]);
+
   async function handleUpload(file, { bulk = false } = {}) {
     setCloudProjectId(null); // a fresh upload is not a saved template
     const res = await ed.loadFile(file);
@@ -263,25 +283,30 @@ export default function App() {
 
   if (view === "home") {
     return (
-      <HomeScreen
-        onUpload={handleUpload}
-        onOpen={openFromHistory}
-        onOpenCloud={openCloudProject}
-        busy={ed.busy}
-        error={ed.error}
-        guest={guestMode}
-        onSignOut={auth.enabled && !guestMode ? auth.signOut : null}
-      />
+      <>
+        <GlobalOverlays />
+        <HomeScreen
+          onUpload={handleUpload}
+          onOpen={openFromHistory}
+          onOpenCloud={openCloudProject}
+          busy={ed.busy}
+          error={ed.error}
+          guest={guestMode}
+          onSignOut={auth.enabled && !guestMode ? auth.signOut : null}
+        />
+      </>
     );
   }
 
   // Editor view (the approved dark "Text Fields" design)
   return (
-    <div className="h-screen w-full flex flex-col overflow-hidden animate-fade bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-surface-container-high via-background to-background">
+    <>
+      <GlobalOverlays />
+      <div className="h-screen w-full flex flex-col overflow-hidden animate-fade bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-surface-container-high via-background to-background">
       {/* TopNavBar */}
       <header className="bg-surface/80 backdrop-blur-xl text-primary font-label-md text-label-md h-14 w-full border-b border-outline-variant flex justify-between items-center sticky top-0 z-30 px-6">
         <button
-          onClick={() => navigate("/")}
+          onClick={() => confirmLeaveEditor() && navigate("/")}
           title="Back to your documents"
           className="flex items-center gap-2 text-on-surface hover:opacity-80 transition-opacity"
         >
@@ -290,9 +315,6 @@ export default function App() {
         </button>
         <div className="flex items-center gap-3">
           <ThemeToggle />
-          <button className="h-8 px-3 inline-flex items-center rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100">
-            Share
-          </button>
           <button
             onClick={handleDownload}
             disabled={ed.nEdits === 0 || ed.busy}
@@ -325,7 +347,9 @@ export default function App() {
           )}
           {auth.enabled && !auth.user && (
             <button
-              onClick={() => { window.location.href = "/"; }}
+              onClick={() => {
+                if (confirmLeaveEditor()) window.location.href = "/";
+              }}
               title="Sign in to save your work and get more documents"
               className="ml-1 h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-[#003ea8] transition-colors inline-flex items-center gap-1.5"
             >
@@ -409,6 +433,7 @@ export default function App() {
           pages={ed.pages}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }

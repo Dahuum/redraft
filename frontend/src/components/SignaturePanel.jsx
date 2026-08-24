@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import SignaturePad from "signature_pad";
 import { cloudEnabled, listSignatures, saveSignature, deleteSignature } from "../lib/cloud.js";
+import { toast } from "./Toast.jsx";
 
 // Real signature-style script fonts (loaded in app.html) — not casual handwriting.
 const SIG_FONTS = [
@@ -234,9 +235,24 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
     if (onPlace) onPlace(url, ratio);
     else setNote("Signature ready — placing it on the PDF is the next step.");
   }
-  function removeSig(id) {
-    setSaved((s) => s.filter((x) => x.id !== id));
-    if (cloud) deleteSignature(id).catch(() => {});
+  function removeSig(sig) {
+    setSaved((s) => s.filter((x) => x.id !== sig.id));
+    if (cloud) deleteSignature(sig.id).catch(() => {});
+    toast("Signature deleted", {
+      actionLabel: "Undo",
+      onAction: async () => {
+        if (cloud) {
+          try {
+            const back = await saveSignature({ url: sig.url, ratio: sig.ratio });
+            setSaved((s) => [back, ...s]);
+            return;
+          } catch {
+            /* cap may be filled meanwhile — fall back to local restore */
+          }
+        }
+        setSaved((s) => [sig, ...s].slice(0, 24));
+      },
+    });
   }
 
   const TABS = [
@@ -403,7 +419,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
                     Place
                   </button>
                   <button
-                    onClick={() => removeSig(s.id)}
+                    onClick={() => removeSig(s)}
                     title="Delete"
                     className="shrink-0 w-8 h-8 rounded-lg text-slate-400 hover:text-error hover:bg-error/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
                   >

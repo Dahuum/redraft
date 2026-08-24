@@ -4,6 +4,32 @@ import { supabase, hasSupabase } from "./lib/supabase.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
+const SLOW_MS = 3000;
+let _slowCount = 0;
+
+async function apiFetch(url, options) {
+  let fired = false;
+  const timer = setTimeout(() => {
+    fired = true;
+    _slowCount += 1;
+    window.dispatchEvent(new Event("rd:api-slow"));
+  }, SLOW_MS);
+  try {
+    const res = await fetch(url, options);
+    window.dispatchEvent(new Event("rd:api-ok"));
+    return res;
+  } catch (err) {
+    window.dispatchEvent(new Event("rd:api-down"));
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (fired) {
+      _slowCount = Math.max(0, _slowCount - 1);
+      if (_slowCount === 0) window.dispatchEvent(new Event("rd:api-fast"));
+    }
+  }
+}
+
 // Attach the signed-in user's Supabase token so the backend can authorize +
 // meter the request. Proactively refreshes an expired / near-expiry access token
 // (getSession alone can hand back a stale one → 401 on every call). No session
@@ -41,7 +67,7 @@ async function asError(res) {
 // GET / → true if the API is reachable (used by the connection badge)
 export async function ping() {
   try {
-    const res = await fetch(`${API_BASE}/`, { method: "GET" });
+    const res = await apiFetch(`${API_BASE}/`, { method: "GET" });
     return res.ok;
   } catch {
     return false;
@@ -50,7 +76,7 @@ export async function ping() {
 
 // GET /me → { auth, plan, used, limit } — the caller's plan + monthly usage.
 export async function getMe() {
-  const res = await fetch(`${API_BASE}/me`, { headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/me`, { headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -61,7 +87,7 @@ export async function composeDoc(text, title = "", meta = "") {
   fd.append("text", text);
   if (title) fd.append("title", title);
   if (meta) fd.append("meta", meta);
-  const res = await fetch(`${API_BASE}/compose`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/compose`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.blob();
 }
@@ -70,7 +96,7 @@ export async function composeDoc(text, title = "", meta = "") {
 export async function extractSpans(file) {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/extract`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/extract`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -84,7 +110,7 @@ export async function editPdf(file, edits, stamps = [], final = false) {
   fd.append("edits", JSON.stringify(edits));
   if (stamps && stamps.length) fd.append("stamps", JSON.stringify(stamps));
   if (final) fd.append("final", "1");
-  const res = await fetch(`${API_BASE}/edit`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/edit`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   let fontReport = null;
   const hdr = res.headers.get("X-Redraft-Font-Report");
@@ -102,7 +128,7 @@ export async function editPdf(file, edits, stamps = [], final = false) {
 export async function checkFonts(file) {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/fonts`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/fonts`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -112,7 +138,7 @@ export async function uploadFont(fontname, file) {
   const fd = new FormData();
   fd.append("fontname", fontname);
   fd.append("file", file);
-  const res = await fetch(`${API_BASE}/font`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/font`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -123,7 +149,7 @@ export async function annexModel(file, profile = null) {
   const fd = new FormData();
   fd.append("file", file);
   if (profile) fd.append("template", JSON.stringify(profile));
-  const res = await fetch(`${API_BASE}/annex/model`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/annex/model`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
 }
@@ -141,7 +167,7 @@ export async function annexGenerate(
   fd.append("headers", JSON.stringify(headers));
   if (profile) fd.append("profile", JSON.stringify(profile));
   if (filenameCol) fd.append("filename_col", filenameCol);
-  const res = await fetch(`${API_BASE}/annex/generate`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/annex/generate`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return {
     blob: await res.blob(),
@@ -160,7 +186,7 @@ export async function bulkGenerate(template, dataFile, mapping, filenameCol = ""
   fd.append("mapping", JSON.stringify(mapping));
   if (filenameCol) fd.append("filename_col", filenameCol);
   if (output && output !== "zip") fd.append("output", output);
-  const res = await fetch(`${API_BASE}/bulk`, { method: "POST", body: fd, headers: await authHeaders() });
+  const res = await apiFetch(`${API_BASE}/bulk`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return {
     blob: await res.blob(),

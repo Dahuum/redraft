@@ -5,6 +5,8 @@ import FontPanel from "./FontPanel.jsx";
 import { annexModel, annexGenerate } from "../api.js";
 import { getTemplate, saveTemplate } from "../lib/templates.js";
 
+const MAX_ROWS = 500;
+
 // NFD decomposes accents (é → e + ◌́); stripping non-alphanumerics then drops the
 // mark, so "Période" ≈ "Periode" and "Référence" ≈ "Reference".
 const norm = (s) =>
@@ -341,6 +343,10 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     if (!file) return setError("Open the annex in the PDF Editor tab first.");
     if (modelStatus !== "ready") return setError("Still reading the annex…");
     if (!impRows.length) return setError("Load your client data first.");
+    if (impRows.length > MAX_ROWS)
+      return setError(
+        `Too many clients (${impRows.length}). The limit is ${MAX_ROWS} per batch — split your data.`
+      );
     const map = Object.fromEntries(Object.entries(mapping).filter(([, h]) => h));
     const hmap = Object.fromEntries(Object.entries(headerMapping).filter(([, h]) => h));
     if (!Object.keys(map).length && !Object.keys(hmap).length)

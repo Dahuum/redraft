@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import PdfCanvas from "./PdfCanvas.jsx";
 import FontPanel from "./FontPanel.jsx";
 import SignaturePanel from "./SignaturePanel.jsx";
@@ -22,6 +22,82 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
 
   const [overlaySel, setOverlaySel] = useState(null);
   const [placement, setPlacement] = useState(null); // null | {kind:'text'} | {kind:'sign', data, ratio}
+  const [hideFontNote, setHideFontNote] = useState(false);
+
+  const problemFonts = (ed.fontReport?.fonts || []).filter(
+    (f) => f.status === "substitute" || f.status === "fallback"
+  );
+  useEffect(() => {
+    setHideFontNote(false);
+  }, [ed.fontReport]);
+
+  // ---- Find & replace across every span (current values included) ----
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [replaceWith, setReplaceWith] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [matchIdx, setMatchIdx] = useState(0);
+
+  const matches = useMemo(() => {
+    const q = findQuery.trim();
+    if (!q) return [];
+    const needle = caseSensitive ? q : q.toLowerCase();
+    return spans.filter((s) => {
+      const cur = ed.edits[s.id] ?? s.text;
+      return (caseSensitive ? cur : cur.toLowerCase()).includes(needle);
+    });
+  }, [findQuery, caseSensitive, spans, ed.edits]);
+
+  useEffect(() => {
+    if (matchIdx >= matches.length) setMatchIdx(0);
+  }, [matches.length, matchIdx]);
+
+  function normIdx(i) {
+    if (!matches.length) return 0;
+    return ((i % matches.length) + matches.length) % matches.length;
+  }
+
+  function goToMatch(idx) {
+    if (!matches.length) return;
+    const at = normIdx(idx);
+    setMatchIdx(at);
+    setPageIndex(matches[at].page);
+    setSelectedId(matches[at].id);
+  }
+
+  // Replace every occurrence inside one field value. Manual scan so the same
+  // code path handles both case modes without regex-escaping the query.
+  function replaceInValue(text) {
+    const q = findQuery.trim();
+    let out = "";
+    let i = 0;
+    const hay = caseSensitive ? text : text.toLowerCase();
+    const needle = caseSensitive ? q : q.toLowerCase();
+    for (;;) {
+      const hit = hay.indexOf(needle, i);
+      if (hit === -1) {
+        out += text.slice(i);
+        return out;
+      }
+      out += text.slice(i, hit) + replaceWith;
+      i = hit + q.length;
+    }
+  }
+
+  function replaceCurrent() {
+    const m = matches[matchIdx];
+    if (!m || !findQuery.trim()) return;
+    const cur = ed.edits[m.id] ?? m.text;
+    setFieldValue(m.id, replaceInValue(cur));
+  }
+
+  function replaceAllMatches() {
+    if (!matches.length || !findQuery.trim()) return;
+    for (const m of matches) {
+      const cur = ed.edits[m.id] ?? m.text;
+      setFieldValue(m.id, replaceInValue(cur));
+    }
+  }
 
   // Drop a new text box or signature where the user clicks the page.
   function handlePlace(x, y) {
@@ -135,6 +211,27 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
           </button>
         </div>
 
+        {/* Font report — surfaced after a preview/download so substitutions are visible */}
+        {problemFonts.length > 0 && !hideFontNote && (
+          <div className="absolute top-14 left-1/2 z-20 flex max-w-[92%] -translate-x-1/2 items-start gap-2 rounded-lg border border-amber-500/30 bg-surface-container-high/95 px-3 py-2 text-caption text-amber-400 shadow-xl backdrop-blur-md">
+            <span className="material-symbols-outlined shrink-0 text-[16px]">warning</span>
+            <span>
+              Fonts replaced with lookalikes:{" "}
+              <b className="font-semibold">
+                {[...new Set(problemFonts.map((f) => f.font))].join(", ")}
+              </b>
+              . Upload the real files in the Fonts panel for an exact match.
+            </span>
+            <button
+              onClick={() => setHideFontNote(true)}
+              aria-label="Dismiss"
+              className="shrink-0 hover:text-amber-200"
+            >
+              <span className="material-symbols-outlined text-[16px]">close</span>
+            </button>
+          </div>
+        )}
+
         {/* Document Canvas */}
         <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-on-surface/[0.04]">
           {file && fileData ? (
@@ -189,32 +286,144 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
 
       {/* Right Pane: Text Fields Sidebar (35%) */}
       <div className="flex-[0.35] bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden relative">
-        {/* Header: Text / Sign toggle */}
+        {/* Header: Text / Sign toggle + Find & Replace */}
         <div className="p-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md sticky top-0 z-10">
-          <div className="bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
+          <div className="flex items-center gap-2">
+            <div className="flex-1 bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
+              <button
+                onClick={() => setPanel("fields")}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+                  panel === "fields"
+                    ? "bg-secondary-container text-white shadow-lg"
+                    : "text-on-surface-variant hover:text-on-surface"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[18px]">text_fields</span>
+                Text
+              </button>
+              <button
+                onClick={() => setPanel("sign")}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+                  panel === "sign"
+                    ? "bg-secondary-container text-white shadow-lg"
+                    : "text-on-surface-variant hover:text-on-surface"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[18px]">draw</span>
+                Sign
+              </button>
+            </div>
             <button
-              onClick={() => setPanel("fields")}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
-                panel === "fields"
-                  ? "bg-secondary-container text-white shadow-lg"
-                  : "text-on-surface-variant hover:text-on-surface"
+              onClick={() => setFindOpen((v) => !v)}
+              title="Find & replace"
+              aria-label="Find and replace"
+              className={`shrink-0 w-9 h-9 rounded-full inline-flex items-center justify-center transition-colors ${
+                findOpen
+                  ? "bg-secondary-container text-white"
+                  : "border border-outline-variant/40 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
               }`}
             >
-              <span className="material-symbols-outlined text-[16px]">text_fields</span>
-              Text
-            </button>
-            <button
-              onClick={() => setPanel("sign")}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
-                panel === "sign"
-                  ? "bg-secondary-container text-white shadow-lg"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">draw</span>
-              Sign
+              <span className="material-symbols-outlined text-[18px]">search</span>
             </button>
           </div>
+
+          {findOpen && (
+            <div className="mt-2 space-y-2 animate-drop">
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={findQuery}
+                  onChange={(e) => setFindQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setFindOpen(false);
+                    else if (e.key === "Enter") {
+                      e.preventDefault();
+                      goToMatch(e.shiftKey ? matchIdx - 1 : matchIdx + 1);
+                    }
+                  }}
+                  autoFocus
+                  placeholder="Find in document…"
+                  className="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2.5 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                />
+                <button
+                  onClick={() => setCaseSensitive((v) => !v)}
+                  title={caseSensitive ? "Case sensitive" : "Case insensitive"}
+                  aria-label="Toggle case sensitivity"
+                  className={`shrink-0 h-8 w-8 rounded-lg border font-caption text-[12px] font-semibold transition-colors ${
+                    caseSensitive
+                      ? "border-secondary-container bg-secondary-container/10 text-secondary"
+                      : "border-outline-variant/50 text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  Aa
+                </button>
+              </div>
+
+              {findQuery.trim() !== "" && (
+                <>
+                  <div className="flex items-center justify-between text-caption text-on-surface-variant">
+                    <span>
+                      {matches.length
+                        ? `Match ${matchIdx + 1} of ${matches.length} field${
+                            matches.length === 1 ? "" : "s"
+                          }`
+                        : "No matching fields"}
+                    </span>
+                    <span className="flex items-center gap-0.5">
+                      <button
+                        disabled={!matches.length}
+                        onClick={() => goToMatch(matchIdx - 1)}
+                        title="Previous match (Shift+Enter)"
+                        aria-label="Previous match"
+                        className="disabled:opacity-30 hover:text-on-surface transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">
+                          keyboard_arrow_up
+                        </span>
+                      </button>
+                      <button
+                        disabled={!matches.length}
+                        onClick={() => goToMatch(matchIdx + 1)}
+                        title="Next match (Enter)"
+                        aria-label="Next match"
+                        className="disabled:opacity-30 hover:text-on-surface transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">
+                          keyboard_arrow_down
+                        </span>
+                      </button>
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={replaceWith}
+                      onChange={(e) => setReplaceWith(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") setFindOpen(false);
+                      }}
+                      placeholder="Replace with…"
+                      className="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2.5 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                    />
+                    <button
+                      onClick={replaceCurrent}
+                      disabled={!matches.length}
+                      title="Replace in the current field"
+                      className="shrink-0 rounded-lg border border-outline-variant/50 px-2.5 py-1.5 font-label-md text-[12px] text-on-surface transition-colors hover:border-accent-cyan/50 hover:text-accent-cyan disabled:opacity-40"
+                    >
+                      Replace
+                    </button>
+                    <button
+                      onClick={replaceAllMatches}
+                      disabled={!matches.length}
+                      title="Replace in every matching field"
+                      className="shrink-0 rounded-lg bg-secondary-container px-2.5 py-1.5 font-label-md text-[12px] text-white transition-colors hover:bg-[#003ea8] disabled:opacity-40"
+                    >
+                      All
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Body: text fields OR the signature workspace */}
