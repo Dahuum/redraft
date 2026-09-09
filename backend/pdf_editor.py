@@ -161,6 +161,7 @@ _FONT_SUBSTITUTES: dict = {
     "Telegraf":       ("Inter",         "Modern clean sans-serif"),
     "TTNormsPro":     ("Inter",         "Similar proportions and weight range"),
     "CanvaSans":      ("Nunito",        "Round geometric sans-serif"),
+    "TwCenMT":        ("Poppins",       "Closest open-source match to TW Cen MT's rounded-geometric proportions"),
     # Serif / display
     "BlostaScript":   ("DancingScript", "Script display font"),
     "BDScript":       ("DancingScript", "Brush/script font"),
@@ -889,11 +890,16 @@ def _detect_alignments(spans: list) -> dict:
     CX_TOL   = 3.0   # pt — midpoint tolerance for centering
     X0_MIN   = 3.0   # pt — minimum x0 difference to distinguish from same-text
     MIN_MATES = 2    # other spans required to corroborate a column, not just one
+    INLINE_TOL = 0.5 # pt — gap tolerance to treat one span as immediately
+                     # following another on the same baseline (an inline
+                     # "label: value", never a real right/center column)
+    SAME_LINE_TOL = 1.0  # pt — baseline-y tolerance for "same line"
 
     n = len(spans)
     x0s = [s["bbox"].x0 for s in spans]
     x1s = [s["bbox"].x1 for s in spans]
     cxs = [(s["bbox"].x0 + s["bbox"].x1) / 2.0 for s in spans]
+    oys = [s["origin"][1] for s in spans]
 
     result: dict = {}
 
@@ -902,6 +908,27 @@ def _detect_alignments(spans: list) -> dict:
         x0_i   = x0s[i]
         x1_i   = x1s[i]
         cx_i   = cxs[i]
+
+        # ── Inline continuation of a same-line label ("M /Mme <name>",
+        # "Réf : <value>") is never a right/center column member, no matter
+        # how many unrelated spans elsewhere on the page coincidentally
+        # share its right edge or midpoint (found live: a name field and two
+        # completely unrelated short fields — a reference number and a
+        # date — all happened to end within 3pt of each other purely by
+        # chance, satisfying the >=2-mates check below and shoving a wider
+        # replacement ~100pt off to the left). A span whose left edge sits
+        # right where another span on the same baseline ends has a
+        # structural reason to be left-aligned that no coincidental column
+        # match should override.
+        has_inline_prefix = any(
+            j != i
+            and abs(oys[j] - oys[i]) <= SAME_LINE_TOL
+            and abs(x1s[j] - x0_i) <= INLINE_TOL
+            for j in range(n)
+        )
+        if has_inline_prefix:
+            result[key] = "left"
+            continue
 
         # ── Right: shares x1, different x0 — needs >= 2 corroborating mates ─
         right_mates = sum(
@@ -1064,65 +1091,88 @@ class PDFEditor:
             all_spans  = get_spans(self.doc, page_num)
             align_map  = _detect_alignments(all_spans)
 
-            # Erase originals — TRUE redaction (removes the underlying text
-            # operators from the content stream), not just a rectangle
-            # painted on top of them. A cosmetic paint-over leaves the
-            # original text fully present and extractable underneath —
-            # copy/paste, text search, or programmatic extraction all still
-            # see it — which defeats the entire purpose of "erasing" a field
-            # for a document editor. images/graphics are explicitly left
-            # untouched (only text is removed) to match this step's original,
-            # narrower intent — a photo or decorative line under a text
-            # field isn't this method's business to alter.
-            for span, _ in items:
-                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
-                                      cross_out=False)
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
-                                  graphics=fitz.PDF_REDACT_LINE_ART_NONE,
-                                  text=fitz.PDF_REDACT_TEXT_REMOVE)
-
-            # Build stamp
+            # Build stamp (created now, not after redaction, because the
+            # measure pass below needs it to register fonts for width
+            # measurement — redaction happens after measuring, once we also
+            # know which trailing spans need to move; see below).
             stamp_doc  = fitz.open()
             stamp_doc.new_page(width=pw, height=ph)
             stamp_page = stamp_doc[0]
             registered: set = set()
+
+            # ── Measure pass: compute each edit's font/size/position without
+            # drawing yet. Deferred so the reflow pass below can see every
+            # edit's actual rendered width before anything is erased — you
+            # can't know whether a trailing span needs to move out of the way
+            # until you know how wide the replacement actually turned out.
+            draw_ops = []        # (ox, oy, fontname_to_use, fontsize, draw_text, color)
+            edited_ids = {id(span) for span, _ in items}
+            overflowing = []     # (span, new_x1, oy) — left-aligned edits that overran their box
 
             for span, new_text in items:
                 alias, raw, avail = self._font_info(page_num, span["font"])
                 is_base14 = _base14_builtin(span["font"]) is not None
 
                 # Script coverage: if the current font can't draw some characters
-                # of the replacement text, switch the run to a broad full font
-                # that can — so ANY script (Arabic, CJK, emoji, …) renders as real
-                # glyphs instead of boxes. Only triggers on genuinely missing
-                # glyphs; a fully-covered edit keeps its exact original font.
-                # Use the comprehensive cmap of the resolved font (the engine's
-                # _parse_cmap_chars misses some subtables and would falsely flag
-                # ordinary Latin as uncovered → needless fallback).
+                # of the replacement text, first TRY injecting just those glyphs
+                # into the SAME embedded font (weight, style, every other
+                # character stay pixel-identical to the original — only the
+                # handful of genuinely new glyphs come from a donor). Only if
+                # that's not possible does the run switch to a broad full font
+                # of a DIFFERENT family — a real visual change, last resort,
+                # not the first move. Use the comprehensive cmap of the
+                # resolved font (the engine's _parse_cmap_chars misses some
+                # subtables and would falsely flag ordinary Latin as
+                # uncovered → needless fallback).
                 prim_avail = _full_cmap_chars(raw) if raw else set()
                 latin1_only = is_base14 or (alias is None and raw is None)
                 uncovered = _uncovered_chars(new_text, prim_avail, latin1_only)
                 if uncovered:
-                    _, _wght, _styl = _parse_font_name(span["font"])
-                    fb = _fallback_font_for_text(new_text, _wght, _styl)
-                    if fb:
-                        fb_fam, fb_raw, fb_avail = fb
-                        cur_cov = sum(
-                            1 for c in new_text if not c.isspace() and (
-                                (prim_avail and ord(c) in prim_avail)
-                                or (latin1_only and ord(c) <= 0x00FF)))
-                        new_cov = sum(1 for c in new_text
-                                      if not c.isspace() and ord(c) in fb_avail)
-                        if new_cov > cur_cov:
-                            alias = "fb" + re.sub(r"[^A-Za-z0-9]", "", fb_fam) \
-                                    + f"{_wght}{_styl[:1]}"
-                            raw = fb_raw
-                            is_base14 = False
-                            _FONT_SOURCE[span["font"]] = (
-                                f"script-fallback:{fb_fam} "
-                                f"(original '{span['font']}' lacks some glyphs)")
-                            _dbg(f"SCRIPT FALLBACK {span['font']!r} → {fb_fam!r} "
-                                 f"for {new_text[:24]!r}")
+                    missing_set = sorted(set(uncovered))
+                    extended_raw = None
+                    if raw:
+                        try:
+                            import font_extend as _fext
+                            donor = _fext.resolve_donor(span["font"])
+                            if donor:
+                                ext = _fext.extend_font(raw, donor, missing_set)
+                                extended_raw = ext["font_bytes"]
+                        except Exception as exc:  # noqa: BLE001 — refuse, don't guess
+                            _dbg(f"GLYPH EXTEND failed for {span['font']!r}: {exc}")
+                            extended_raw = None
+
+                    if extended_raw:
+                        alias = "ext" + re.sub(r"[^A-Za-z0-9]", "", span["font"]) \
+                                + "".join(f"{ord(c):x}" for c in missing_set)
+                        raw = extended_raw
+                        is_base14 = False
+                        _FONT_SOURCE[span["font"]] = (
+                            f"glyph-extend (injected {missing_set} into the "
+                            f"original embedded font from a donor)")
+                        _dbg(f"GLYPH EXTEND {span['font']!r}: injected {missing_set} "
+                             f"for {new_text[:24]!r}")
+                    else:
+                        _, _wght, _styl = _parse_font_name(span["font"])
+                        fb = _fallback_font_for_text(new_text, _wght, _styl)
+                        if fb:
+                            fb_fam, fb_raw, fb_avail = fb
+                            cur_cov = sum(
+                                1 for c in new_text if not c.isspace() and (
+                                    (prim_avail and ord(c) in prim_avail)
+                                    or (latin1_only and ord(c) <= 0x00FF)))
+                            new_cov = sum(1 for c in new_text
+                                          if not c.isspace() and ord(c) in fb_avail)
+                            if new_cov > cur_cov:
+                                alias = "fb" + re.sub(r"[^A-Za-z0-9]", "", fb_fam) \
+                                        + f"{_wght}{_styl[:1]}"
+                                raw = fb_raw
+                                is_base14 = False
+                                _FONT_SOURCE[span["font"]] = (
+                                    f"script-fallback:{fb_fam} "
+                                    f"(original '{span['font']}' lacks some glyphs, "
+                                    f"glyph-extend also failed)")
+                                _dbg(f"SCRIPT FALLBACK {span['font']!r} → {fb_fam!r} "
+                                     f"for {new_text[:24]!r}")
 
                 # base-14 fonts have alias=builtin code, raw=None → skip insert_font.
                 if alias and raw and alias not in registered:
@@ -1166,13 +1216,27 @@ class PDFEditor:
                 text_w    = fobj.text_length(draw_text, fontsize)
 
                 # Shrink font proportionally if new text overflows the original
-                # box — ONLY when fit-to-box is enabled. In-place editing keeps
-                # the original size exactly (self.shrink_to_fit = False), so the
-                # font/size never changes under the user; longer text just runs
-                # wider, as in any real editor.
+                # box — ONLY when fit-to-box is enabled.
+                #
+                # Bounded to at most a 30% reduction (MIN_SHRINK_RATIO), not an
+                # absolute floor like the old `max(6.0, ...)` — that could
+                # shrink a normal 14pt field to 6pt (a >55% cut) for a long
+                # replacement, landing a visibly tiny, style-mismatched run
+                # next to unchanged same-size text right beside it. That's a
+                # worse outcome than the overflow it was trying to prevent, and
+                # for genuinely long replacements it didn't even prevent the
+                # overflow — the text was often still wider than the box at
+                # the floor size, so the field shrank AND still overflowed.
+                # Once the bounded shrink stops being enough, stop shrinking
+                # and let it run wider instead, same as the no-shrink case —
+                # a same-size overflow is more honest than a tiny one that
+                # overflows anyway.
+                MIN_SHRINK_RATIO = 0.7
                 if self.shrink_to_fit and text_w > bbox_w:
-                    fontsize = max(6.0, fontsize * bbox_w / text_w)
-                    text_w   = fobj.text_length(draw_text, fontsize)
+                    ratio = max(MIN_SHRINK_RATIO, bbox_w / text_w)
+                    if ratio < 1.0:
+                        fontsize = fontsize * ratio
+                        text_w   = fobj.text_length(draw_text, fontsize)
 
                 # Look up alignment detected from column context
                 align_key = (round(span["origin"][0], 1),
@@ -1187,18 +1251,109 @@ class PDFEditor:
                 else:
                     ox = span["origin"][0]
 
+                draw_ops.append((ox, oy, fontname_to_use, fontsize, draw_text, span["color"]))
+
+                # Only left-aligned overflow is handled here: that's the
+                # common "label: value" case (a name, a date, an ID after a
+                # fixed prefix) this bug was actually found on, and the
+                # overflow direction is unambiguous — text runs rightward
+                # past bbox.x1, toward whatever comes next on the line.
+                # Right/center-aligned overflow pushes in a direction that
+                # depends on the *other* column members, not a simple
+                # neighbor, and isn't handled by this pass — a real but
+                # separate case, left as a known gap rather than guessed at.
+                if alignment == "left":
+                    new_x1 = ox + text_w
+                    if new_x1 > bbox.x1 + 0.5:
+                        overflowing.append((span, new_x1, oy))
+
+            # ── Reflow pass: push same-line spans that would otherwise be
+            # overlapped by a longer replacement out of the way, preserving
+            # their own original text/font/size and the gaps between them —
+            # only their position changes. Without this, a replacement
+            # wider than the field it replaced silently draws on top of
+            # whatever came right after it on the line (verified live: an
+            # edited name overlapping the comma that followed it).
+            SAME_LINE_TOL = 1.0  # pt — baseline-y tolerance for "same line"
+            shift_of: dict = {}  # id(span) -> dx
+            if overflowing:
+                for edited_span, new_x1, oy in overflowing:
+                    orig_x1 = edited_span["bbox"].x1
+                    followers = sorted(
+                        (s for s in all_spans
+                         if id(s) not in edited_ids
+                         and abs(s["origin"][1] - oy) <= SAME_LINE_TOL
+                         and s["bbox"].x0 >= orig_x1 - SAME_LINE_TOL),
+                        key=lambda s: s["bbox"].x0,
+                    )
+                    cursor = new_x1
+                    prev_orig_x1 = orig_x1
+                    for f in followers:
+                        gap = max(0.0, f["bbox"].x0 - prev_orig_x1)
+                        needed_x0 = cursor + gap
+                        dx = needed_x0 - f["bbox"].x0
+                        if dx > 0.1:
+                            shift_of[id(f)] = max(shift_of.get(id(f), 0.0), dx)
+                            cursor = f["bbox"].x1 + dx
+                        else:
+                            cursor = f["bbox"].x1
+                        prev_orig_x1 = f["bbox"].x1
+
+            shifted_spans = [s for s in all_spans if id(s) in shift_of]
+
+            # ── Erase — both the edited spans and anything being shifted
+            # out of the way. See the (unchanged) note on TRUE redaction
+            # above `apply_redactions`: this removes the underlying text
+            # operators, not just a cosmetic paint-over.
+            for span, _ in items:
+                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
+                                      cross_out=False)
+            for span in shifted_spans:
+                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
+                                      cross_out=False)
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                                  graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                  text=fitz.PDF_REDACT_TEXT_REMOVE)
+
+            # ── Draw the measured edits, then the shifted (unchanged-text)
+            # neighbors at their new position, in their own original font.
+            for ox, oy, fontname_to_use, fontsize, draw_text, color in draw_ops:
                 try:
                     stamp_page.insert_text(
                         fitz.Point(ox, oy),
                         draw_text,
                         fontname=fontname_to_use,
                         fontsize=fontsize,
+                        color=color,
+                        overlay=True,
+                        render_mode=0,
+                    )
+                except Exception as exc:
+                    warnings.warn(f"[pdf_editor] insert_text: {exc}")
+
+            for span in shifted_spans:
+                alias, raw, _avail = self._font_info(page_num, span["font"])
+                is_base14 = _base14_builtin(span["font"]) is not None
+                if alias and raw and alias not in registered:
+                    try:
+                        stamp_page.insert_font(fontname=alias, fontbuffer=raw)
+                        registered.add(alias)
+                    except Exception as exc:
+                        warnings.warn(f"[pdf_editor] insert_font '{span['font']}': {exc}")
+                        alias = None
+                fontname_to_use = alias if alias else "helv"
+                try:
+                    stamp_page.insert_text(
+                        fitz.Point(span["origin"][0] + shift_of[id(span)], span["origin"][1]),
+                        _shape_text(span["text"]),
+                        fontname=fontname_to_use,
+                        fontsize=span["size"],
                         color=span["color"],
                         overlay=True,
                         render_mode=0,
                     )
                 except Exception as exc:
-                    warnings.warn(f"[pdf_editor] insert_text '{span['font']}': {exc}")
+                    warnings.warn(f"[pdf_editor] insert_text (shifted neighbor) '{span['font']}': {exc}")
 
             page.show_pdf_page(page.rect, stamp_doc, 0, overlay=True)
 
