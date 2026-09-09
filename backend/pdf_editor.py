@@ -161,7 +161,6 @@ _FONT_SUBSTITUTES: dict = {
     "Telegraf":       ("Inter",         "Modern clean sans-serif"),
     "TTNormsPro":     ("Inter",         "Similar proportions and weight range"),
     "CanvaSans":      ("Nunito",        "Round geometric sans-serif"),
-    "TwCenMT":        ("Poppins",       "Closest open-source match to TW Cen MT's rounded-geometric proportions"),
     # Serif / display
     "BlostaScript":   ("DancingScript", "Script display font"),
     "BDScript":       ("DancingScript", "Brush/script font"),

@@ -70,6 +70,20 @@ _GH_API = "https://api.github.com/repos/google/fonts/contents"
 _GF_RAW = "https://raw.githubusercontent.com/google/fonts/main"
 _LICENSE_DIRS = ("ofl", "apache", "ufl")
 
+# Donor-only substitutes for families with NO real Google Fonts entry (used
+# solely to find glyphs to copy INTO the original embedded subset).
+# Deliberately kept separate from pdf_editor._FONT_SUBSTITUTES: that table
+# also feeds _fetch_google_font()/resolve_full_font(), which _font_info()
+# PREFERS over the embedded subset for the entire run — adding an entry
+# there for a family whose subset IS usable would silently switch every
+# edit on that font to the substitute family wholesale, defeating the whole
+# point of extending the original font for just the missing glyphs.
+_DONOR_ONLY_SUBSTITUTES = {
+    "TwCenMT": "Poppins",  # TW Cen MT: no open-source equivalent on Google
+                           # Fonts under its own name; rounded-geometric
+                           # proportions are the closest visual match.
+}
+
 # Google-side renames that break simple normalization (the repo folder no
 # longer matches the family's common/PDF-embedded name). Keep this SMALL —
 # it's a last-resort override, not the primary resolution mechanism.
@@ -258,6 +272,8 @@ def resolve_donor(fontname: str) -> bytes | None:
         tried.append(_KNOWN_RENAMES[key])
     if family in _FONT_SUBSTITUTES:
         tried.append(_FONT_SUBSTITUTES[family][0])
+    if family in _DONOR_ONLY_SUBSTITUTES:
+        tried.append(_DONOR_ONLY_SUBSTITUTES[family])
 
     data = None
     for candidate in tried:
