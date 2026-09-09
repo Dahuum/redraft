@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import PdfCanvas from "./PdfCanvas.jsx";
+import CanvasToolbar from "./CanvasToolbar.jsx";
+import Notice from "./Notice.jsx";
+import ImportSource from "./ImportSource.jsx";
 import FontPanel from "./FontPanel.jsx";
 import { annexModel, annexGenerate } from "../api.js";
 import { getTemplate, saveTemplate } from "../lib/templates.js";
+
+const MAX_ROWS = 500;
 
 // NFD decomposes accents (é → e + ◌́); stripping non-alphanumerics then drops the
 // mark, so "Période" ≈ "Periode" and "Référence" ≈ "Reference".
@@ -66,6 +71,29 @@ function autoMapHeaders(headers, columns) {
  * annex per client (/annex/generate): a 0/empty quantity removes that line and
  * the Total HT is recomputed. Engine untouched.
  */
+function NumField({ label, value, onChange }) {
+  return (
+    <label className="flex items-center gap-1.5 text-caption text-on-surface-variant">
+      <span className="shrink-0">{label}</span>
+      <input
+        type="number"
+        step="0.5"
+        value={Number.isFinite(value) ? value : ""}
+        onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+        className="w-[72px] bg-surface-container-lowest border border-outline-variant/50 rounded-md py-1 px-1.5 text-[13px] text-on-surface tabular-nums focus:outline-none focus:ring-1 focus:ring-secondary-container"
+      />
+    </label>
+  );
+}
+
+const ADJUST_COLS = [
+  ["qty", "Qty"],
+  ["price", "Price"],
+  ["amount", "Amount"],
+  ["unit", "Unit"],
+  ["label", "Label ends before"],
+];
+
 export default function AnnexWorkspace({ file, spans, data, pages }) {
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
@@ -91,11 +119,16 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   const [impText, setImpText] = useState("");
   const [impHeaders, setImpHeaders] = useState([]);
   const [impRows, setImpRows] = useState([]); // array of row objects keyed by header
-  const impUploadRef = useRef(null);
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+
+  // Layout adjustment — fix what detect_template got wrong, then re-scan.
+  const [adjusting, setAdjusting] = useState(false);
+  const [draftTmpl, setDraftTmpl] = useState(null);
+  const [armCol, setArmCol] = useState(null); // column awaiting a canvas click
+  const [scanning, setScanning] = useState(false);
 
   const pageCount = (pages && pages.length) || 1;
 
@@ -294,6 +327,12 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
       setHoverHeader(null);
       return;
     }
+    if (adjusting && armCol) {
+      const sp = spanById.get(spanId);
+      if (sp) assignSpanToColumn(sp, armCol);
+      setArmCol(null);
+      return;
+    }
     const idx = idToItem.get(spanId);
     if (idx != null) {
       setHoverLine(idx);
@@ -334,6 +373,111 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     ingestParsed(Papa.parse(impText.trim(), { header: true, skipEmptyLines: true }));
   }
 
+  // ---- Layout adjustment ----
+  function openAdjust() {
+    setDraftTmpl(template ? JSON.parse(JSON.stringify(template)) : null);
+    setArmCol(null);
+    setAdjusting(true);
+  }
+  function closeAdjust() {
+    setAdjusting(false);
+    setArmCol(null);
+    setDraftTmpl(null);
+  }
+
+  function patchColumn(col, patch) {
+    setDraftTmpl((t) => {
+      if (!t) return t;
+      const cols = { ...(t.columns || {}) };
+      cols[col] = { ...(cols[col] || {}), ...patch };
+      return { ...t, columns: cols };
+    });
+  }
+  function patchRegion(key, value) {
+    setDraftTmpl((t) =>
+      t ? { ...t, tableRegion: { ...(t.tableRegion || {}), [key]: value } } : t
+    );
+  }
+
+  // Re-point a column band from one real cell the user clicked: numeric cols
+  // match on the right edge (x1), unit on the centre (xc), label on where the
+  // label zone ends. Floors fall back into the inter-column gap.
+  function assignSpanToColumn(span, colKey) {
+    const b = span.bbox;
+    if (!b || !draftTmpl) return;
+    if (colKey === "label") {
+      patchColumn("label", { by: "x0", max: b[2] + 4 });
+      return;
+    }
+    if (colKey === "unit") {
+      patchColumn("unit", { by: "xc", min: b[0] - 10, max: b[2] + 10 });
+      return;
+    }
+    const floor = Math.max(draftTmpl?.tableEdges?.x0 ?? 0, b[0] - 36);
+    patchColumn(colKey, { by: "x1", min: b[0] - 8, max: b[2] + 8, floor });
+  }
+
+  // Re-run the fuzzy label↔column matching against a freshly scanned model,
+  // so a layout fix doesn't throw away an already-loaded data file.
+  function remapFromModel(m) {
+    if (!impHeaders.length) {
+      setMapping({});
+      setHeaderMapping({});
+      return;
+    }
+    setMapping(autoMap(m.items || [], impHeaders));
+    setHeaderMapping(autoMapHeaders(m.headers || [], impHeaders));
+  }
+
+  async function persistTemplate(tmpl) {
+    try {
+      localStorage.setItem(tplKey(file.name), JSON.stringify(tmpl));
+    } catch {
+      /* storage blocked — reuse just won't persist locally */
+    }
+    saveTemplate(file.name, tmpl); // best-effort account sync
+  }
+
+  async function applyRescan() {
+    if (!file || !draftTmpl) return;
+    setScanning(true);
+    setError(null);
+    try {
+      const m = await annexModel(file, draftTmpl);
+      const tmpl = m.template || draftTmpl;
+      setModel(m);
+      setTemplate(tmpl);
+      await persistTemplate(tmpl);
+      remapFromModel(m);
+      setResult(null);
+      window.rdTrack?.("annex_layout_adjusted");
+      closeAdjust();
+    } catch (e) {
+      setError(e.message || "Couldn't re-scan with this layout.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function redetectFresh() {
+    if (!file) return;
+    setScanning(true);
+    setError(null);
+    try {
+      const m = await annexModel(file, null);
+      const tmpl = m.template || null;
+      setModel(m);
+      setTemplate(tmpl);
+      remapFromModel(m);
+      setResult(null);
+      setDraftTmpl(tmpl ? JSON.parse(JSON.stringify(tmpl)) : null);
+    } catch (e) {
+      setError(e.message || "Couldn't re-detect.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
   // ---- Generate ----
   function generate() {
     setError(null);
@@ -341,6 +485,10 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     if (!file) return setError("Open the annex in the PDF Editor tab first.");
     if (modelStatus !== "ready") return setError("Still reading the annex…");
     if (!impRows.length) return setError("Load your client data first.");
+    if (impRows.length > MAX_ROWS)
+      return setError(
+        `Too many clients (${impRows.length}). The limit is ${MAX_ROWS} per batch — split your data.`
+      );
     const map = Object.fromEntries(Object.entries(mapping).filter(([, h]) => h));
     const hmap = Object.fromEntries(Object.entries(headerMapping).filter(([, h]) => h));
     if (!Object.keys(map).length && !Object.keys(hmap).length)
@@ -370,45 +518,23 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
       {/* Left: the annex with detected lines highlighted */}
       <div className="flex-[0.58] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative">
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1.5 flex items-center gap-3 z-10 shadow-xl">
-          <button
-            disabled={pageIndex === 0}
-            onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
-            className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
-          >
-            <span className="material-symbols-outlined text-[18px]">chevron_left</span>
-          </button>
-          <span className="text-caption font-medium">
-            {pageIndex + 1} / {pageCount}
-          </span>
-          <button
-            disabled={pageIndex >= pageCount - 1}
-            onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
-            className="text-on-surface-variant hover:text-primary transition-colors disabled:opacity-30"
-          >
-            <span className="material-symbols-outlined text-[18px]">chevron_right</span>
-          </button>
-          <div className="w-px h-4 bg-outline-variant"></div>
-          <button
-            onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
-            className="text-on-surface-variant hover:text-primary transition-colors"
-          >
-            <span className="material-symbols-outlined text-[18px]">zoom_out</span>
-          </button>
-          <span className="text-caption font-medium">{Math.round(zoom * 100)}%</span>
-          <button
-            onClick={() => setZoom((z) => Math.min(2.5, +(z + 0.1).toFixed(2)))}
-            className="text-on-surface-variant hover:text-primary transition-colors"
-          >
-            <span className="material-symbols-outlined text-[18px]">zoom_in</span>
-          </button>
-        </div>
+        <CanvasToolbar
+          pageIndex={pageIndex}
+          pageCount={pageCount}
+          setPageIndex={setPageIndex}
+          zoom={zoom}
+          setZoom={setZoom}
+        />
 
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
           <span className="material-symbols-outlined text-[14px] text-accent-cyan">
             {reused ? "bookmark" : "rule"}
           </span>
-          {modelStatus === "ready"
+          {adjusting
+            ? armCol
+              ? `Click a ${armCol} cell on the page…`
+              : "Pick a column chip, then click its first data cell"
+            : modelStatus === "ready"
             ? `${items.length} line${items.length === 1 ? "" : "s"} detected${
                 reused ? " · saved layout" : ""
               } — hover a row to find it`
@@ -447,26 +573,38 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                 Total&nbsp;HT recomputes.
               </p>
             </div>
-            {modelStatus === "ready" && (
-              <button
-                onClick={() => {
-                  setShowImport((v) => !v);
-                  setError(null);
-                }}
-                className={`shrink-0 px-3 py-1.5 rounded-lg border text-label-md flex items-center gap-1.5 transition-colors ${
-                  showImport
-                    ? "bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan"
-                    : "border-outline-variant/40 text-on-surface-variant hover:text-on-surface"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[16px]">table_chart</span>
-                {dataLoaded ? `${impRows.length} clients` : "Load data"}
-              </button>
+            {modelStatus === "ready" && !adjusting && (
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  onClick={openAdjust}
+                  title="Fix what was auto-detected"
+                  aria-label="Adjust layout"
+                  className="shrink-0 px-2.5 py-2 rounded-lg border border-outline-variant/40 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">tune</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowImport((v) => !v);
+                    setError(null);
+                  }}
+                  className={`shrink-0 px-3 py-1.5 rounded-lg border text-label-md flex items-center gap-1.5 transition-colors ${
+                    showImport
+                      ? "bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan"
+                      : "border-outline-variant/40 text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">table_chart</span>
+                  {dataLoaded ? `${impRows.length} clients` : "Load data"}
+                </button>
+              </div>
             )}
           </div>
         </div>
 
         <div className="flex-1 overflow-auto">
+          {!adjusting && (
+          <>
           {modelStatus === "loading" && (
             <div className="h-full flex flex-col items-center justify-center text-on-surface-variant animate-fade">
               <span className="material-symbols-outlined text-[40px] animate-pulse">rule</span>
@@ -495,68 +633,20 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
 
           {modelStatus === "ready" && (items.length > 0 || headerFields.length > 0) && showImport && (
             <div className="p-4 space-y-4 animate-drop">
-              <div className="flex items-center gap-1 bg-surface-container-low rounded-lg p-1 border border-outline-variant/20 w-max">
-                {[
-                  ["upload", "upload_file", "Upload"],
-                  ["paste", "content_paste", "Paste"],
-                ].map(([k, icon, lbl]) => (
-                  <button
-                    key={k}
-                    onClick={() => setImpTab(k)}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-label-md text-sm transition-all ${
-                      impTab === k
-                        ? "bg-surface-variant text-on-surface shadow-sm"
-                        : "text-on-surface-variant hover:text-on-surface"
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[16px]">{icon}</span>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
-              <p className="text-caption text-on-surface-variant">
-                First row = column names (one column per line, holding its quantity). One row per
-                client.
-              </p>
-
-              {impTab === "upload" ? (
-                <div
-                  onClick={() => impUploadRef.current?.click()}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    impUpload(e.dataTransfer.files?.[0]);
-                  }}
-                  className="border-2 border-dashed border-outline-variant/50 hover:border-secondary-container rounded-xl p-6 flex flex-col items-center gap-2 cursor-pointer transition-colors text-center"
-                >
-                  <span className="material-symbols-outlined text-[24px] text-on-surface-variant">
-                    cloud_upload
-                  </span>
-                  <p className="text-body-md text-on-surface">Drop a CSV / TSV or click to browse</p>
-                  <input
-                    ref={impUploadRef}
-                    type="file"
-                    accept=".csv,.tsv,.txt"
-                    className="hidden"
-                    onChange={(e) => impUpload(e.target.files?.[0])}
-                  />
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <textarea
-                    value={impText}
-                    onChange={(e) => setImpText(e.target.value)}
-                    placeholder={"Paste rows from Excel / Sheets or CSV…"}
-                    className="w-full h-28 bg-surface-container-lowest border border-outline-variant/50 rounded-lg p-3 text-sm text-on-surface font-mono focus:outline-none focus:ring-1 focus:ring-secondary-container resize-y"
-                  />
-                  <button
-                    onClick={impLoadPaste}
-                    className="px-3 py-1.5 bg-surface-container-highest border border-outline-variant rounded-lg text-label-md text-on-surface hover:border-secondary-container transition-colors"
-                  >
-                    Load
-                  </button>
-                </div>
-              )}
+              <ImportSource
+                tab={impTab}
+                setTab={setImpTab}
+                onFile={impUpload}
+                onLoadPaste={impLoadPaste}
+                text={impText}
+                setText={setImpText}
+                top={
+                  <p className="text-caption text-on-surface-variant">
+                    First row = column names (one column per line, holding its quantity). One row
+                    per client.
+                  </p>
+                }
+              />
             </div>
           )}
 
@@ -690,28 +780,145 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
               ))}
             </div>
           )}
+          </>
+          )}
+
+          {adjusting && draftTmpl && (
+            <div className="p-4 space-y-4 animate-drop">
+              <p className="text-caption text-on-surface-variant">
+                Wrong column or missing lines? Click a chip, then click one real
+                cell of that column on the page — or nudge the numbers below.
+              </p>
+
+              <div className="flex flex-wrap gap-1.5">
+                {ADJUST_COLS.map(([k, lbl]) => (
+                  <button
+                    key={k}
+                    onClick={() => setArmCol(armCol === k ? null : k)}
+                    aria-pressed={armCol === k}
+                    className={`px-2.5 py-1 rounded-lg border text-label-md text-[12px] transition-colors ${
+                      armCol === k
+                        ? "bg-secondary-container text-white border-transparent"
+                        : "border-outline-variant/50 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50"
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              {armCol && (
+                <p className="text-caption text-accent-cyan flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[14px]">ads_click</span>
+                  Now click a “{armCol}” cell on the document.
+                </p>
+              )}
+
+              <div className="space-y-2 rounded-lg border border-outline-variant/30 bg-surface-container-low p-3">
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5 pb-2 border-b border-outline-variant/20">
+                  <NumField
+                    label="Table top y>"
+                    value={draftTmpl.tableRegion?.yTop}
+                    onChange={(v) => patchRegion("yTop", v)}
+                  />
+                  <NumField
+                    label="bottom y<"
+                    value={draftTmpl.tableRegion?.yBottom}
+                    onChange={(v) => patchRegion("yBottom", v)}
+                  />
+                </div>
+                {["qty", "price", "amount", "unit", "label"]
+                  .filter((k) => draftTmpl.columns?.[k])
+                  .map((k) => {
+                    const c = draftTmpl.columns[k];
+                    return (
+                      <div
+                        key={k}
+                        className="flex flex-wrap items-center gap-x-4 gap-y-1.5 py-1.5 border-b border-outline-variant/15 last:border-0"
+                      >
+                        <span className="w-16 shrink-0 font-label-md text-[12px] font-semibold capitalize text-on-surface">
+                          {k}
+                        </span>
+                        {c.min != null && (
+                          <NumField label="min x>" value={c.min} onChange={(v) => patchColumn(k, { min: v })} />
+                        )}
+                        {c.max != null && (
+                          <NumField
+                            label={k === "label" ? "up to x<" : "max x<"}
+                            value={c.max}
+                            onChange={(v) => patchColumn(k, { max: v })}
+                          />
+                        )}
+                        {c.floor != null && (
+                          <NumField label="floor x>" value={c.floor} onChange={(v) => patchColumn(k, { floor: v })} />
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={redetectFresh}
+                  disabled={scanning}
+                  title="Throw this layout away and auto-detect from scratch"
+                  className="shrink-0 px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors text-label-md text-sm disabled:opacity-40"
+                >
+                  Re-detect
+                </button>
+                <span className="flex-1" />
+                <button
+                  onClick={closeAdjust}
+                  disabled={scanning}
+                  className="shrink-0 px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors text-label-md text-sm disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={applyRescan}
+                  disabled={scanning || !draftTmpl}
+                  className="shrink-0 px-4 py-2 rounded-lg bg-secondary-container hover:bg-secondary-container-hover text-white font-label-md text-sm transition-all disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <span
+                    className={`material-symbols-outlined text-[16px] ${
+                      scanning ? "animate-spin" : ""
+                    }`}
+                  >
+                    {scanning ? "progress_activity" : "radar"}
+                  </span>
+                  {scanning ? "Scanning…" : "Apply & re-scan"}
+                </button>
+              </div>
+            </div>
+          )}
+          {adjusting && !draftTmpl && (
+            <div className="h-full flex flex-col items-center justify-center gap-3 text-center p-6 text-on-surface-variant">
+              <span className="material-symbols-outlined text-[36px] opacity-40">tune</span>
+              <p className="text-body-md max-w-[280px]">
+                No saved layout to adjust yet — run the detector first, then fix what it found.
+              </p>
+              <button
+                onClick={redetectFresh}
+                disabled={scanning}
+                className="px-4 py-2 rounded-lg bg-secondary-container text-white text-label-md text-sm flex items-center gap-1.5 disabled:opacity-40"
+              >
+                <span className={`material-symbols-outlined text-[16px] ${scanning ? "animate-spin" : ""}`}>
+                  {scanning ? "progress_activity" : "radar"}
+                </span>
+                {scanning ? "Scanning…" : "Detect layout now"}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="p-4 border-t border-outline-variant/30 bg-surface/80 backdrop-blur-xl space-y-2">
           {file && <FontPanel file={file} />}
-          {(error || result) && (
-            <div
-              className={`rounded-lg px-3 py-2 text-caption flex items-center gap-2 border ${
-                error
-                  ? "border-error/30 bg-error/10 text-error"
-                  : "border-secondary-container/30 bg-secondary-container/10 text-secondary"
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">
-                {error ? "error" : "check_circle"}
-              </span>
-              {error
-                ? error
-                : `Generated ${result.generated} annex(es)${
-                    result.failed ? ` · ${result.failed} skipped` : ""
-                  } — ZIP downloaded.`}
-            </div>
+          {error && <Notice tone="error">{error}</Notice>}
+          {result && (
+            <Notice tone="success">
+              Generated {result.generated} annex(es)
+              {result.failed ? ` · ${result.failed} skipped` : ""} — ZIP downloaded.
+            </Notice>
           )}
           {modelStatus === "ready" && dataLoaded && (
             <>
@@ -794,7 +1001,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
               !dataLoaded ||
               (mappedCount === 0 && headerMappedCount === 0)
             }
-            className="w-full bg-secondary-container hover:bg-[#003ea8] text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
+            className="w-full bg-secondary-container hover:bg-secondary-container-hover text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
           >
             <span className="material-symbols-outlined text-[18px]">bolt</span>
             {busy

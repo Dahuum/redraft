@@ -185,7 +185,8 @@ export function useEditor() {
     setBusy(true);
     try {
       const { editArr, stamps } = buildPayload();
-      const { blob } = await editPdf(file, editArr, stamps, true); // final → counts toward plan
+      const { blob, fontReport: fr } = await editPdf(file, editArr, stamps, true);
+      setFontReport(fr);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

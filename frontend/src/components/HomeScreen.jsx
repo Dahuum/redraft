@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useHistory, removeDoc, ago } from "../lib/history.js";
-import { cloudEnabled, listProjects, deleteProject, openProjectFile } from "../lib/cloud.js";
+import { useHistory, removeDoc, ago, getRecord, putRecord } from "../lib/history.js";
+import { cloudEnabled, listProjects, deleteProject, openProjectFile, saveProject } from "../lib/cloud.js";
 import { renderThumb } from "../lib/thumb.js";
 import { composeDoc } from "../api.js";
 import ThemeToggle from "./ThemeToggle.jsx";
+import { toast } from "./Toast.jsx";
 import { Tabs, Button, Dropdown, Avatar, Label } from "@heroui/react";
 
 const STATUS = {
@@ -79,8 +80,41 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     }
   }
   async function removeProject(p) {
+    let bytes = null;
+    try {
+      const f = await openProjectFile(p);
+      bytes = await f.arrayBuffer();
+    } catch {
+      /* deletion proceeds without undo if the file can't be fetched */
+    }
     await deleteProject(p);
     loadProjects();
+    if (bytes) {
+      toast(`Removed template “${p.name}”`, {
+        actionLabel: "Undo",
+        onAction: async () => {
+          try {
+            await saveProject(
+              new File([bytes], `${p.name}.pdf`, { type: "application/pdf" }),
+              { name: p.name, kind: p.kind || "bulk", setup: p.setup || {}, pages: p.pages || 1 }
+            );
+          } catch {
+            /* free cap may be filled meanwhile — template stays deleted */
+          }
+          loadProjects();
+        },
+      });
+    }
+  }
+
+  async function removeDocUndoable(id, name) {
+    const rec = await getRecord(id);
+    if (!rec) return;
+    await removeDoc(id);
+    toast(`Removed “${name}” from history`, {
+      actionLabel: "Undo",
+      onAction: () => putRecord(rec),
+    });
   }
 
   const pick = (f) => f && onUpload(f);
@@ -107,6 +141,37 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
       setTxtError(e.message || "Couldn't build the document.");
     } finally {
       setComposing(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!showText || composing) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") setShowText(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showText, composing]);
+
+  const composerRef = useRef(null);
+  function trapComposerTab(e) {
+    if (e.key !== "Tab") return;
+    const root = composerRef.current;
+    if (!root) return;
+    const focusables = [
+      ...root.querySelectorAll(
+        'button, input, textarea, select, [tabindex]:not([tabindex="-1"])'
+      ),
+    ].filter((el) => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
     }
   }
 
@@ -164,7 +229,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
             <button
               onClick={() => { window.location.href = "/"; }}
               title="Sign in to save your work and unlock bulk & annex"
-              className="ml-xs h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-[#003ea8] transition-colors inline-flex items-center gap-1.5"
+              className="ml-xs h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-secondary-container-hover transition-colors inline-flex items-center gap-1.5"
             >
               <span className="material-symbols-outlined text-[18px]">login</span>
               Sign in
@@ -212,7 +277,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               </span>
               <button
                 onClick={() => { window.location.href = "/"; }}
-                className="shrink-0 px-3 py-1 rounded-md bg-secondary-container text-white font-label-md text-[12px] hover:bg-[#003ea8] transition-colors"
+                className="shrink-0 px-3 py-1 rounded-md bg-secondary-container text-white font-label-md text-[12px] hover:bg-secondary-container-hover transition-colors"
               >
                 Sign in
               </button>
@@ -258,7 +323,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               >
                 Browse Files
               </Button>
-              <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant/70">
+              <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant">
                 <span className="material-symbols-outlined text-[14px]">lock</span>
                 Your files are processed in memory and never stored.
               </p>
@@ -271,7 +336,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           {/* Start from text → clean PDF, straight into the editor */}
           {tab === "editor" && (
             <div className="-mt-sm mb-lg flex items-center justify-center gap-2">
-              <span className="text-caption text-on-surface-variant/60">or</span>
+              <span className="text-caption text-on-surface-variant">or</span>
               <button
                 onClick={() => {
                   setTxtError(null);
@@ -310,7 +375,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                         removeProject(p);
                       }}
                       title="Remove from account"
-                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
+                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
                     >
                       <span className="material-symbols-outlined text-[16px]">delete</span>
                     </button>
@@ -383,9 +448,9 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        removeDoc(d.id);
+                        removeDocUndoable(d.id, d.name);
                       }}
-                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
+                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
                       title="Remove from history"
                     >
                       <span className="material-symbols-outlined text-[16px]">close</span>
@@ -434,7 +499,14 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade"
           onMouseDown={(e) => e.target === e.currentTarget && !composing && setShowText(false)}
         >
-          <div className="w-full max-w-[42rem] bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop">
+          <div
+            ref={composerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Start from text"
+            onKeyDown={trapComposerTab}
+            className="w-full max-w-[42rem] bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop"
+          >
             <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between">
               <h3 className="font-display-md text-lg font-bold flex items-center gap-2">
                 <span className="material-symbols-outlined text-[20px] text-accent-cyan">edit_note</span>
@@ -442,6 +514,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               </h3>
               <button
                 onClick={() => !composing && setShowText(false)}
+                aria-label="Close"
                 className="text-on-surface-variant hover:text-on-surface transition-colors"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
@@ -455,6 +528,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               <input
                 value={txtTitle}
                 onChange={(e) => setTxtTitle(e.target.value)}
+                autoFocus
                 placeholder="Title (optional) — e.g. Service Agreement"
                 className="w-full bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-2 px-3 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-accent-cyan"
               />
@@ -478,7 +552,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
               <button
                 onClick={createFromText}
                 disabled={composing || !txtBody.trim()}
-                className="px-4 py-2 rounded-lg bg-accent-cyan text-[#080c14] font-semibold hover:bg-[#00d0d9] transition-all font-label-md text-sm flex items-center gap-2 disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-secondary-container text-white font-semibold hover:bg-secondary-container-hover transition-all font-label-md text-sm flex items-center gap-2 disabled:opacity-50"
               >
                 <span className={`material-symbols-outlined text-[18px] ${composing ? "animate-spin" : ""}`}>
                   {composing ? "progress_activity" : "auto_awesome"}

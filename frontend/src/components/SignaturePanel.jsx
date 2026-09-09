@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import SignaturePad from "signature_pad";
 import { cloudEnabled, listSignatures, saveSignature, deleteSignature } from "../lib/cloud.js";
+import { toast } from "./Toast.jsx";
+import Notice from "./Notice.jsx";
 
 // Real signature-style script fonts (loaded in app.html) — not casual handwriting.
 const SIG_FONTS = [
@@ -234,9 +236,24 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
     if (onPlace) onPlace(url, ratio);
     else setNote("Signature ready — placing it on the PDF is the next step.");
   }
-  function removeSig(id) {
-    setSaved((s) => s.filter((x) => x.id !== id));
-    if (cloud) deleteSignature(id).catch(() => {});
+  function removeSig(sig) {
+    setSaved((s) => s.filter((x) => x.id !== sig.id));
+    if (cloud) deleteSignature(sig.id).catch(() => {});
+    toast("Signature deleted", {
+      actionLabel: "Undo",
+      onAction: async () => {
+        if (cloud) {
+          try {
+            const back = await saveSignature({ url: sig.url, ratio: sig.ratio });
+            setSaved((s) => [back, ...s]);
+            return;
+          } catch {
+            /* cap may be filled meanwhile — fall back to local restore */
+          }
+        }
+        setSaved((s) => [sig, ...s].slice(0, 24));
+      },
+    });
   }
 
   const TABS = [
@@ -275,13 +292,13 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
             className="relative rounded-xl bg-white border border-outline-variant/40 shadow-inner overflow-hidden"
             style={{ height: 180 }}
           >
-            <div className="absolute left-6 right-6 bottom-10 border-b border-dashed border-slate-300 pointer-events-none" />
-            <span className="absolute left-6 bottom-4 text-[11px] text-slate-400 pointer-events-none">
+            <div className="absolute left-6 right-6 bottom-10 border-b border-dashed border-outline-variant pointer-events-none" />
+            <span className="absolute left-6 bottom-4 text-[11px] text-on-surface-variant/70 pointer-events-none">
               Sign here
             </span>
             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full touch-none cursor-crosshair" />
             {!hasInk && (
-              <span className="material-symbols-outlined absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60%] text-[40px] text-slate-200 pointer-events-none">
+              <span className="material-symbols-outlined absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60%] text-[40px] text-on-surface-variant/30 pointer-events-none">
                 gesture
               </span>
             )}
@@ -306,7 +323,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
             <button
               onClick={saveDrawn}
               disabled={!hasInk}
-              className="flex-1 bg-secondary-container hover:bg-[#003ea8] text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
+              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
             >
               <span className="material-symbols-outlined text-[18px]">check</span>
               Save signature
@@ -330,7 +347,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
             {preview ? (
               <img src={preview} alt="signature preview" className="max-h-20 max-w-full object-contain" />
             ) : (
-              <span className="text-slate-300 text-sm">Type your name to preview</span>
+              <span className="text-on-surface-variant/70 text-sm">Type your name to preview</span>
             )}
           </div>
 
@@ -369,7 +386,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
           <button
             onClick={saveTyped}
             disabled={!name.trim()}
-            className="w-full bg-secondary-container hover:bg-[#003ea8] text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
+            className="w-full bg-secondary-container hover:bg-secondary-container-hover text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
           >
             <span className="material-symbols-outlined text-[18px]">check</span>
             Save signature
@@ -397,15 +414,15 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
                   <button
                     onClick={() => place(s.url, s.ratio)}
                     title="Place on document"
-                    className="shrink-0 px-3 py-1.5 rounded-lg bg-secondary-container text-white text-label-md flex items-center gap-1.5 hover:bg-[#003ea8] transition-colors"
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-secondary-container text-white text-label-md flex items-center gap-1.5 hover:bg-secondary-container-hover transition-colors"
                   >
                     <span className="material-symbols-outlined text-[16px]">ink_pen</span>
                     Place
                   </button>
                   <button
-                    onClick={() => removeSig(s.id)}
+                    onClick={() => removeSig(s)}
                     title="Delete"
-                    className="shrink-0 w-8 h-8 rounded-lg text-slate-400 hover:text-error hover:bg-error/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                    className="shrink-0 w-8 h-8 rounded-lg text-on-surface-variant hover:text-error hover:bg-error/10 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-all"
                   >
                     <span className="material-symbols-outlined text-[18px]">delete</span>
                   </button>
@@ -416,12 +433,7 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
         </div>
       )}
 
-      {note && (
-        <div className="rounded-lg px-3 py-2 text-caption flex items-center gap-2 border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan">
-          <span className="material-symbols-outlined text-[16px]">info</span>
-          {note}
-        </div>
-      )}
+      {note && <Notice tone="info">{note}</Notice>}
     </div>
   );
 }
