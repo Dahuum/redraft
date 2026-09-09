@@ -889,11 +889,16 @@ def _detect_alignments(spans: list) -> dict:
     CX_TOL   = 3.0   # pt — midpoint tolerance for centering
     X0_MIN   = 3.0   # pt — minimum x0 difference to distinguish from same-text
     MIN_MATES = 2    # other spans required to corroborate a column, not just one
+    INLINE_TOL = 0.5 # pt — gap tolerance to treat one span as immediately
+                     # following another on the same baseline (an inline
+                     # "label: value", never a real right/center column)
+    SAME_LINE_TOL = 1.0  # pt — baseline-y tolerance for "same line"
 
     n = len(spans)
     x0s = [s["bbox"].x0 for s in spans]
     x1s = [s["bbox"].x1 for s in spans]
     cxs = [(s["bbox"].x0 + s["bbox"].x1) / 2.0 for s in spans]
+    oys = [s["origin"][1] for s in spans]
 
     result: dict = {}
 
@@ -902,6 +907,27 @@ def _detect_alignments(spans: list) -> dict:
         x0_i   = x0s[i]
         x1_i   = x1s[i]
         cx_i   = cxs[i]
+
+        # ── Inline continuation of a same-line label ("M /Mme <name>",
+        # "Réf : <value>") is never a right/center column member, no matter
+        # how many unrelated spans elsewhere on the page coincidentally
+        # share its right edge or midpoint (found live: a name field and two
+        # completely unrelated short fields — a reference number and a
+        # date — all happened to end within 3pt of each other purely by
+        # chance, satisfying the >=2-mates check below and shoving a wider
+        # replacement ~100pt off to the left). A span whose left edge sits
+        # right where another span on the same baseline ends has a
+        # structural reason to be left-aligned that no coincidental column
+        # match should override.
+        has_inline_prefix = any(
+            j != i
+            and abs(oys[j] - oys[i]) <= SAME_LINE_TOL
+            and abs(x1s[j] - x0_i) <= INLINE_TOL
+            for j in range(n)
+        )
+        if has_inline_prefix:
+            result[key] = "left"
+            continue
 
         # ── Right: shares x1, different x0 — needs >= 2 corroborating mates ─
         right_mates = sum(
