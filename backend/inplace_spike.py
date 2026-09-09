@@ -283,6 +283,44 @@ def _encode_fallback(text, encoding_name):
         return None
 
 
+_SIMPLE_GLYPH_MEMO: dict = {}  # font display name -> set of covered chars, or None
+
+
+def _simple_font_glyph_coverage(doc, font_display_name: str):
+    """Characters the embedded subset actually has a drawable glyph for, per
+    the font program's own cmap table — distinct from _encode_fallback's
+    WinAnsi/MacRoman *encoding* table, which defines a byte<->character
+    mapping regardless of whether this specific subsetted font file embeds
+    that glyph's outline. A subset built for the document's ORIGINAL text
+    (e.g. "Ilyas Zouine") legitimately has no outline for 'h' or 'm' — the
+    encoding table still reports a valid byte for them, so _encode_fallback
+    "succeeds" while what actually gets painted is garbage. Returns None if
+    the font can't be found/parsed (caller should skip the check, not treat
+    unknown as missing)."""
+    if font_display_name in _SIMPLE_GLYPH_MEMO:
+        return _SIMPLE_GLYPH_MEMO[font_display_name]
+    coverage = None
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[3].split("+")[-1] != font_display_name:
+                continue
+            try:
+                raw = doc.extract_font(f[0])[3]
+                if raw:
+                    from fontTools.ttLib import TTFont
+                    import io as _io
+                    tt = TTFont(_io.BytesIO(raw), fontNumber=0, lazy=True)
+                    cmap = tt.getBestCmap() or {}
+                    coverage = {chr(cp) for cp in cmap}
+            except Exception:  # noqa: BLE001 — unparseable font -> skip, don't block
+                coverage = None
+            break
+        if coverage is not None:
+            break
+    _SIMPLE_GLYPH_MEMO[font_display_name] = coverage
+    return coverage
+
+
 def _page_font_refmap(page):
     """PDF resource name (e.g. 'F0') -> display font name (subset prefix stripped)."""
     return {f[4]: f[3].split("+")[-1] for f in page.get_fonts(full=True)}
@@ -1009,6 +1047,21 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
             if new_codes is None:
                 doc.close()
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
+            # _encode_fallback only proves the WinAnsi/MacRoman *encoding*
+            # table has a byte for each character — not that this embedded
+            # subset's font program actually has a glyph outline there (see
+            # _simple_font_glyph_coverage's docstring). _encode_simple_text
+            # above doesn't need this: it's built from the doc's own
+            # /ToUnicode, so a hit there is already something the doc
+            # genuinely renders.
+            coverage = _simple_font_glyph_coverage(doc, nm)
+            if coverage is not None:
+                missing = sorted({ch for ch in new if not ch.isspace() and ch not in coverage})
+                if missing:
+                    doc.close()
+                    return {"ok": False, "reason": "missing_glyph", "missing": missing,
+                            "message": (f"This field's font is an embedded subset that doesn't "
+                                        f"contain these characters yet: {missing}.")}
 
     streams = _content_streams(doc, page)
     if not streams:
