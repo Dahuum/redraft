@@ -58,6 +58,8 @@ import sys
 import urllib.error
 import urllib.request
 
+from fontTools.pens.transformPen import TransformPen
+from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 
@@ -270,19 +272,28 @@ def extend_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dict:
     """Copy each char in `chars` from donor into a COPY of the subset font
     (never mutates the input bytes). Returns:
       {"font_bytes": bytes, "gid": {char: new_gid}, "width_1000": {char: w}}
-    Raises ValueError if unitsPerEm mismatches, the font isn't glyf-based, or
-    a requested char isn't in the donor either — callers must treat any
-    exception as "extension not possible", not attempt a partial result."""
+    Raises ValueError if the font isn't glyf-based or a requested char isn't
+    in the donor either — callers must treat any exception as "extension
+    not possible", not attempt a partial result.
+
+    unitsPerEm mismatches (common: most Google Fonts use 1000, many legacy
+    Microsoft-heritage TrueType fonts like the commercial fonts this exists
+    to work around use 2048) are handled by scaling the donor's outline and
+    metrics into the subset's own unitsPerEm via a TransformPen, rather than
+    refusing outright — a uniform scale keeps the injected glyph's *shape*
+    correct; it can't make a donor glyph's design identical to a font we
+    don't have, but it keeps it correctly sized relative to everything else
+    already in the subset instead of silently drawing at the wrong scale."""
     subset_tt = TTFont(io.BytesIO(subset_bytes))
     donor_tt = TTFont(io.BytesIO(donor_bytes))
     if "glyf" not in subset_tt or "glyf" not in donor_tt:
         raise ValueError("not a glyf-outline (TrueType) font — not supported yet")
     su_upm = subset_tt["head"].unitsPerEm
     do_upm = donor_tt["head"].unitsPerEm
-    if su_upm != do_upm:
-        raise ValueError(f"unitsPerEm mismatch (subset={su_upm}, donor={do_upm})")
+    scale = su_upm / do_upm
 
     donor_cmap = donor_tt.getBestCmap()
+    donor_glyphset = donor_tt.getGlyphSet()
     existing_names = set(subset_tt.getGlyphOrder())
     name_map: dict = {}
     gid_out, width_out = {}, {}
@@ -294,30 +305,68 @@ def extend_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dict:
         while new_name in existing_names or new_name in name_map.values():
             new_name += "_"
         name_map[donor_gname] = new_name
-        g = donor_tt["glyf"][donor_gname]
-        if g.isComposite():
-            for comp in g.components:
-                ensure_copied(comp.glyphName)
-                comp.glyphName = name_map[comp.glyphName]  # remap component ref
+
+        # Draw (and scale, if needed) through the pen protocol rather than
+        # copying raw coordinates/component transforms by hand — TransformPen
+        # composes the unit-scale with each composite component's own
+        # transform correctly, and TTGlyphPen never mutates the donor's own
+        # Glyph object (the previous version aliased it directly, which
+        # rewrote donor state on every composite's component remap).
+        pen = TTGlyphPen(donor_glyphset)
+        draw_pen = TransformPen(pen, (scale, 0, 0, scale, 0, 0)) if scale != 1.0 else pen
+        donor_glyphset[donor_gname].draw(draw_pen)
+        new_glyph = pen.glyph()
+        if new_glyph.isComposite():
+            for comp in new_glyph.components:
+                comp.glyphName = ensure_copied(comp.glyphName)  # remap + recurse
+
         order = subset_tt.getGlyphOrder()
         order.append(new_name)
         subset_tt.setGlyphOrder(order)
         subset_tt["glyf"].glyphOrder = order   # glyf caches its own order — must sync explicitly
-        subset_tt["glyf"][new_name] = g
-        subset_tt["hmtx"][new_name] = donor_tt["hmtx"][donor_gname]
+        subset_tt["glyf"][new_name] = new_glyph
+        donor_width, donor_lsb = donor_tt["hmtx"][donor_gname]
+        subset_tt["hmtx"][new_name] = (max(round(donor_width * scale), 0),
+                                        round(donor_lsb * scale))
         subset_tt["maxp"].numGlyphs = len(order)
         existing_names.add(new_name)
         return new_name
 
     for ch in chars:
-        if ord(ch) not in donor_cmap:
+        cp = ord(ch)
+        if cp not in donor_cmap:
             raise ValueError(f"donor font has no glyph for {ch!r} either")
-        gname = donor_cmap[ord(ch)]
+        gname = donor_cmap[cp]
         top_name = ensure_copied(gname)
         gid = subset_tt.getGlyphID(top_name)
         width_units = subset_tt["hmtx"][top_name][0]
         gid_out[ch] = gid
         width_out[ch] = round(width_units * 1000 / su_upm)
+
+        # ensure_copied only adds the outline (glyf) and metrics (hmtx) — the
+        # glyph is still unreachable by codepoint until the subset's OWN
+        # cmap tables know about it. This matters only for the simple-font
+        # (non-CID) path: PyMuPDF's insert_text() resolves Unicode chars via
+        # the font's cmap before drawing, whereas the original CID/Identity-H
+        # use case this module was built for bypasses cmap entirely (the
+        # CIDToGIDMap maps code->GID directly) — such subsets often carry NO
+        # cmap table at all (PyMuPDF strips it when it builds a Type0/CID
+        # font), so this gap went unnoticed until glyph-injection was reused
+        # for simple fonts. Skip entirely when there's no cmap to update.
+        if "cmap" not in subset_tt:
+            continue
+        for table in subset_tt["cmap"].tables:
+            if table.format == 0:
+                # format 0 (Mac Roman) stores a raw byte-per-codepoint GID
+                # table — it physically cannot reference a glyph whose id
+                # exceeds 255, which the newly-appended glyph's id almost
+                # always does once the subset already has a couple hundred
+                # glyphs. Skip it there; the Unicode-BMP subtable below is
+                # what PyMuPDF/HarfBuzz actually consult for text shaping.
+                if cp < 256 and gid < 256:
+                    table.cmap[cp] = top_name
+            else:
+                table.cmap[cp] = top_name
 
     buf = io.BytesIO()
     subset_tt.save(buf)
