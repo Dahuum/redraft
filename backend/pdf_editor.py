@@ -161,6 +161,7 @@ _FONT_SUBSTITUTES: dict = {
     "Telegraf":       ("Inter",         "Modern clean sans-serif"),
     "TTNormsPro":     ("Inter",         "Similar proportions and weight range"),
     "CanvaSans":      ("Nunito",        "Round geometric sans-serif"),
+    "TwCenMT":        ("Poppins",       "Closest open-source match to TW Cen MT's rounded-geometric proportions"),
     # Serif / display
     "BlostaScript":   ("DancingScript", "Script display font"),
     "BDScript":       ("DancingScript", "Brush/script font"),
@@ -1113,37 +1114,65 @@ class PDFEditor:
                 is_base14 = _base14_builtin(span["font"]) is not None
 
                 # Script coverage: if the current font can't draw some characters
-                # of the replacement text, switch the run to a broad full font
-                # that can — so ANY script (Arabic, CJK, emoji, …) renders as real
-                # glyphs instead of boxes. Only triggers on genuinely missing
-                # glyphs; a fully-covered edit keeps its exact original font.
-                # Use the comprehensive cmap of the resolved font (the engine's
-                # _parse_cmap_chars misses some subtables and would falsely flag
-                # ordinary Latin as uncovered → needless fallback).
+                # of the replacement text, first TRY injecting just those glyphs
+                # into the SAME embedded font (weight, style, every other
+                # character stay pixel-identical to the original — only the
+                # handful of genuinely new glyphs come from a donor). Only if
+                # that's not possible does the run switch to a broad full font
+                # of a DIFFERENT family — a real visual change, last resort,
+                # not the first move. Use the comprehensive cmap of the
+                # resolved font (the engine's _parse_cmap_chars misses some
+                # subtables and would falsely flag ordinary Latin as
+                # uncovered → needless fallback).
                 prim_avail = _full_cmap_chars(raw) if raw else set()
                 latin1_only = is_base14 or (alias is None and raw is None)
                 uncovered = _uncovered_chars(new_text, prim_avail, latin1_only)
                 if uncovered:
-                    _, _wght, _styl = _parse_font_name(span["font"])
-                    fb = _fallback_font_for_text(new_text, _wght, _styl)
-                    if fb:
-                        fb_fam, fb_raw, fb_avail = fb
-                        cur_cov = sum(
-                            1 for c in new_text if not c.isspace() and (
-                                (prim_avail and ord(c) in prim_avail)
-                                or (latin1_only and ord(c) <= 0x00FF)))
-                        new_cov = sum(1 for c in new_text
-                                      if not c.isspace() and ord(c) in fb_avail)
-                        if new_cov > cur_cov:
-                            alias = "fb" + re.sub(r"[^A-Za-z0-9]", "", fb_fam) \
-                                    + f"{_wght}{_styl[:1]}"
-                            raw = fb_raw
-                            is_base14 = False
-                            _FONT_SOURCE[span["font"]] = (
-                                f"script-fallback:{fb_fam} "
-                                f"(original '{span['font']}' lacks some glyphs)")
-                            _dbg(f"SCRIPT FALLBACK {span['font']!r} → {fb_fam!r} "
-                                 f"for {new_text[:24]!r}")
+                    missing_set = sorted(set(uncovered))
+                    extended_raw = None
+                    if raw:
+                        try:
+                            import font_extend as _fext
+                            donor = _fext.resolve_donor(span["font"])
+                            if donor:
+                                ext = _fext.extend_font(raw, donor, missing_set)
+                                extended_raw = ext["font_bytes"]
+                        except Exception as exc:  # noqa: BLE001 — refuse, don't guess
+                            _dbg(f"GLYPH EXTEND failed for {span['font']!r}: {exc}")
+                            extended_raw = None
+
+                    if extended_raw:
+                        alias = "ext" + re.sub(r"[^A-Za-z0-9]", "", span["font"]) \
+                                + "".join(f"{ord(c):x}" for c in missing_set)
+                        raw = extended_raw
+                        is_base14 = False
+                        _FONT_SOURCE[span["font"]] = (
+                            f"glyph-extend (injected {missing_set} into the "
+                            f"original embedded font from a donor)")
+                        _dbg(f"GLYPH EXTEND {span['font']!r}: injected {missing_set} "
+                             f"for {new_text[:24]!r}")
+                    else:
+                        _, _wght, _styl = _parse_font_name(span["font"])
+                        fb = _fallback_font_for_text(new_text, _wght, _styl)
+                        if fb:
+                            fb_fam, fb_raw, fb_avail = fb
+                            cur_cov = sum(
+                                1 for c in new_text if not c.isspace() and (
+                                    (prim_avail and ord(c) in prim_avail)
+                                    or (latin1_only and ord(c) <= 0x00FF)))
+                            new_cov = sum(1 for c in new_text
+                                          if not c.isspace() and ord(c) in fb_avail)
+                            if new_cov > cur_cov:
+                                alias = "fb" + re.sub(r"[^A-Za-z0-9]", "", fb_fam) \
+                                        + f"{_wght}{_styl[:1]}"
+                                raw = fb_raw
+                                is_base14 = False
+                                _FONT_SOURCE[span["font"]] = (
+                                    f"script-fallback:{fb_fam} "
+                                    f"(original '{span['font']}' lacks some glyphs, "
+                                    f"glyph-extend also failed)")
+                                _dbg(f"SCRIPT FALLBACK {span['font']!r} → {fb_fam!r} "
+                                     f"for {new_text[:24]!r}")
 
                 # base-14 fonts have alias=builtin code, raw=None → skip insert_font.
                 if alias and raw and alias not in registered:
