@@ -608,9 +608,21 @@ def _full_cmap_chars(raw: bytes) -> set:
 
 
 def _get_fallback_font(family: str):
-    """Resolve a fallback family from SYSTEM fonts only (fast, no network — the
-    edit path must never block). Memoized, so each family is probed at most once.
-    The exact weight/width doesn't matter for a coverage fallback; glyphs do."""
+    """Resolve a fallback family, system fonts first, Google Fonts second.
+    Memoized, so each family is probed at most once. The exact weight/width
+    doesn't matter for a coverage fallback; glyphs do.
+
+    System-only used to be the whole story here ("fast, no network — the
+    edit path must never block") — true on a dev machine with Noto/DejaVu
+    preinstalled, false on the actual production container (`python:3.12-
+    slim`, zero fonts). Without a second source, a missing system font
+    silently means NO fallback at all: the caller gets nothing back, keeps
+    the original (glyph-incomplete) font, and paints empty boxes for the
+    missing characters — the same failure this fallback exists to prevent.
+    Google Fonts genuinely hosts every family in _FALLBACK_FAMILIES, and
+    warm_fonts.py pre-downloads "Noto Sans" at Docker build time, so this
+    still doesn't cost a live request any network time in production —
+    it's a disk-cache hit by the time real traffic arrives."""
     if family in _FALLBACK_MEMO:
         return _FALLBACK_MEMO[family]
     raw = None
@@ -618,6 +630,11 @@ def _get_fallback_font(family: str):
         raw = _find_system_font(family, 400, "normal")
     except Exception:
         raw = None
+    if not raw:
+        try:
+            raw = _fetch_google_font(family, 400, "normal")
+        except Exception:
+            raw = None
     val = (raw, _full_cmap_chars(raw)) if raw else None
     _FALLBACK_MEMO[family] = val
     return val
