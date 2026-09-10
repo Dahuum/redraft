@@ -267,6 +267,21 @@ def resolve_donor(fontname: str) -> bytes | None:
     if cache_key in _donor_cache:
         return _donor_cache[cache_key]
 
+    # An installed copy of the REAL family beats anything downloadable: it is
+    # the actual typeface, not a lookalike. Measured, this was the whole
+    # reason a Chrome-printed document could not gain 'q', 'z' or 'k' — its
+    # font is Liberation Sans, which sits in /usr/share/fonts on the machine
+    # doing the editing, while this resolver only ever looked at the Google
+    # Fonts repository and reported "no donor".
+    try:
+        from pdf_editor import _find_system_font
+        sys_raw = _find_system_font(family, weight, style)
+        if sys_raw:
+            _donor_cache[cache_key] = sys_raw
+            return sys_raw
+    except Exception:  # noqa: BLE001 — no system font search is not fatal
+        pass
+
     tried = [family]
     if key in _KNOWN_RENAMES:
         tried.append(_KNOWN_RENAMES[key])

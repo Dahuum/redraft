@@ -1071,6 +1071,35 @@ _EXTEND_FAIL_MSG = {
 }
 
 
+def _finish_cid_extend(doc, refs, result, missing_chars):
+    """Write an extended CID font back: /W widths, the font program,
+    and /ToUnicode. Shared by both donor sources."""
+    kind, val = doc.xref_get_key(refs["cid_xref"], "W")
+    additions = "".join(f" {result['gid'][ch]}[{result['width_1000'][ch]}]" for ch in missing_chars)
+    if kind == "array" and val and val.endswith("]"):
+        # /W stored inline on the CIDFontType2 dict itself.
+        doc.xref_set_key(refs["cid_xref"], "W", val[:-1] + additions + "]")
+    elif kind == "xref" and val:
+        # /W stored as an indirect reference to a separate array object (also
+        # valid PDF — PyMuPDF's own embedder produces this form) — rewrite
+        # THAT object's content directly, leaving the CIDFontType2 dict's /W
+        # key pointing at the same xref.
+        m = re.match(r"(\d+)\s+0\s+R", val)
+        if not m:
+            return None, "bad_width_array"
+        w_xref = int(m.group(1))
+        arr = doc.xref_object(w_xref, compressed=True)
+        if not arr or not arr.strip().endswith("]"):
+            return None, "bad_width_array"
+        doc.update_object(w_xref, arr.strip()[:-1] + additions + "]")
+    else:
+        return None, "bad_width_array"  # unexpected /W shape — refuse rather than risk it
+    doc.update_stream(refs["ff_xref"], result["font_bytes"])
+    _add_tounicode_entries(doc, refs.get("tu_xref"),
+                           {result["gid"][ch]: ord(ch) for ch in missing_chars})
+    return result["gid"], None
+
+
 def _try_extend(doc, font_display_name, missing_chars):
     """Attempt to inject `missing_chars` into font_display_name's embedded
     subset. On success, mutates `doc` (new FontFile2 + extended /W array) and
@@ -1103,10 +1132,29 @@ def _try_extend(doc, font_display_name, missing_chars):
         return None, "not_glyf"
     if not refs:
         return None, "no_stream_refs"
+    subset_bytes = doc.xref_stream(refs["ff_xref"])
+
+    # The family's own other cut, already embedded in this document, before
+    # anything downloadable. Without this the CID path takes whatever
+    # resolve_donor offers — which for a commercial family is a lookalike, so
+    # a Tw Cen MT field would quietly gain Poppins letterforms even though a
+    # real Tw Cen MT cut is sitting a few objects away in the same file. The
+    # simple-font path has looked here since it was written; this one never
+    # did.
+    try:
+        import font_donors
+        import glyph_synth
+        in_doc = font_donors.find_in_document_donor(
+            doc, font_display_name, missing_chars)
+        if in_doc:
+            result = glyph_synth.inject_into_font(subset_bytes, in_doc["glyphs"])
+            return _finish_cid_extend(doc, refs, result, missing_chars)
+    except Exception:  # noqa: BLE001 — fall through to the network donor
+        pass
+
     donor = font_extend.resolve_donor(font_display_name)
     if not donor:
         return None, "no_donor"
-    subset_bytes = doc.xref_stream(refs["ff_xref"])
     try:
         result = font_extend.extend_font(subset_bytes, donor, missing_chars)
     except ValueError as e:
@@ -1123,30 +1171,7 @@ def _try_extend(doc, font_display_name, missing_chars):
     except Exception:  # noqa: BLE001 — any other failure -> honest refusal, not a guess
         return None, "extend_failed"
 
-    kind, val = doc.xref_get_key(refs["cid_xref"], "W")
-    additions = "".join(f" {result['gid'][ch]}[{result['width_1000'][ch]}]" for ch in missing_chars)
-    if kind == "array" and val and val.endswith("]"):
-        # /W stored inline on the CIDFontType2 dict itself.
-        doc.xref_set_key(refs["cid_xref"], "W", val[:-1] + additions + "]")
-    elif kind == "xref" and val:
-        # /W stored as an indirect reference to a separate array object (also
-        # valid PDF — PyMuPDF's own embedder produces this form) — rewrite
-        # THAT object's content directly, leaving the CIDFontType2 dict's /W
-        # key pointing at the same xref.
-        m = re.match(r"(\d+)\s+0\s+R", val)
-        if not m:
-            return None, "bad_width_array"
-        w_xref = int(m.group(1))
-        arr = doc.xref_object(w_xref, compressed=True)
-        if not arr or not arr.strip().endswith("]"):
-            return None, "bad_width_array"
-        doc.update_object(w_xref, arr.strip()[:-1] + additions + "]")
-    else:
-        return None, "bad_width_array"  # unexpected /W shape — refuse rather than risk it
-    doc.update_stream(refs["ff_xref"], result["font_bytes"])
-    _add_tounicode_entries(doc, refs.get("tu_xref"),
-                           {result["gid"][ch]: ord(ch) for ch in missing_chars})
-    return result["gid"], None
+    return _finish_cid_extend(doc, refs, result, missing_chars)
 
 
 _SIMPLE_EXTEND_FAIL_MSG = {
@@ -1254,7 +1279,7 @@ def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
     return True
 
 
-def _try_extend_simple(doc, font_display_name, missing_chars):
+def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
     """Inject `missing_chars` into a SIMPLE font's embedded subset, in place.
 
     This is what keeps an edit from leaving a trace. Without it the caller
@@ -1266,8 +1291,19 @@ def _try_extend_simple(doc, font_display_name, missing_chars):
     object keeps its name and its identity and simply gains the glyphs it was
     missing.
 
+    `code_for` maps each character to the CHARACTER CODE this font draws it
+    with, which is not the same as its Unicode codepoint. A simple font's
+    /Widths is indexed by code, and under WinAnsiEncoding the 0x80-0x9F band
+    holds the characters Windows-1252 puts there — a right single quote is
+    byte 0x92, not U+2019. Deriving the index from ord() therefore looked up
+    8217 in a table declared for codes 32..233, failed, and refused the whole
+    edit. Any replacement containing a smart quote or an en-dash hit this,
+    which is most real prose.
+
     Returns ({char: gid}, None) or (None, reason).
     """
+    if code_for is None:
+        code_for = {}
     refs = _simple_font_refs(doc, font_display_name)
     if not refs:
         return None, "no_font_ref"
@@ -1304,13 +1340,14 @@ def _try_extend_simple(doc, font_display_name, missing_chars):
             return None, "inject_failed"
 
     if not _set_simple_widths(doc, refs,
-                              {ord(ch): result["width_1000"][ch] for ch in missing_chars}):
+                              {code_for.get(ch, ord(ch)): result["width_1000"][ch]
+                               for ch in missing_chars}):
         return None, "bad_widths"
 
     doc.update_stream(refs["ff_xref"], result["font_bytes"])
     # A simple font's /ToUnicode is keyed by character CODE, not by glyph id.
     _add_tounicode_entries(doc, refs.get("tu_xref"),
-                           {ord(ch): ord(ch) for ch in missing_chars},
+                           {code_for.get(ch, ord(ch)): ord(ch) for ch in missing_chars},
                            hex_digits=2)
     return result["gid"], None
 
@@ -1816,7 +1853,14 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
                     # and leaves the document carrying a font resource its
                     # producer never wrote. Extending in place changes nothing
                     # on the page except the characters that were edited.
-                    new_gids, fail_reason = _try_extend_simple(doc, nm, missing)
+                    # Hand over the codes the encoder actually produced, so
+                    # /Widths and /ToUnicode are keyed by character code
+                    # rather than by Unicode codepoint.
+                    code_for = {}
+                    for ch, code in zip(new, new_codes or []):
+                        code_for.setdefault(ch, code)
+                    new_gids, fail_reason = _try_extend_simple(doc, nm, missing,
+                                                               code_for=code_for)
                     if new_gids is None:
                         why = _SIMPLE_EXTEND_FAIL_MSG.get(
                             fail_reason, "Couldn't add the missing glyph(s).")
@@ -1971,7 +2015,7 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                     out.append(_f[2])
         return out or ["TrueType"]
 
-    prep = prep_error = None
+    prep = prep_error = prep_error_other = None
     chosen_bytes = None
     attempts = 0
     for cand_nm in name_order:
@@ -1992,12 +2036,17 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                     break
                 if not res.get("ok"):
                     adoc.close()
-                    # Keep the most informative refusal seen, from ANY
-                    # candidate: a real structural limit reached by one
-                    # attempt explains the field far better than "not found"
-                    # from an attempt that was simply looking in the wrong
-                    # font or encoding.
-                    prep_error = _better_refusal(prep_error, res)
+                    # Keep the most informative refusal, but keep the span's
+                    # OWN font separate from the others. Ranking across all
+                    # candidates equally reported a glyph-coverage problem
+                    # belonging to an unrelated font that merely happens to
+                    # sit on the same page — for a field drawn in a different
+                    # typeface entirely. A refusal is only an explanation of
+                    # the field if it came from the field's own font.
+                    if cand_nm == nm:
+                        prep_error = _better_refusal(prep_error, res)
+                    else:
+                        prep_error_other = _better_refusal(prep_error_other, res)
                     break
                 if which >= res["loc"].get("n_occurrences", 1):
                     adoc.close()
@@ -2016,8 +2065,9 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
 
     if prep is None:
         doc.close()
-        return prep_error or {"ok": False, "reason": "sequence_not_found",
-                              "message": _REASON_MSG["sequence_not_found"]}
+        return prep_error or prep_error_other or {
+            "ok": False, "reason": "sequence_not_found",
+            "message": _REASON_MSG["sequence_not_found"]}
 
     doc.close()
     doc = fitz.open(stream=chosen_bytes, filetype="pdf")
