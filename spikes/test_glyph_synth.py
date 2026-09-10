@@ -378,9 +378,24 @@ check("no accepted edit puts text past the page edge",
       _worst_end <= _pw, f"rightmost text {_worst_end:.1f} vs page {_pw:.1f}")
 _worst = sp.edit(_src_bytes, "Sara Idrissi", _base + " Tazi Bennani Sqalli",
                  page=0, verify=False)
+# A refusal has to state the actual arithmetic, not just decline: how much
+# too wide it is, how much the elastic levers can recover, and what is left.
 check("the longest case reports a reason a person can act on",
-      (not _worst.get("ok")) and "too long" in (_worst.get("message") or ""),
+      (not _worst.get("ok")) and _worst.get("short_by_pt", 0) > 0
+      and _worst.get("needed_pt", 0) > _worst.get("recoverable_pt", -1),
       f"{_worst.get('message')}")
+check("all three elastic levers are spent before refusing",
+      _worst.get("recoverable_pt", 0) > 0, f"recovered={_worst.get('recoverable_pt')}")
+_mid = sp.edit(_src_bytes, "Sara Idrissi",
+               _base + " Tazi B", page=0, verify=False)
+check("a case that only fits WITH compression uses word spacing first",
+      _mid.get("ok") and _mid.get("wordspace", 0) < 0, f"{_mid.get('wordspace')}")
+check("compression stays inside every published bound",
+      _mid.get("ok")
+      and abs(_mid.get("wordspace", 0)) <= sp.MAX_WORDSPACE_SHRINK * 3.74 + 1e-3
+      and abs(_mid.get("tracking", 0)) <= sp.MAX_TRACK_EM * 14.04 + 1e-3
+      and _mid.get("glyph_scale", 100) >= sp.MIN_GLYPH_SCALE * 100 - 1e-3,
+      f"tw={_mid.get('wordspace')} tc={_mid.get('tracking')} tz={_mid.get('glyph_scale')}")
 
 print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")

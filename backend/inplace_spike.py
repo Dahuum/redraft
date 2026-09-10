@@ -1204,12 +1204,27 @@ def _tm_origin_before(doc, page, needle: bytes):
     return None
 
 
-# Typographic compression budget before an edit is refused as not fitting.
-# Tracking (per-character spacing) is the least visible way to reclaim width —
-# it is what a typesetter reaches for first, and at a fiftieth of an em it is
-# invisible in running text. Glyph scaling distorts letterforms and font-size
-# changes are a visible change of identity, so neither is done silently here.
+# How much width may be reclaimed before an edit is refused as not fitting,
+# and in what order. These are the three elastic levers a typesetter uses to
+# justify a line, applied here in order of how invisible each one is, and each
+# bounded by what professional justification settings actually allow:
+#
+#   1. WORD SPACING (Tw). The most elastic thing on a line — inter-word space
+#      is what justification stretches and squeezes first, and InDesign's
+#      default minimum is 80% of normal. Only usable on simple fonts: the PDF
+#      spec applies Tw to single-byte code 32, so it does nothing for a
+#      2-byte CID encoding.
+#   2. TRACKING (Tc). A fiftieth of an em is invisible in running text.
+#   3. GLYPH SCALING (Tz). Condenses the letterforms themselves, so it goes
+#      last; 97% is a common professional bound for justification.
+#
+# Font SIZE is deliberately not on this list. Changing it is a visible change
+# of identity, which is the thing this whole engine exists to avoid, so when
+# the three levers together are not enough the edit is refused with the exact
+# shortfall rather than silently resized.
+MAX_WORDSPACE_SHRINK = 0.20
 MAX_TRACK_EM = 0.02
+MIN_GLYPH_SCALE = 0.97
 
 
 def _text_right_limit(page, exclude_bbox=None) -> float:
@@ -1263,15 +1278,19 @@ def _line_extent(page, base_y_topdown: float, tol: float = 0.6):
     return lo, hi
 
 
-def _apply_tracking(doc, page, base_y_pdf: float, at_x: float, tc: float,
-                    tol: float = 0.6) -> bool:
-    """Set character spacing (Tc) on the one text object at (at_x, base_y).
+def _apply_text_state(doc, page, base_y_pdf: float, at_x: float,
+                      tc: float = 0.0, tw: float = 0.0, tz: float = 100.0,
+                      tol: float = 0.6) -> bool:
+    """Set character spacing, word spacing and horizontal scale on the one
+    text object at (at_x, base_y).
 
-    Tc is a real PDF text-state operator: it adds `tc` to every glyph's
-    advance, so a small negative value tightens the run. It is scoped by
-    resetting it to 0 before the block's ET, so it cannot leak into any text
-    drawn afterwards even in a document that does not wrap its runs in q/Q.
+    Tc, Tw and Tz are ordinary PDF text-state operators, so this changes how
+    the existing run is laid out without touching the glyphs, the font or the
+    size. All three are reset before the block's ET, so none can leak into
+    text drawn afterwards even where runs are not wrapped in q/Q.
     """
+    if abs(tc) < 1e-9 and abs(tw) < 1e-9 and abs(tz - 100.0) < 1e-9:
+        return True
     for st in _content_streams(doc, page):
         data = st["data"]
         for m in _TM_RE.finditer(data):
@@ -1286,11 +1305,60 @@ def _apply_tracking(doc, page, base_y_pdf: float, at_x: float, tc: float,
             et = data.find(b"ET", m.end())
             if et == -1:
                 return False
-            payload = (data[:m.end()] + f" {tc:.4f} Tc".encode("latin-1")
-                       + data[m.end():et] + b" 0 Tc " + data[et:])
+            setup, reset = [], []
+            if abs(tc) > 1e-9:
+                setup.append(f"{tc:.4f} Tc")
+                reset.append("0 Tc")
+            if abs(tw) > 1e-9:
+                setup.append(f"{tw:.4f} Tw")
+                reset.append("0 Tw")
+            if abs(tz - 100.0) > 1e-9:
+                setup.append(f"{tz:.3f} Tz")
+                reset.append("100 Tz")
+            payload = (data[:m.end()] + (" " + " ".join(setup)).encode("latin-1")
+                       + data[m.end():et] + (" " + " ".join(reset) + " ").encode("latin-1")
+                       + data[et:])
             doc.update_stream(st["xref"], payload)
             return True
     return False
+
+
+def _fit_plan(base_w: float, avail: float, n_chars: int, n_spaces: int,
+              space_w: float, size: float, allow_wordspace: bool) -> dict:
+    """How to squeeze `base_w` into `avail`, or why it can't be done.
+
+    Spends the elastic levers in order of invisibility (word spacing, then
+    tracking, then glyph scaling), each within its own bound, and reports what
+    is left over. Returns {"fits", "tc", "tw", "tz", "need", "recovered",
+    "short"} — all in points, so a refusal can state the real shortfall
+    instead of just declining.
+    """
+    need = base_w - avail
+    if need <= 0.0:
+        return {"fits": True, "tc": 0.0, "tw": 0.0, "tz": 100.0,
+                "need": 0.0, "recovered": 0.0, "short": 0.0}
+
+    remaining = need
+    tw = 0.0
+    if allow_wordspace and n_spaces > 0 and space_w > 0:
+        tw = -min(remaining / n_spaces, MAX_WORDSPACE_SHRINK * space_w)
+        remaining -= (-tw) * n_spaces
+
+    tc = 0.0
+    if remaining > 0 and n_chars > 0:
+        tc = -min(remaining / n_chars, MAX_TRACK_EM * size)
+        remaining -= (-tc) * n_chars
+
+    tz = 100.0
+    width_now = base_w + tc * n_chars + tw * n_spaces
+    if remaining > 0 and width_now > 0:
+        ratio = max(MIN_GLYPH_SCALE, (width_now - remaining) / width_now)
+        tz = ratio * 100.0
+        remaining -= width_now * (1.0 - ratio)
+
+    return {"fits": remaining <= 0.05, "tc": tc, "tw": tw, "tz": tz,
+            "need": need, "recovered": need - max(remaining, 0.0),
+            "short": max(remaining, 0.0)}
 
 
 def _parse_widths_array(doc, refs):
@@ -1561,6 +1629,8 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     # overran the comma after it by 66pt.
     reflowed = 0
     tracking = 0.0
+    wordspace = 0.0
+    glyph_scale = 100.0
     new_n = _norm(new)
 
     # New right edge of the field, from the PDF's own advance widths rather
@@ -1608,31 +1678,52 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     # reason to throw away a good edit.
     new_x1 = _field_x1()
     if new_x1 is not None:
-        overflow = (new_x1 + trailing) - right_limit
-        if overflow > 0.05:
-            # Tighten the run's tracking, the least visible way to reclaim
-            # width. Refuse if that isn't enough rather than either running
-            # past the margin or silently changing the font size — the caller
-            # then falls back to the redraw engine, which resizes visibly but
-            # at least keeps the text on the page.
-            n_chars = max(len(new), 1)
-            tc = -overflow / n_chars
-            if abs(tc) <= MAX_TRACK_EM * target["size"]:
-                tdoc = fitz.open(stream=edited, filetype="pdf")
-                try:
-                    if _apply_tracking(tdoc, tdoc[tpage], base_y_pdf, old_x0, tc):
-                        edited = tdoc.tobytes(garbage=4, deflate=True)
-                        tracking = tc
-                        new_x1 = _field_x1(tc) or new_x1
-                finally:
-                    tdoc.close()
-            if (new_x1 + trailing) - right_limit > 0.05:
+        avail = right_limit - old_x0 - trailing
+        base_w = new_x1 - old_x0
+        if base_w - avail > 0.05:
+            # Spend the elastic levers a typesetter would, in order of how
+            # invisible each is, and refuse with the real shortfall if they
+            # are not enough. Font size is not among them: changing it is a
+            # visible change of identity.
+            d = fitz.open(stream=edited, filetype="pdf")
+            try:
+                space_w, allow_ws = 0.0, (not is_cid)
+                if allow_ws:
+                    refs_w = _simple_font_refs(d, nm)
+                    parsed = _parse_widths_array(d, refs_w) if refs_w else None
+                    if parsed and 0 <= (32 - parsed[0]) < len(parsed[1]):
+                        space_w = parsed[1][32 - parsed[0]] * target["size"] / 1000.0
+                    else:
+                        allow_ws = False
+            finally:
+                d.close()
+            n_sp = sum(1 for c in new_codes if c == 32) if not is_cid else 0
+            plan = _fit_plan(base_w, avail, len(new_codes), n_sp, space_w,
+                             target["size"], allow_ws)
+            if not plan["fits"]:
                 return {"ok": False, "reason": "would_overflow",
-                        "message": (f"The replacement is too long for this line: it would "
-                                    f"reach x={new_x1 + trailing:.0f} past the page's text "
-                                    f"margin at x={right_limit:.0f}, and tightening the "
-                                    f"spacing within an invisible range isn't enough to "
-                                    f"recover it.")}
+                        "needed_pt": round(plan["need"], 2),
+                        "recoverable_pt": round(plan["recovered"], 2),
+                        "short_by_pt": round(plan["short"], 2),
+                        "message": (
+                            f"The replacement is {plan['need']:.0f}pt too wide for this "
+                            f"line. Tightening word spacing, tracking and glyph width as "
+                            f"far as is invisible recovers {plan['recovered']:.0f}pt, "
+                            f"leaving it {plan['short']:.0f}pt short — it can't be fitted "
+                            f"here without changing the text or its size.")}
+            tdoc = fitz.open(stream=edited, filetype="pdf")
+            try:
+                if _apply_text_state(tdoc, tdoc[tpage], base_y_pdf, old_x0,
+                                     plan["tc"], plan["tw"], plan["tz"]):
+                    edited = tdoc.tobytes(garbage=4, deflate=True)
+                    tracking = plan["tc"]
+                    wordspace = plan["tw"]
+                    glyph_scale = plan["tz"]
+                    th = plan["tz"] / 100.0
+                    new_x1 = old_x0 + th * (base_w + plan["tc"] * len(new_codes)
+                                            + plan["tw"] * n_sp)
+            finally:
+                tdoc.close()
 
     rdoc = fitz.open(stream=edited, filetype="pdf")
     try:
@@ -1680,6 +1771,7 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     return {"ok": True, "tier": ("extend" if extended_chars else ("remap" if is_cid else "clean")),
             "page": tpage, "case": loc_result["case"], "extended_chars": extended_chars,
             "reflowed": reflowed, "tracking": round(tracking, 4),
+            "wordspace": round(wordspace, 4), "glyph_scale": round(glyph_scale, 3),
             "diff_outside": diff["outside"], "diff_inside": diff["inside"],
             "guarantee": (diff["outside"] == 0) if verify else None,
             "pdf_b64": base64.b64encode(edited).decode()}
