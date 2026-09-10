@@ -76,14 +76,53 @@ import font_metrics as fmet
 #   stem  — apparent weight. A letter 30% lighter than its neighbours reads as
 #           a different font instantly; at 8% it does not.
 #   height— apparent size. x-height/cap mismatch reads as the wrong point size.
-#   advance—spacing, and therefore whether the run still fits its box.
+#   spacing—the whitespace either side of the glyph (its sidebearings), which
+#           is what decides whether letters sit right and, at worst, whether
+#           they collide.
+#
+# Note what is NOT gated: the advance's agreement with the DESIGNER's advance.
+# advance = left sidebearing + ink + right sidebearing, and the ink here is
+# deliberately different — it was thickened to match the destination cut's
+# stem. On this family the designer instead thickened inward, so a faithful
+# stem forces ~27/1000em more ink, which forces ~5.5% more advance before any
+# error at all. Gating on advance agreement would therefore be gating mostly
+# on a decision already made and already measured elsewhere (stem, IoU,
+# height), and it cannot pass for any family that emboldens inward. The
+# sidebearings isolate the part that is genuinely about spacing. advance_err
+# stays in the report so nothing is hidden.
 # IoU stays in the report either way, because it is what makes two candidate
 # donors comparable (see rank_sources).
 MIN_HELDOUT_IOU = 0.45      # gross-shape sanity floor only
 MAX_STEM_ERR = 0.08         # apparent weight
 MAX_HEIGHT_ERR = 0.03       # apparent size
-MAX_ADVANCE_ERR = 0.06      # spacing / run width
+MAX_SIDEBEARING_ERR = 20.0  # per-mille of em; whitespace beside the glyph
 MIN_HELDOUT_GLYPHS = 3      # too few shared glyphs to trust any fit
+
+# Candidates for the stroke-direction falloff exponent (see stroke_gain).
+# k=2 reproduces the naive per-axis blend that under-weighted diagonals;
+# larger values keep diagonals nearer stem weight. Selected per font pair on
+# data held out from the parameter fit, never hand-picked.
+DIAG_K_CANDIDATES = (1.0, 2.0, 3.0, 4.0, 6.0, 8.0)
+
+# How much of the thickening grows the outer boundary vs eats into the
+# counters (see dilate_xy).
+#
+# Deliberately a single value. Thickening inward is what a real bold does —
+# measured, Regular 'o' ink is 431.5/1000em and Bold 'o' is 434.1 while the
+# stem grew by 40 — and lower values did cut the synthesized ink from 27.5 to
+# 16.8/1000em too wide. But they cost more than they bought:
+#   * a stroke bounded by the OUTER contour on both sides has no counter to
+#     eat into, so it just gets starved: at 0.25, '4''s stem below its
+#     crossbar thickened by 8 units instead of 82. Whether a stroke has a
+#     counter on one side is local geometry, not a per-glyph property, so a
+#     single split cannot serve both kinds of stroke in the same letter.
+#   * below 0.5, '4' welded shut across the gap under its crossbar — a gap
+#     that is open exterior white, not an enclosed counter, so the counter
+#     guard cannot see it either.
+# The gain was 0.39pt -> 0.24pt of extra width at 14pt; the cost was visibly
+# broken letters. Keeping the mechanism (some other family may want it) but
+# not the risk.
+OUTER_FRAC_CANDIDATES = (1.0,)
 
 
 # ── geometry ────────────────────────────────────────────────────────────────
@@ -98,70 +137,248 @@ def _signed_area(poly: list) -> float:
     return a / 2.0
 
 
-def dilate_xy(polys: list, dx: float, dy: float) -> list:
-    """Offset every contour outward, by *dx*/2 per side horizontally and
-    *dy*/2 vertically, so a vertical stem of width w becomes w + dx and a
-    horizontal bar of thickness t becomes t + dy. Negative values thin.
+def stroke_gain(ny_abs: float, dx: float, dy: float, diag_k: float) -> float:
+    """How much perpendicular thickness a stroke should gain, given how
+    horizontal it is (|ny| of its outward normal: 0 = vertical stroke,
+    1 = horizontal stroke).
+
+    A vertical stem gains `dx`, a horizontal bar gains `dy`, and the curve
+    between them is controlled by `diag_k`. The exponent matters because the
+    obvious blend is wrong: weighting by ny^2 (what a plain per-axis offset
+    does implicitly) gives a 45-degree stroke only (dx+dy)/2, and in a
+    monolinear design like this one the diagonals of '4', 'A', 'V', 'y' and
+    'Z' carry STEM weight, not the average of stem and bar. That is exactly
+    why the synthesized '4' came out visibly lighter than its neighbours while
+    'h' and 'm' were within 1%. A larger exponent keeps diagonals near stem
+    weight and tapers to the bar increment only for strokes that really are
+    close to horizontal. `diag_k` is not hand-picked — learn_weight_transform
+    selects it on held-out glyphs.
+    """
+    return dy + (dx - dy) * (1.0 - min(1.0, abs(ny_abs)) ** diag_k)
+
+
+def _ink_side(all_polys: list, poly: list, ccw: bool) -> int:
+    """+1 if *poly* encloses ink (grow it to embolden), -1 if it encloses a
+    hole (shrink it to embolden).
+
+    Probes just inside the contour and asks the WHOLE glyph whether that point
+    is ink. Several edges are sampled and the answer is a majority vote, since
+    a single probe can land in a thin waist where the opposite boundary is
+    only a few units away.
+    """
+    bb = fmet.poly_bbox([poly])
+    if not bb:
+        return 1
+    eps = max(1.0, 0.02 * min(bb[2] - bb[0], bb[3] - bb[1]))
+    n = len(poly)
+    # Sample the longest edges: their midpoints are furthest from corners and
+    # from the opposite side of a thin stroke.
+    edges = sorted(range(n),
+                   key=lambda i: -math.hypot(poly[(i + 1) % n][0] - poly[i][0],
+                                             poly[(i + 1) % n][1] - poly[i][1]))[:7]
+    votes = 0
+    for i in edges:
+        x0, y0 = poly[i]
+        x1, y1 = poly[(i + 1) % n]
+        ex, ey = x1 - x0, y1 - y0
+        length = math.hypot(ex, ey)
+        if length < 1e-9:
+            continue
+        ex, ey = ex / length, ey / length
+        nx, ny = (ey, -ex) if ccw else (-ey, ex)   # this contour's own outward
+        px = (x0 + x1) / 2.0 - nx * eps            # step INWARD
+        py = (y0 + y1) / 2.0 - ny * eps
+        votes += 1 if fmet.winding_at(all_polys, px, py) != 0 else -1
+    return 1 if votes >= 0 else -1
+
+
+def counter_open_area(polys: list, hole: list, samples: int = 32) -> float:
+    """Area of *hole* that is genuinely ink-free in *polys*.
+
+    Measures the white space a reader actually sees inside a counter, rather
+    than the area the counter's contour nominally encloses. The two differ
+    once an offset makes the contour self-intersect, which is why this is the
+    quantity worth testing.
+    """
+    hb = fmet.poly_bbox([hole])
+    if not hb:
+        return 0.0
+    dy = (hb[3] - hb[1]) / samples
+    if dy <= 0:
+        return 0.0
+    total = 0.0
+    for i in range(samples):
+        y = hb[1] + (i + 0.5) * dy
+        for x0, x1 in fmet.scanline_runs([hole], y):
+            if fmet.winding_at(polys, (x0 + x1) / 2.0, y) == 0:
+                total += (x1 - x0) * dy
+    return total
+
+
+def topology_ok(before_polys: list, after_polys: list,
+                min_open_frac: float = 0.20) -> bool:
+    """True if thickening preserved the glyph's counters as open white space.
+
+    Offsetting an outline is only safe while no boundary crosses another. In a
+    narrow concave region — the apex of '4''s triangular counter, the tip of
+    'e''s — a large inward offset welds the counter shut and, under the
+    nonzero winding rule, the two strokes either side of it merge into one
+    slab. This is CHECKED rather than trusted because a scalar quality score
+    cannot see it: the hyperparameter search picked an aggressive inward
+    offset that scored well on mean overlap, because the shared glyphs
+    scoring it had no narrow triangular counter, while '4' — absent from that
+    pool and so never scored — came out welded shut.
+
+    The measure is each counter's OPEN (ink-free) area, before vs after. Three
+    earlier attempts were each wrong in an instructive way:
+
+      - Comparing whole-glyph scanline run COUNTS at matched heights. Looked
+        precise, wasn't: thickening legitimately moves the height at which an
+        arch meets its stem, so 'n', 'o' and 'w' all "failed" while scoring up
+        to 0.98 overlap. It measured shape, not structure.
+
+      - Comparing the counter CONTOUR's enclosed area. Misses the failure
+        entirely: once the walls cross, the contour becomes a figure-eight
+        whose lobes still enclose area, so a welded counter looks healthy.
+
+      - Requiring every probe inside the counter to be white. False-positives
+        on almost every counter: an offset contour routinely overshoots a
+        sharp apex and leaves a small reversed lobe, and inside that lobe the
+        winding is -2. Nonzero-nonzero means painted, so the lobe punches no
+        hole and the glyph renders correctly — a benign artifact this test
+        called fatal.
+
+    Open area is immune to all three: a benign apex lobe contributes nothing
+    because it is not white, and a welded counter loses its white body.
+    """
+    if not before_polys or not after_polys:
+        return False
+    if len(after_polys) != len(before_polys):
+        return False
+
+    b_ccw = [_signed_area(pl) > 0 for pl in before_polys]
+    a_ccw = [_signed_area(pl) > 0 for pl in after_polys]
+    b_side = [_ink_side(before_polys, pl, c) for pl, c in zip(before_polys, b_ccw)]
+
+    for b, a, side in zip(before_polys, after_polys, b_side):
+        if side >= 0:
+            continue
+        open_before = counter_open_area(before_polys, b)
+        if open_before <= 0:
+            continue
+        if counter_open_area(after_polys, a) < min_open_frac * open_before:
+            return False
+    return True
+
+
+def dilate_xy(polys: list, dx: float, dy: float, diag_k: float = 4.0,
+              outer_frac: float = 1.0) -> list:
+    """Offset every contour outward so a vertical stem of width w becomes
+    w + dx, a horizontal bar of thickness t becomes t + dy, and strokes in
+    between follow `stroke_gain`. Negative values thin.
 
     x and y are separate because a real bold is not a uniformly fattened
-    regular: in a low-contrast Latin design the vertical stems gain
-    substantially more than the horizontal bars, and offsetting both by the
-    stem's increment turns the crossbars of 'e', 'E' and 't' into slabs and
-    chokes the counters shut. Both increments are measured off the two cuts
-    (see learn_weight_transform), not assumed.
+    regular: in a low-contrast Latin design the stems gain substantially more
+    than the bars, and offsetting both by the stem's increment turns the
+    crossbars of 'e', 'E' and 't' into slabs and chokes the counters shut.
+    Both increments are measured off the two cuts (see
+    learn_weight_transform), not assumed.
 
-    Each vertex moves along the bisector of its two adjacent edge normals,
-    scaled by 1/cos(half-turn) so that flat runs land exactly the requested
-    distance out (a plain miter). The scale is clamped, because at a near-cusp
-    the exact miter runs away to infinity and would fire a spike across the
-    glyph — clamping trades a hair of sharpness at the tip for never doing
-    that.
+    Each EDGE is offset along its own outward normal by its own gain/2, and
+    each vertex is placed at the MITER — the intersection of its two offset
+    edge lines. Intersecting rather than averaging the two normals is what
+    makes the anisotropy correct at a corner: on a rectangle offset in x
+    only, the miter keeps the corners exactly on the original horizontal
+    edges, whereas a bisector offset of uniform length would drag them
+    upward and make the shape taller as well as wider. The miter length is
+    clamped, because at a near-cusp the exact intersection runs away to
+    infinity and would fire a spike across the glyph; past the clamp the
+    vertex falls back to a plain perpendicular offset.
+
+    `outer_frac` splits the thickening between growing outward and eating
+    inward. It exists because measuring this family showed a real bold does
+    NOT simply get wider: Regular 'o' ink is 431.5/1000em and Bold 'o' is
+    434.1 — 2.6 wider — while the stem grew by 40. The designer thickened
+    almost entirely INWARD, shrinking the counter. Growing both boundaries by
+    the full amount (outer_frac=1) made every synthesized letter ~27/1000em
+    too wide, which then crushed its right sidebearing to zero or negative
+    and would have let letters collide.
+
+    A stroke bounded by an outer contour on one side and a counter on the
+    other still gains the full amount, since the two shares sum to it:
+    outer_frac/2 + (2 - outer_frac)/2 = 1. A glyph with NO counter is forced
+    back to outer_frac=1, because a bare stem like 'l' or 'I' has nothing to
+    eat into and can only thicken outward — which is exactly what the
+    designer did there (Regular 'l' ink 174u -> Bold 256u, the full step).
     """
     if not dx and not dy:
         return [list(p) for p in polys]
+    # Whether this glyph has a counter at all decides if the inward share is
+    # even available (see outer_frac in the docstring).
+    has_hole = any(_ink_side(polys, pl, _signed_area(pl) > 0) < 0
+                   for pl in polys if len(pl) >= 3)
     out = []
     for poly in polys:
         n = len(poly)
         if n < 3:
             continue
         ccw = _signed_area(poly) > 0
-        normals = []
+        # +1 to grow this contour, -1 to shrink it. A contour that ENCLOSES
+        # ink (an outer boundary) must grow to thicken the stroke; a contour
+        # that encloses a hole (the counter of 'o', 'e', '4') must shrink,
+        # because the ink is on the outside of it. Deciding this from the
+        # contour's own winding direction is not enough — that grows the hole
+        # as well and cancels the outer contour's gain, which is what left '4'
+        # with no thickening at all while single-contour letters like 'h' and
+        # 'n' came out within 1%.
+        sign = _ink_side(polys, poly, ccw)
+        share = (outer_frac if sign > 0 else (2.0 - outer_frac)) if has_hole else 1.0
+        # Per-edge unit direction, outward normal, and offset vector.
+        dirs, offs = [], []
         for i in range(n):
             x0, y0 = poly[i]
             x1, y1 = poly[(i + 1) % n]
             # Deliberately NOT named dx/dy: those are this function's offset
             # parameters, and shadowing them here silently turned the whole
-            # offset into a no-op once (the offsets became the last edge's
-            # unit vector, ~0.5 units instead of the requested ~80).
+            # offset into a no-op once (they became the last edge's unit
+            # vector, ~0.5 units instead of the requested ~80).
             ex, ey = x1 - x0, y1 - y0
             length = math.hypot(ex, ey)
             if length < 1e-9:
-                normals.append(None)
+                dirs.append(None)
+                offs.append((0.0, 0.0))
                 continue
             ex, ey = ex / length, ey / length
             # Interior lies left of travel on a counter-clockwise contour, so
-            # outward is the right-hand normal there and the left-hand one on a
-            # clockwise contour.
-            normals.append((ey, -ex) if ccw else (-ey, ex))
+            # outward is the right-hand normal there and the left-hand one on
+            # a clockwise contour.
+            nx, ny = (ey, -ex) if ccw else (-ey, ex)
+            h = sign * share * stroke_gain(abs(ny), dx, dy, diag_k) / 2.0
+            dirs.append((ex, ey))
+            offs.append((nx * h, ny * h))
+
+        limit = 2.5 * max(abs(dx), abs(dy), 1.0)
         moved = []
         for i in range(n):
-            prev_n = normals[i - 1]
-            next_n = normals[i]
-            cands = [v for v in (prev_n, next_n) if v is not None]
-            if not cands:
-                moved.append(poly[i])
+            d_prev, d_next = dirs[i - 1], dirs[i]
+            a, b = offs[i - 1], offs[i]
+            px, py = poly[i]
+            if d_prev is None or d_next is None:
+                src = b if d_prev is None else a
+                moved.append((px + src[0], py + src[1]))
                 continue
-            bx = sum(v[0] for v in cands) / len(cands)
-            by = sum(v[1] for v in cands) / len(cands)
-            blen = math.hypot(bx, by)
-            if blen < 1e-9:
-                moved.append(poly[i])
+            cx, cy = b[0] - a[0], b[1] - a[1]
+            det = -d_prev[0] * d_next[1] + d_next[0] * d_prev[1]
+            if abs(det) < 1e-9:
+                moved.append((px + a[0], py + a[1]))   # collinear edges
                 continue
-            bx, by = bx / blen, by / blen
-            # cos(half turn) == how much the bisector shortened; undo it.
-            cos_half = max(blen, 0.45)
-            moved.append((poly[i][0] + bx * (dx / 2.0) / cos_half,
-                          poly[i][1] + by * (dy / 2.0) / cos_half))
+            s = (-cx * d_next[1] + d_next[0] * cy) / det
+            vx = a[0] + s * d_prev[0]
+            vy = a[1] + s * d_prev[1]
+            if math.hypot(vx, vy) > limit:
+                vx = (a[0] + b[0]) / 2.0               # cusp: bevel instead
+                vy = (a[1] + b[1]) / 2.0
+            moved.append((px + vx, py + vy))
         out.append(moved)
     return out
 
@@ -330,7 +547,9 @@ class WeightTransform:
     """
 
     def __init__(self, upm, unit_scale, va, vb, stem_dx, bar_dy,
-                 lsb_a, lsb_b, adv_anchors, rsb_med, report, adv_model="local_ratio"):
+                 lsb_a, lsb_b, adv_anchors, rsb_med, report,
+                 adv_model="local_ratio", diag_k=4.0, rsb_a=1.0, rsb_b=0.0,
+                 outer_frac=1.0, exact_map=None):
         self.upm = upm
         self.unit_scale = unit_scale
         self.va, self.vb = va, vb           # vertical affine, dst units
@@ -340,6 +559,10 @@ class WeightTransform:
         self.adv_anchors = adv_anchors      # [(src_adv, dst_adv)] in dst units
         self.rsb_med = rsb_med              # dst font's median right sidebearing
         self.adv_model = adv_model          # "local_ratio" | "sidebearing"
+        self.diag_k = diag_k                # stroke-direction falloff exponent
+        self.rsb_a, self.rsb_b = rsb_a, rsb_b   # right-sidebearing affine
+        self.outer_frac = outer_frac         # outward vs inward thickening split
+        self.exact_map = exact_map or {}     # (class, src advance) -> dst advance
         self.report = report
 
     @property
@@ -381,17 +604,108 @@ class WeightTransform:
             return 0.0
         return bb[2] + self.rsb_med
 
-    def predict_advance(self, src_advance: float, synth_polys: list = None) -> float:
+    def _advance_sb_transfer(self, src_advance: float, src_bbox, synth_polys: list) -> float:
+        """Destination advance from where the synthesized ink ends, plus this
+        LETTER'S OWN right sidebearing carried across the cuts.
+
+        The other two models both predict from a single global quantity, and
+        neither can work here: measured on this family, Regular 'u' and 'E'
+        have the SAME advance (863) but map to different Bold advances (1087
+        and 981), so destination advance is provably not a function of source
+        advance alone. A letter's own sidebearing is the per-glyph signal that
+        separates those two cases.
+        """
+        bb = fmet.poly_bbox(synth_polys)
+        if not bb or not src_bbox:
+            return self._advance_local_ratio(src_advance)
+        rsb_src = (src_advance - src_bbox[2]) * self.unit_scale
+        return bb[2] + (self.rsb_a * rsb_src + self.rsb_b)
+
+    @staticmethod
+    def _char_class(ch: str) -> str:
+        if ch.islower():
+            return "lower"
+        if ch.isupper():
+            return "upper"
+        if ch.isdigit():
+            return "digit"
+        return "other"
+
+    def advance_exact(self, ch: str, src_advance: float):
+        """The destination advance of a glyph that has the SAME advance as
+        this one in the source cut and the same character class — or None.
+
+        This is the most precise rule available and it needs no typographic
+        assumption: fonts routinely give whole groups of glyphs identical
+        advances, so if the source cut gives 'h' and 'u' the same advance, the
+        destination cut almost certainly does too, and the destination's 'u' is
+        already in the file. Measured here, that returns Bold's own 'n'/'u'
+        advance for 'h' — which is the structurally correct answer, since 'h'
+        is an 'n' with a taller left stem.
+
+        Character class is part of the key because advance alone is ambiguous:
+        Regular 'u' and Regular 'E' BOTH have advance 863 but map to 1087 and
+        981 respectively, so pooling them predicts neither. Restricting the
+        transfer to letters of the same case resolves it.
+        """
+        if not self.exact_map:
+            return None
+        key = (self._char_class(ch), round(src_advance * self.unit_scale))
+        return self.exact_map.get(key)
+
+    def predict_advance(self, src_advance: float, synth_polys: list = None,
+                        src_bbox=None, ch: str = None) -> float:
+        """The advance to write for this glyph.
+
+        Prefers the destination cut's own advance for a glyph of the same
+        class and source advance (`advance_exact`) — that is the designer's
+        real number and keeps run width honest — but only while it actually
+        leaves room for the ink produced. This matters because the synthesized
+        ink is legitimately WIDER than the designer's: matching the
+        destination's stem weight in a family that emboldens inward costs
+        ~27/1000em of extra ink, so the designer's advance can be narrower
+        than the letter it now has to contain. Measured on this family,
+        taking the exact advance unconditionally left 6 of 15 held-out
+        letters with a zero or negative right sidebearing — letters that
+        would touch or overlap their neighbour. Where that happens the
+        advance is derived from the ink instead, trading a marginally wider
+        run (which run-level fitting can absorb) for spacing that is never
+        broken (which nothing downstream can repair).
+        """
+        floor = max(0.25 * self.rsb_med, 0.0)
+        if ch:
+            exact = self.advance_exact(ch, src_advance)
+            if exact is not None:
+                bb = fmet.poly_bbox(synth_polys) if synth_polys else None
+                if bb is None or (exact - bb[2]) >= floor:
+                    return exact
+        if self.adv_model == "sb_transfer" and synth_polys and src_bbox:
+            return self._advance_sb_transfer(src_advance, src_bbox, synth_polys)
         if self.adv_model == "sidebearing" and synth_polys:
             return self._advance_sidebearing(synth_polys)
         return self._advance_local_ratio(src_advance)
 
-    def apply(self, polys: list) -> list:
+    def _stages(self, polys: list):
+        """(pre, dilated, final) — the three stages of `apply`.
+
+        Exposed because the structural guard has to compare the glyph before
+        and after DILATION SPECIFICALLY, in one shared coordinate frame.
+        Comparing the raw source against the finished glyph does not work: the
+        unit scale, the vertical affine, the vertical re-pin and the
+        sidebearing translate all move coordinates, so probe points mapped
+        proportionally between those two frames drift by more than a counter
+        is wide and land on ink — which made the guard fail every single glyph
+        that has a counter, including ones that were provably correct.
+        Comparing `pre` with `dilated` needs no mapping at all: dilation moves
+        boundaries but leaves the frame alone.
+        """
         u = self.unit_scale
-        p = [[(x * u, (y * u) * self.va + self.vb) for (x, y) in poly] for poly in polys]
-        bb_before = fmet.poly_bbox(p)
-        p = dilate_xy(p, self.stem_dx, self.bar_dy)
-        bb_after = fmet.poly_bbox(p)
+        pre = [[(x * u, (y * u) * self.va + self.vb) for (x, y) in poly]
+               for poly in polys]
+        dil = dilate_xy(pre, self.stem_dx, self.bar_dy, self.diag_k, self.outer_frac)
+        p = dil
+        bb_before = fmet.poly_bbox(pre)
+        bb_after = fmet.poly_bbox(dil)
         if bb_before and bb_after:
             h_before = bb_before[3] - bb_before[1]
             h_after = bb_after[3] - bb_after[1]
@@ -401,11 +715,20 @@ class WeightTransform:
                      for poly in p]
             target_x0 = bb_before[0] * self.lsb_a + self.lsb_b
             p = translate_polys(p, target_x0 - bb_after[0], 0.0)
-        return p
+        return pre, dil, p
+
+    def apply(self, polys: list) -> list:
+        return self._stages(polys)[2]
+
+    def apply_checked(self, polys: list):
+        """(final_polys, structure_survived). See topology_ok."""
+        pre, dil, out = self._stages(polys)
+        return out, topology_ok(pre, dil)
 
     def __repr__(self):
         r = self.report
         return (f"<WeightTransform stem{self.stem_dx:+.0f}u bar{self.bar_dy:+.0f}u "
+                f"k={self.diag_k:g} of={self.outer_frac:g} "
                 f"vy({self.va:.4f},{self.vb:+.0f}) "
                 f"iou={r.get('iou_mean') or 0:.3f} "
                 f"stem_err={r.get('stem_err') or 1:.1%} "
@@ -436,7 +759,7 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
     fit_chars = pool[0::2]
     held_chars = pool[1::2]
 
-    def build(chars):
+    def build(chars, diag_k, outer_frac):
         """Fit every parameter of the transform from *chars* alone.
 
         Called twice, deliberately. First on half the shared glyphs, so the
@@ -450,7 +773,7 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
         # boxes. Using every glyph's top AND bottom (rather than one x-height
         # reading) means overshoots, ascenders, descenders and cap height all
         # constrain the same fit, and one odd glyph cannot dominate it.
-        v_pairs, lsb_pairs, anchors, rsbs = [], [], [], []
+        v_pairs, lsb_pairs, anchors, rsbs, rsb_pairs = [], [], [], [], []
         for ch in chars:
             bs = fmet.poly_bbox(_polys(src_tt, ch))
             bd = fmet.poly_bbox(_polys(dst_tt, ch))
@@ -463,6 +786,7 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
             if a_s and a_d:
                 anchors.append((a_s * unit_scale, a_d))
                 rsbs.append(a_d - bd[2])
+                rsb_pairs.append(((a_s - bs[2]) * unit_scale, a_d - bd[2]))
         va, vb = _fit_line(v_pairs)
         lsb_a, lsb_b = _fit_line(lsb_pairs)
 
@@ -480,19 +804,78 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
         # letter cannot set the convention for all of them.
         rsbs.sort()
         rsb_med = rsbs[len(rsbs) // 2] if rsbs else 0.0
+        rsb_a, rsb_b = _fit_line(rsb_pairs)
+
+        groups: dict = {}
+        for ch in chars:
+            a_s, a_d = _advance(src_tt, ch), _advance(dst_tt, ch)
+            if a_s and a_d:
+                groups.setdefault(
+                    (WeightTransform._char_class(ch), round(a_s * unit_scale)), []
+                ).append(a_d)
+        exact_map = {}
+        for key, vals in groups.items():
+            vals.sort()
+            exact_map[key] = vals[len(vals) // 2]
 
         return WeightTransform(upm, unit_scale, va, vb, stem_dx, bar_dy,
-                               lsb_a, lsb_b, anchors, rsb_med, {})
+                               lsb_a, lsb_b, anchors, rsb_med, {}, diag_k=diag_k,
+                               rsb_a=rsb_a, rsb_b=rsb_b, outer_frac=outer_frac,
+                               exact_map=exact_map)
 
-    xf = build(fit_chars)
+    def mean_iou(cand, chars):
+        """Mean overlap against the real glyphs — or None if this candidate
+        breaks any glyph's structure, which disqualifies it outright rather
+        than letting a good average hide a ruined letter. The structure check
+        runs over a WIDER set than the scored one (every shared glyph plus
+        whatever characters the caller still needs), because the glyph that
+        breaks is often not one of the glyphs available to score."""
+        vals = []
+        for ch in chars:
+            sp, dp = _polys(src_tt, ch), _polys(dst_tt, ch)
+            if sp and dp:
+                vals.append(iou(raster(cand.apply(sp), upm, raster_size),
+                                raster(dp, upm, raster_size)))
+        for ch in guard_chars:
+            sp = _polys(src_tt, ch)
+            if sp and not cand.apply_checked(sp)[1]:
+                return None
+        return (sum(vals) / len(vals)) if vals else None
+
+    # Choose the stroke-direction exponent by NESTED selection: split the fit
+    # half again, fit on one part and score candidates on the other. The
+    # held-out half below is never consulted here, so the accuracy this
+    # function reports is not the same data that picked the exponent — pick a
+    # hyperparameter on your test set and the report stops meaning anything.
+    # Structure is checked on every character the source cut can draw, not
+    # just the ones that can be scored — the counter that collapses is
+    # typically in a glyph the destination cut lacks, which is exactly the
+    # glyph being synthesized.
+    src_cov = fmet.measure(src_tt)["coverage"]
+    guard_chars = [c for c in ("abcdefghijklmnopqrstuvwxyz"
+                               "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+                   if ord(c) in src_cov]
+
+    inner_fit, inner_sel = fit_chars[0::2], fit_chars[1::2]
+    k_scores = {}
+    for k in DIAG_K_CANDIDATES:
+        for of in OUTER_FRAC_CANDIDATES:
+            sc = mean_iou(build(inner_fit, k, of), inner_sel)
+            if sc is not None:
+                k_scores[(k, of)] = sc
+    diag_k, outer_frac = (max(k_scores, key=k_scores.get) if k_scores else (4.0, 1.0))
+
+    xf = build(fit_chars, diag_k, outer_frac)
 
     # ── held-out validation ────────────────────────────────────────────────
     # Every number below comes from glyphs that took no part in any fit above,
     # compared against the destination font's REAL glyph for the same
     # character. Both advance models are scored here and the better one is
     # adopted, so the choice is measured on this font rather than assumed.
-    ious, stem_errs, height_errs = [], [], []
-    adv_errs = {"local_ratio": [], "sidebearing": []}
+    ious, stem_errs, height_errs, lsb_errs = [], [], [], []
+    rsb_errs = {"local_ratio": [], "sidebearing": [], "sb_transfer": []}
+    rsb_negative = {"local_ratio": 0, "sidebearing": 0, "sb_transfer": 0}
+    adv_errs = {"local_ratio": [], "sidebearing": [], "sb_transfer": []}
     for ch in held_chars:
         src_polys = _polys(src_tt, ch)
         dst_polys = _polys(dst_tt, ch)
@@ -520,20 +903,53 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
             if h_d:
                 height_errs.append(abs((bb_s[3] - bb_s[1]) - h_d) / h_d)
         a_src, a_dst = _advance(src_tt, ch), _advance(dst_tt, ch)
-        if a_src and a_dst:
-            adv_errs["local_ratio"].append(
-                abs(xf._advance_local_ratio(a_src) - a_dst) / a_dst)
-            adv_errs["sidebearing"].append(
-                abs(xf._advance_sidebearing(synth) - a_dst) / a_dst)
+        if a_src and a_dst and bb_s and bb_d:
+            per_mille = 1000.0 / upm
+            src_bb = fmet.poly_bbox(src_polys)
+            lsb_errs.append(abs(bb_s[0] - bb_d[0]) * per_mille)
+            rsb_dst = a_dst - bb_d[2]
+            # Score the path the caller actually takes: the exact-advance
+            # transfer applies first when it hits, so leaving it out here would
+            # measure a model the engine never uses on its own.
+            # Score the path the caller actually takes: the exact-advance
+            # transfer applies first when it hits AND leaves room, so leaving
+            # it out here would measure a model the engine never uses alone.
+            floor = max(0.25 * xf.rsb_med, 0.0)
+            exact = xf.advance_exact(ch, a_src)
+            if exact is not None and (exact - bb_s[2]) < floor:
+                exact = None
+            preds = {
+                "local_ratio": exact if exact is not None else xf._advance_local_ratio(a_src),
+                "sidebearing": exact if exact is not None else xf._advance_sidebearing(synth),
+                "sb_transfer": exact if exact is not None else xf._advance_sb_transfer(a_src, src_bb, synth),
+            }
+            for name, pred in preds.items():
+                adv_errs[name].append(abs(pred - a_dst) / a_dst)
+                rsb_syn = pred - bb_s[2]
+                rsb_errs[name].append(abs(rsb_syn - rsb_dst) * per_mille)
+                if rsb_syn < 0:
+                    rsb_negative[name] += 1
 
     def mean(xs):
         return (sum(xs) / len(xs)) if xs else None
 
     adv_scores = {k: mean(v) for k, v in adv_errs.items()}
-    best_adv = min((k for k, v in adv_scores.items() if v is not None),
-                   key=lambda k: adv_scores[k], default="local_ratio")
+    rsb_scores = {k: mean(v) for k, v in rsb_errs.items()}
+    # Choose the advance model on SPACING, and never one that would let a
+    # letter collide with its neighbour: a model can score well on advance
+    # agreement while leaving a negative right sidebearing, which measured on
+    # this family happened for 6 of 15 held-out letters.
+    def _adv_rank(name):
+        return (rsb_negative.get(name, 0),
+                rsb_scores.get(name) if rsb_scores.get(name) is not None else 1e9)
+
+    best_adv = min((k for k, v in rsb_scores.items() if v is not None),
+                   key=_adv_rank, default="sidebearing")
     xf.adv_model = best_adv
     adv_err = adv_scores.get(best_adv)
+    spacing_err = max([v for v in (mean(lsb_errs), rsb_scores.get(best_adv))
+                       if v is not None] or [None])
+    n_collide = rsb_negative.get(best_adv, 0)
 
     iou_mean = mean(ious)
     stem_err = mean(stem_errs)
@@ -544,7 +960,8 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
         "shape": iou_mean is not None and iou_mean >= MIN_HELDOUT_IOU,
         "stem": stem_err is not None and stem_err <= MAX_STEM_ERR,
         "height": height_err is None or height_err <= MAX_HEIGHT_ERR,
-        "advance": adv_err is None or adv_err <= MAX_ADVANCE_ERR,
+        "spacing": spacing_err is None or spacing_err <= MAX_SIDEBEARING_ERR,
+        "no_collisions": n_collide == 0,
     }
     usable = all(checks.values())
     xf.report = {
@@ -555,6 +972,12 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
         "stem_err": stem_err, "height_err": height_err,
         "advance_err": adv_err, "advance_model": best_adv,
         "advance_err_by_model": adv_scores,
+        "spacing_err": spacing_err, "lsb_err": mean(lsb_errs),
+        "rsb_err": rsb_scores.get(best_adv), "rsb_err_by_model": rsb_scores,
+        "would_collide": n_collide, "collisions_by_model": rsb_negative,
+        "diag_k": diag_k, "outer_frac": outer_frac,
+        "n_hyper_candidates_ok": len(k_scores),
+        "hyper_best_score": k_scores.get((diag_k, outer_frac)),
         "n_fit": len(fit_chars), "n_heldout": len(ious),
         "n_stem_heldout": len(stem_errs),
         "heldout_chars": "".join(held_chars),
@@ -562,7 +985,7 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
     }
     # Refit on every shared glyph for the transform that actually gets used,
     # carrying over the held-out report and the advance model it selected.
-    final = build(pool)
+    final = build(pool, diag_k, outer_frac)
     final.adv_model = best_adv
     final.report = xf.report
     return final
@@ -575,8 +998,11 @@ def synthesize_char(src_tt, ch: str, xf: WeightTransform):
     src_adv = _advance(src_tt, ch)
     if not polys or src_adv is None:
         return None
-    out = xf.apply(polys)
-    return {"polys": out, "advance": xf.predict_advance(src_adv, out)}
+    out, ok = xf.apply_checked(polys)
+    if not ok:
+        return None
+    return {"polys": out,
+            "advance": xf.predict_advance(src_adv, out, fmet.poly_bbox(polys), ch)}
 
 
 def polys_to_ttglyph(polys: list, glyph_set=None):

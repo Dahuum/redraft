@@ -167,6 +167,32 @@ def scanline_runs(polys: list, y: float) -> list:
     return runs
 
 
+def winding_at(polys: list, x: float, y: float) -> int:
+    """Nonzero-rule winding number of the whole glyph at (x, y): 0 means the
+    point is outside the ink, anything else means inside.
+
+    Counts signed crossings of a ray cast in +x. Needed because "which way is
+    outward" cannot be answered per contour: a counter (the hole in 'o', 'e',
+    '4') is wound opposite its outer contour, so expanding each contour's own
+    enclosed area expands the hole too and eats back exactly the ink the outer
+    contour gained. Asking whether a point is INK is what distinguishes the
+    two cases, for any depth of nesting.
+    """
+    w = 0
+    for poly in polys:
+        n = len(poly)
+        for i in range(n):
+            x0, y0 = poly[i]
+            x1, y1 = poly[(i + 1) % n]
+            if y0 == y1:
+                continue
+            if (y0 <= y < y1) or (y1 <= y < y0):
+                t = (y - y0) / (y1 - y0)
+                if x0 + t * (x1 - x0) > x:
+                    w += 1 if y1 > y0 else -1
+    return w
+
+
 def _cmap(tt) -> dict:
     try:
         return tt.getBestCmap() or {}

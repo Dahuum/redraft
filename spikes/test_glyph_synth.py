@@ -80,6 +80,47 @@ cb = fmet.poly_bbox(clipped)
 check("clip_polys_rect: clips to the requested band",
       cb and abs(cb[0] - 25.0) < 1e-6 and abs(cb[2] - 75.0) < 1e-6, f"bbox {cb}")
 
+# A square with a square hole, outer CCW and hole CW so the nonzero rule
+# treats the middle as empty — the minimal stand-in for a counter.
+ring = [[(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)],
+        [(60.0, 60.0), (60.0, 140.0), (140.0, 140.0), (140.0, 60.0)]]
+rruns = fmet.scanline_runs(ring, 100.0)
+check("scanline: a ring reads as two strokes with a gap", len(rruns) == 2, f"{rruns}")
+
+# THE bug this guards: "outward" was decided from each contour's own signed
+# area, which expands a counter as well as the outer boundary and eats back
+# exactly the ink the outer boundary gained. Every letter with a counter
+# (o b d e a g 0 6 8 9 4) silently failed to thicken at all, while
+# single-contour letters like 'h' and 'l' came out correct — which is what
+# made it so easy to miss.
+fat = gs.dilate_xy(ring, 40.0, 40.0)
+fruns = fmet.scanline_runs(fat, 100.0)
+check("dilate_xy: a ring's WALLS thicken (counter must shrink, not grow)",
+      len(fruns) == 2 and (fruns[0][1] - fruns[0][0]) > 55.0,
+      f"walls {[round(b - a) for a, b in fruns]} (want ~80 each, was 60)")
+check("dilate_xy: the counter shrinks rather than expanding",
+      len(fruns) == 2 and (fruns[1][0] - fruns[0][1]) < 80.0,
+      f"gap {round(fruns[1][0] - fruns[0][1]) if len(fruns) == 2 else None} (want <80)")
+
+check("topology_ok: accepts a correctly emboldened ring",
+      gs.topology_ok(ring, fat))
+check("counter_open_area: measures the ring's real white space",
+      abs(gs.counter_open_area(ring, ring[1]) - 6400.0) < 400.0,
+      f"{gs.counter_open_area(ring, ring[1]):.0f} (want ~6400)")
+
+# The guard's contract: a counter that lost its open white space must be
+# REJECTED rather than quietly shipped as a letter that filled in solid.
+# Asserted directly on the contract instead of by over-offsetting a square
+# hole — a convex hole offset past its own half-width inverts cleanly into a
+# LARGER hole rather than welding shut, so that construction tests nothing.
+# Real welding needs a concave counter (the apex of '4'), which is covered on
+# the actual glyphs below.
+sliver = [ring[0], [(99.0, 99.0), (99.0, 101.0), (101.0, 101.0), (101.0, 99.0)]]
+check("topology_ok: rejects a counter reduced to a sliver",
+      not gs.topology_ok(ring, sliver),
+      f"open {gs.counter_open_area(sliver, sliver[1]):.0f} vs "
+      f"{gs.counter_open_area(ring, ring[1]):.0f}")
+
 check("iou: a shape against itself is 1.0",
       abs(gs.iou(gs.raster(square, 100.0), gs.raster(square, 100.0)) - 1.0) < 1e-9)
 check("iou: disjoint shapes are 0.0",
@@ -139,6 +180,46 @@ for ch, tol in (("h", 0.04), ("m", 0.04)):
         check("'h': advance matches Bold's own 'n' within 3%",
               adv_n and abs(syn["advance"] - adv_n) / adv_n <= 0.03,
               f"synth={syn['advance']:.0f} vs n={adv_n}")
+
+print()
+print("=== 4b) real glyphs with counters actually thicken ===")
+xh = m_bold["x_height_units"]
+for ch in "o04":
+    if ord(ch) not in m_reg["coverage"]:
+        continue
+    src = gs._polys(reg, ch)
+    out, ok = xf.apply_checked(src)
+    check(f"{ch!r}: structure survives thickening", ok)
+    r_src = fmet.scanline_runs(src, xh * 0.5)
+    r_out = fmet.scanline_runs(out, xh * 0.5)
+    if r_src and r_out:
+        grew = (r_out[0][1] - r_out[0][0]) - (r_src[0][1] - r_src[0][0])
+        check(f"{ch!r}: its stroke got thicker, not merely shifted", grew > 40.0,
+              f"grew {grew:.0f}u (expected ~{xf.stem_dx:.0f}u)")
+    check(f"{ch!r}: counters still read as separate strokes",
+          len(r_out) == len(r_src),
+          f"{len(r_src)} strokes -> {len(r_out)}")
+
+print()
+print("=== 4c) no synthesized letter may collide with its neighbour ===")
+# A negative right sidebearing means the glyph overruns its own advance and
+# touches the next letter. Choosing the advance model purely by agreement
+# with the designer's number produced this for 6 of 15 held-out letters,
+# because the synthesized ink is legitimately wider than the designer's.
+check("held-out validation reports zero would-be collisions",
+      r.get("would_collide") == 0, f"would_collide={r.get('would_collide')}")
+worst = None
+for ch in r.get("heldout_chars", ""):
+    syn = gs.synthesize_char(reg, ch, xf)
+    if not syn:
+        continue
+    bb = fmet.poly_bbox(syn["polys"])
+    rsb = syn["advance"] - bb[2]
+    if worst is None or rsb < worst[1]:
+        worst = (ch, rsb)
+check("every held-out glyph keeps a positive right sidebearing",
+      worst is not None and worst[1] > 0,
+      f"worst {worst[0]!r} rsb={worst[1]:.0f}u" if worst else "none measured")
 
 print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
