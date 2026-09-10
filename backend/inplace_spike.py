@@ -326,6 +326,19 @@ def _page_font_refmap(page):
     return {f[4]: f[3].split("+")[-1] for f in page.get_fonts(full=True)}
 
 
+def _page_font_subtypes(page):
+    """PDF resource name -> that resource's own PDF subtype.
+
+    Needed because a display name is not unique. This fixture embeds
+    'TwCenMT-Regular' TWICE — once as a TrueType font (subset tag BCDFEE+)
+    and once as a Type0 CID font (BCDGEE+) — and stripping the subset tag
+    makes them indistinguishable by name. A single name->subtype map silently
+    keeps whichever came last, so every run drawn with the other one was
+    decoded under the wrong encoding.
+    """
+    return {f[4]: f[2] for f in page.get_fonts(full=True)}
+
+
 # ── every physical content stream text can live in: the page's own stream,
 # PLUS every Form XObject it uses (see module docstring — this is what makes
 # whole-page-as-one-XObject exports, e.g. many headless-browser PDF exports,
@@ -589,12 +602,19 @@ _SPACE_GAP_THRESHOLD = -150.0
 
 
 # ── flatten codes across runs of ONE font, in document order ────────────────
-def _flatten(runs, font_name, refmap, is_cid):
+def _flatten(runs, font_name, refmap, is_cid, refsub=None):
     flat, loc = [], []
     for ri, run in enumerate(runs):
         ref = (run["font"] or b"").decode("latin-1").lstrip("/")
         if refmap.get(ref) != font_name:
             continue
+        if refsub is not None:
+            # Only search runs drawn with a resource whose OWN subtype matches
+            # the encoding being assumed. Two resources can share a display
+            # name with different subtypes, and decoding a 2-byte CID run as
+            # single bytes (or the reverse) yields codes that match nothing.
+            if (refsub.get(ref) == "Type0") != bool(is_cid):
+                continue
         _decode_toks(run, is_cid)
         for ti, tok in enumerate(run["str_toks"]):
             if ti > 0 and not is_cid:
@@ -627,8 +647,9 @@ def _codes_to_bytes(codes, is_cid):
 
 
 # ── locate (pure — never mutates) ────────────────────────────────────────────
-def _locate(runs, refmap, font_name, old_codes, is_cid, which=None):
-    flat, loc = _flatten(runs, font_name, refmap, is_cid)
+def _locate(runs, refmap, font_name, old_codes, is_cid, which=None,
+            refsub=None):
+    flat, loc = _flatten(runs, font_name, refmap, is_cid, refsub=refsub)
     if not flat:
         return {"ok": False, "reason": "no_runs_for_font"}
     positions = _find_all(flat, old_codes)
@@ -837,9 +858,22 @@ def _font_stream_refs(doc, type0_xref):
     correctly but extracts as U+FFFD, which is exactly the kind of silent,
     non-obvious corruption this whole engine exists to avoid."""
     obj = doc.xref_object(type0_xref, compressed=True)
+    # /DescendantFonts is an array, and the array may be written inline
+    # ("[11 0 R]") or as an indirect reference to an array object ("11 0 R").
+    # Both are valid PDF and different producers pick different ones: PyMuPDF
+    # writes it inline, Word/Office writes it indirect. Matching only the
+    # inline form made the CID extend tier fail with "no_stream_refs" on every
+    # Office-produced document — the same both-forms handling the /W array
+    # already had, just never applied here.
     m = re.search(r"/DescendantFonts\s*\[\s*(\d+)\s+0\s+R", obj)
     if not m:
-        return None
+        m_ind = re.search(r"/DescendantFonts\s+(\d+)\s+0\s+R", obj)
+        if not m_ind:
+            return None
+        arr = doc.xref_object(int(m_ind.group(1)), compressed=True) or ""
+        m = re.search(r"(\d+)\s+0\s+R", arr)
+        if not m:
+            return None
     cid_xref = int(m.group(1))
     cid_obj = doc.xref_object(cid_xref, compressed=True)
     m2 = re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", cid_obj)
@@ -913,9 +947,18 @@ def _try_extend(doc, font_display_name, missing_chars):
     type0_xref = None
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            if f[3].split("+")[-1] == font_display_name:
-                type0_xref = f[0]
-                break
+            if f[3].split("+")[-1] != font_display_name:
+                continue
+            # Only a Type0 object can have the descendant chain this walks.
+            # A display name is not unique — the attestation fixture embeds
+            # 'TwCenMT-Regular' as both a TrueType and a Type0 font — and
+            # taking the first name match handed a TrueType xref to a lookup
+            # for /DescendantFonts, which then reported "no_stream_refs" for
+            # a font that was perfectly extendable.
+            if "/Subtype/Type0" not in doc.xref_object(f[0], compressed=True).replace(" ", ""):
+                continue
+            type0_xref = f[0]
+            break
         if type0_xref:
             break
     if type0_xref is None:
@@ -1505,6 +1548,94 @@ def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
     return total * size / 1000.0
 
 
+def _prepare_edit(doc, tpage, nm, is_cid, old_n, new):
+    """Encode old/new for one assumed encoding, extend the font if needed, and
+    locate the splice — all on `doc`, which this MUTATES on success.
+
+    Split out of edit() so the same work can be attempted under each subtype a
+    display name actually has, on a fresh copy of the document each time. On
+    success returns {"ok": True, old_codes, new_codes, extended_chars, runs,
+    refmap, loc}; on failure the refusal dict, with `doc` left for the caller
+    to discard.
+    """
+    extended_chars: list = []
+    if is_cid:
+        fm = _gid_maps(doc).get(nm, {})
+        missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
+        if missing:
+            new_gids, fail_reason = _try_extend(doc, nm, missing)
+            if new_gids is None:
+                why = _EXTEND_FAIL_MSG.get(fail_reason, "Couldn't add the missing glyph(s).")
+                return {"ok": False, "reason": "extend", "tier": "extend", "missing": missing,
+                        "extend_reason": fail_reason,
+                        "message": (f"This field's font is an embedded subset that doesn't contain "
+                                    f"these characters yet: {missing}. {why}")}
+            fm = {**fm, **{_norm(ch): g for ch, g in new_gids.items()}}
+            extended_chars = missing
+        old_codes = [fm.get(_norm(ch)) for ch in old_n]
+        new_codes = [fm.get(_norm(ch)) for ch in new]
+        if any(c is None for c in old_codes) or any(c is None for c in new_codes):
+            return {"ok": False, "reason": "unmappable", "message": _REASON_MSG["unmappable"]}
+    else:
+        cm = _simple_font_code_maps(doc).get(nm)
+        enc_name = _simple_font_encodings(doc).get(nm)
+        old_codes = _encode_simple_text(old_n, cm["rev"], cm["max_len"]) if cm else None
+        new_codes = _encode_simple_text(new, cm["rev"], cm["max_len"]) if cm else None
+        if old_codes is None:
+            old_codes = _encode_fallback(old_n, enc_name)
+            if old_codes is None:
+                return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
+        if new_codes is None:
+            new_codes = _encode_fallback(new, enc_name)
+            if new_codes is None:
+                return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
+            # _encode_fallback only proves the WinAnsi/MacRoman *encoding*
+            # table has a byte for each character — not that this embedded
+            # subset's font program actually has a glyph outline there (see
+            # _simple_font_glyph_coverage's docstring). _encode_simple_text
+            # above doesn't need this: it's built from the doc's own
+            # /ToUnicode, so a hit there is already something the doc
+            # genuinely renders.
+            coverage = _simple_font_glyph_coverage(doc, nm)
+            if coverage is not None:
+                missing = sorted({ch for ch in new if not ch.isspace() and ch not in coverage})
+                if missing:
+                    # Try to give the ORIGINAL font the glyphs it lacks rather
+                    # than refusing. Refusing here is not neutral: the caller
+                    # falls through to the redraw engine, which repaints the
+                    # background, stamps the text from a newly embedded font
+                    # and leaves the document carrying a font resource its
+                    # producer never wrote. Extending in place changes nothing
+                    # on the page except the characters that were edited.
+                    new_gids, fail_reason = _try_extend_simple(doc, nm, missing)
+                    if new_gids is None:
+                        why = _SIMPLE_EXTEND_FAIL_MSG.get(
+                            fail_reason, "Couldn't add the missing glyph(s).")
+                        return {"ok": False, "reason": "missing_glyph",
+                                "missing": missing, "extend_reason": fail_reason,
+                                "message": (f"This field's font is an embedded subset that "
+                                            f"doesn't contain these characters yet: "
+                                            f"{missing}. {why}")}
+                    extended_chars = missing
+
+    page = doc[tpage]
+    streams = _content_streams(doc, page)
+    if not streams:
+        return {"ok": False, "reason": "no_content_stream", "message": _REASON_MSG["no_content_stream"]}
+    runs = _all_runs(streams)
+    refmap = _page_font_refmap(page)
+
+    loc_result = _locate(runs, refmap, nm, old_codes, is_cid,
+                         refsub=_page_font_subtypes(page))
+    if not loc_result["ok"]:
+        reason = loc_result["reason"]
+        return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
+
+    return {"ok": True, "old_codes": old_codes, "new_codes": new_codes,
+            "extended_chars": extended_chars, "runs": runs, "refmap": refmap,
+            "loc": loc_result}
+
+
 def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof.
@@ -1557,86 +1688,52 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     tpage, target = candidates[0]
 
     nm = target["font"].split("+")[-1]
-    is_cid = subtype.get(nm) == "Type0"
+    # Which encoding this name really uses. A display name is not unique — the
+    # attestation fixture embeds 'TwCenMT-Regular' as BOTH a TrueType font and
+    # a Type0 CID font — so rather than trust a single name->subtype mapping
+    # (which kept whichever font object came last, and sent every span drawn
+    # with the other one down the wrong path), every subtype the name actually
+    # has is tried and the one that can locate the text is kept. A wrong guess
+    # cannot accidentally succeed: it decodes 2-byte CID codes as single bytes
+    # or the reverse, and matches nothing.
+    _subs = set()
+    for _pno in range(doc.page_count):
+        for _f in doc[_pno].get_fonts(full=True):
+            if _f[3].split("+")[-1] == nm:
+                _subs.add(_f[2])
+    cid_options = [t == "Type0" for t in sorted(_subs)] or [subtype.get(nm) == "Type0"]
+    cid_options = sorted(set(cid_options), reverse=True)   # try CID first
     page = doc[tpage]
 
-    extended_chars: list = []
-    if is_cid:
-        fm = _gid_maps(doc).get(nm, {})
-        missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
-        if missing:
-            new_gids, fail_reason = _try_extend(doc, nm, missing)
-            if new_gids is None:
-                doc.close()
-                why = _EXTEND_FAIL_MSG.get(fail_reason, "Couldn't add the missing glyph(s).")
-                return {"ok": False, "reason": "extend", "tier": "extend", "missing": missing,
-                        "extend_reason": fail_reason,
-                        "message": (f"This field's font is an embedded subset that doesn't contain "
-                                    f"these characters yet: {missing}. {why}")}
-            fm = {**fm, **{_norm(ch): g for ch, g in new_gids.items()}}
-            extended_chars = missing
-        old_codes = [fm.get(_norm(ch)) for ch in old_n]
-        new_codes = [fm.get(_norm(ch)) for ch in new]
-        if any(c is None for c in old_codes) or any(c is None for c in new_codes):
+    # Try each encoding this display name really uses, on a fresh copy of the
+    # document, and keep the one that can locate the text.
+    prep, prep_error, is_cid = None, None, cid_options[0]
+    for _cid in cid_options:
+        adoc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            res = _prepare_edit(adoc, tpage, nm, _cid, old_n, new)
+        except Exception:  # noqa: BLE001 — a bad guess must not kill the good one
+            adoc.close()
+            continue
+        if res.get("ok"):
             doc.close()
-            return {"ok": False, "reason": "unmappable", "message": _REASON_MSG["unmappable"]}
-    else:
-        cm = _simple_font_code_maps(doc).get(nm)
-        enc_name = _simple_font_encodings(doc).get(nm)
-        old_codes = _encode_simple_text(old_n, cm["rev"], cm["max_len"]) if cm else None
-        new_codes = _encode_simple_text(new, cm["rev"], cm["max_len"]) if cm else None
-        if old_codes is None:
-            old_codes = _encode_fallback(old_n, enc_name)
-            if old_codes is None:
-                doc.close()
-                return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
-        if new_codes is None:
-            new_codes = _encode_fallback(new, enc_name)
-            if new_codes is None:
-                doc.close()
-                return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
-            # _encode_fallback only proves the WinAnsi/MacRoman *encoding*
-            # table has a byte for each character — not that this embedded
-            # subset's font program actually has a glyph outline there (see
-            # _simple_font_glyph_coverage's docstring). _encode_simple_text
-            # above doesn't need this: it's built from the doc's own
-            # /ToUnicode, so a hit there is already something the doc
-            # genuinely renders.
-            coverage = _simple_font_glyph_coverage(doc, nm)
-            if coverage is not None:
-                missing = sorted({ch for ch in new if not ch.isspace() and ch not in coverage})
-                if missing:
-                    # Try to give the ORIGINAL font the glyphs it lacks rather
-                    # than refusing. Refusing here is not neutral: the caller
-                    # falls through to the redraw engine, which repaints the
-                    # background, stamps the text from a newly embedded font
-                    # and leaves the document carrying a font resource its
-                    # producer never wrote. Extending in place changes nothing
-                    # on the page except the characters that were edited.
-                    new_gids, fail_reason = _try_extend_simple(doc, nm, missing)
-                    if new_gids is None:
-                        doc.close()
-                        why = _SIMPLE_EXTEND_FAIL_MSG.get(
-                            fail_reason, "Couldn't add the missing glyph(s).")
-                        return {"ok": False, "reason": "missing_glyph",
-                                "missing": missing, "extend_reason": fail_reason,
-                                "message": (f"This field's font is an embedded subset that "
-                                            f"doesn't contain these characters yet: "
-                                            f"{missing}. {why}")}
-                    extended_chars = missing
-
-    streams = _content_streams(doc, page)
-    if not streams:
+            doc, prep, is_cid = adoc, res, _cid
+            break
+        adoc.close()
+        if prep_error is None:
+            prep_error = res
+    if prep is None:
         doc.close()
-        return {"ok": False, "reason": "no_content_stream", "message": _REASON_MSG["no_content_stream"]}
-    runs = _all_runs(streams)
-    refmap = _page_font_refmap(page)
+        return prep_error or {"ok": False, "reason": "sequence_not_found",
+                              "message": _REASON_MSG["sequence_not_found"]}
 
-    loc_result = _locate(runs, refmap, nm, old_codes, is_cid)
-    if not loc_result["ok"]:
-        doc.close()
-        reason = loc_result["reason"]
-        return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
+    page = doc[tpage]
+    old_codes = prep["old_codes"]
+    new_codes = prep["new_codes"]
+    extended_chars = prep["extended_chars"]
+    runs = prep["runs"]
+    refmap = prep["refmap"]
+    loc_result = prep["loc"]
 
     # WHICH occurrence to splice, when the same string appears more than once
     # in this font on this page. The caller named one by bbox and that has to

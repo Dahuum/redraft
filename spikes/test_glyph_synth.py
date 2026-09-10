@@ -446,6 +446,55 @@ check("the in-place refusal reason is carried through",
       f"{_rep_big['in_place'].get('refusals')}")
 
 print()
+print("=== 4h) font identity is per OBJECT, not per display name ===")
+_doc = fitz.open(FIXTURE)
+_by_name = {}
+for _f in _doc[0].get_fonts(full=True):
+    _obj = _doc.xref_object(_f[0], compressed=True).replace(" ", "")
+    _st = "Type0" if "/Subtype/Type0" in _obj else "simple"
+    _by_name.setdefault(_f[3].split("+")[-1], set()).add(_st)
+_ambiguous = {n: v for n, v in _by_name.items() if len(v) > 1}
+# The fixture embeds 'TwCenMT-Regular' twice — once TrueType (subset tag
+# BCDFEE+) and once Type0 (BCDGEE+). Stripping the subset tag makes them the
+# same name, so a single name->subtype map keeps whichever came last and
+# sends every span drawn with the other one down the wrong code path.
+check("the fixture really does have a display name with two subtypes",
+      bool(_ambiguous), f"{_by_name}")
+
+# Every Type0 font must resolve its descendant chain. /DescendantFonts may be
+# written inline ("[11 0 R]") or as an indirect reference to an array object
+# ("11 0 R"); PyMuPDF writes the first, Word/Office the second, and matching
+# only the inline form reported "no_stream_refs" for perfectly extendable
+# fonts on every Office-produced file.
+_unresolved = []
+for _f in _doc[0].get_fonts(full=True):
+    _obj = _doc.xref_object(_f[0], compressed=True).replace(" ", "")
+    if "/Subtype/Type0" not in _obj:
+        continue
+    if not sp._font_stream_refs(_doc, _f[0]):
+        _unresolved.append(_f[3])
+check("every Type0 font resolves its descendant chain (inline OR indirect)",
+      not _unresolved, f"unresolved: {_unresolved}")
+_doc.close()
+
+# And an edit on a span whose display name is the ambiguous one must work
+# rather than refusing with a CID-path error.
+_amb_name = next(iter(_ambiguous), None)
+if _amb_name:
+    _d = fitz.open(FIXTURE)
+    _cands = [x for x in sp._spans(_d[0])
+              if x["font"].split("+")[-1] == _amb_name and len(x["text"].strip()) >= 6]
+    _d.close()
+    if _cands:
+        _t = _cands[0]
+        _rr = sp.edit(_src_bytes, _t["text"].strip(), _t["text"].strip() + " ok",
+                      page=0, bbox=_t["bbox"], verify=False)
+        check(f"an edit on the ambiguous name {_amb_name!r} isn't refused for the "
+              f"wrong reason",
+              _rr.get("ok") or _rr.get("extend_reason") != "no_stream_refs",
+              f"{ {k: v for k, v in _rr.items() if k != 'pdf_b64'} }")
+
+print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
 try:
     import font_extend  # noqa: E402
