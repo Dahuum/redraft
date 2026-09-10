@@ -569,23 +569,46 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 ed = PDFEditor(in_path)
-                ed.shrink_to_fit = not preserve_size
 
-                by_page: dict = {}
-                for sd, new_text in replacements:
-                    by_page.setdefault(sd["page"], []).append((sd, new_text))
+                # Fields the in-place engine refused specifically because the
+                # value is too long for its line are handled separately. Left
+                # in the normal pass they are drawn at full size and simply
+                # run off the paper — measured, a 78-character name ended at
+                # x=603 on a 595pt page, which is the one outcome nobody can
+                # recover from. They get a bounded resize instead, and the
+                # response says so; the alternative of failing the whole
+                # request would throw away every other valid edit in it.
+                overflow_flags = [r.get("reason") == "would_overflow"
+                                  for r in inplace_refusals]
+                if len(overflow_flags) != len(replacements):
+                    overflow_flags = [False] * len(replacements)
+                normal = [rp for rp, over in zip(replacements, overflow_flags) if not over]
+                overflowing = [rp for rp, over in zip(replacements, overflow_flags) if over]
 
-                for pn, items in by_page.items():
-                    pairs = [({
-                        "text":   sd["text"],
-                        "bbox":   fitz.Rect(sd["bbox"]),
-                        "origin": tuple(sd["origin"]),
-                        "font":   sd["font"],
-                        "size":   sd["size"],
-                        "color":  tuple(sd["color"]),
-                        "flags":  sd["flags"],
-                    }, nt) for sd, nt in items]
-                    ed.replace_all(pairs, page_num=pn)
+                def _queue(items):
+                    by_page: dict = {}
+                    for sd, new_text in items:
+                        by_page.setdefault(sd["page"], []).append((sd, new_text))
+                    for pn, group in by_page.items():
+                        pairs = [({
+                            "text":   sd["text"],
+                            "bbox":   fitz.Rect(sd["bbox"]),
+                            "origin": tuple(sd["origin"]),
+                            "font":   sd["font"],
+                            "size":   sd["size"],
+                            "color":  tuple(sd["color"]),
+                            "flags":  sd["flags"],
+                        }, nt) for sd, nt in group]
+                        ed.replace_all(pairs, page_num=pn)
+
+                if normal:
+                    ed.shrink_to_fit = not preserve_size
+                    _queue(normal)
+                    ed.apply()
+                if overflowing:
+                    ed.shrink_to_fit = True
+                    _queue(overflowing)
+                    ed.apply()
 
                 ed.save(out_path)
 
@@ -605,10 +628,21 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                 report.append({"font": fn.split("+")[-1], "status": status,
                                "source": src})
 
+            resized = [{"text": sd["text"][:60], "new_text": nt[:60],
+                        "reason": "too_long_for_line",
+                        "detail": next((r.get("message") for r in inplace_refusals
+                                        if r.get("text") == sd["text"][:60]), None)}
+                       for sd, nt in overflowing]
+            extra_warnings = [
+                f"{r['text']!r} was too long for its line and had to be resized to fit; "
+                f"every other field kept its original size."
+                for r in resized]
+
             with open(out_path, "rb") as f:
                 edited = f.read()
             return edited, {"fonts": report,
-                            "warnings": [str(w.message) for w in caught],
+                            "warnings": [str(w.message) for w in caught] + extra_warnings,
+                            "resized_to_fit": resized,
                             "in_place": {"count": in_place_count, "total": total,
                                          "refusals": inplace_refusals}}
         finally:

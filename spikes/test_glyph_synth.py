@@ -398,6 +398,54 @@ check("compression stays inside every published bound",
       f"tw={_mid.get('wordspace')} tc={_mid.get('tracking')} tz={_mid.get('glyph_scale')}")
 
 print()
+print("=== 4g) /edit never puts text off the page, and says when it resized ===")
+from api import extract_spans, apply_replacements  # noqa: E402
+
+_spans_api = extract_spans(_src_bytes)
+_idx = next(i for i, _s in enumerate(_spans_api) if "Idrissi" in _s["text"])
+_page_w = fitz.open(FIXTURE)[0].rect.width
+
+
+def _via_api(new_text):
+    out, rep = apply_replacements(_src_bytes, [(_spans_api[_idx], new_text)],
+                                  try_inplace=True)
+    d = fitz.open(stream=out, filetype="pdf")
+    hits = [sp_ for b in d[0].get_text("dict")["blocks"]
+            for l in b.get("lines", []) for sp_ in l.get("spans", [])
+            if "Abdur" in sp_["text"]]
+    end = max((sp_["bbox"][2] for sp_ in hits), default=-1.0)
+    size = hits[0]["size"] if hits else -1.0
+    d.close()
+    return rep, end, size
+
+
+_rep_ok, _end_ok, _size_ok = _via_api("Abdurrahamn Chahrour")
+check("a value that fits is done in place at the original size",
+      _rep_ok["in_place"]["count"] == 1 and abs(_size_ok - 14.04) < 0.05,
+      f"in_place={_rep_ok['in_place']['count']} size={_size_ok:.2f}")
+check("and nothing is reported as resized",
+      not _rep_ok.get("resized_to_fit"), f"{_rep_ok.get('resized_to_fit')}")
+
+_long = ("Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun "
+         "El Amrani Tazi Bennani Sqalli")
+_rep_big, _end_big, _size_big = _via_api(_long)
+# The failure this guards: before, a value this long was drawn at full size
+# straight past the paper edge (x=603 on a 595pt page) with nothing said.
+check("a value too long for any line still lands ON the page",
+      0 < _end_big <= _page_w, f"ends {_end_big:.1f} vs page {_page_w:.1f}")
+check("it fell back rather than claiming an in-place edit",
+      _rep_big["in_place"]["count"] == 0, f"{_rep_big['in_place']}")
+check("the response names it as resized to fit",
+      bool(_rep_big.get("resized_to_fit")), f"{_rep_big.get('resized_to_fit')}")
+check("and warns in words a person can read",
+      any("too long for its line" in w for w in _rep_big.get("warnings", [])),
+      f"{_rep_big.get('warnings')}")
+check("the in-place refusal reason is carried through",
+      any(r.get("reason") == "would_overflow"
+          for r in _rep_big["in_place"].get("refusals", [])),
+      f"{_rep_big['in_place'].get('refusals')}")
+
+print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
 try:
     import font_extend  # noqa: E402
