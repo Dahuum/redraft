@@ -222,6 +222,122 @@ check("every held-out glyph keeps a positive right sidebearing",
       f"worst {worst[0]!r} rsb={worst[1]:.0f}u" if worst else "none measured")
 
 print()
+print("=== 4d) vertical landmarks: baseline exact, heights measured ===")
+check("map_y pins the baseline exactly", gs.map_y(xf.y_anchors, 0.0) == 0.0,
+      f"0 -> {gs.map_y(xf.y_anchors, 0.0)}")
+check("the vertical map has a real landmark per zone",
+      len(xf.y_anchors) >= 3, f"anchors={xf.y_anchors}")
+for ch in "hmn":
+    if ord(ch) not in m_reg["coverage"]:
+        continue
+    src = gs._polys(reg, ch)
+    out = xf.apply(src)
+    sb, ob = fmet.poly_bbox(src), fmet.poly_bbox(out)
+    if abs(sb[1]) < 1.0:
+        # A letter sitting on the baseline in the source must sit on it in the
+        # result. Letting a least-squares fit choose the intercept floated
+        # these 14.8 units (0.10pt at 14pt) above their neighbours' baseline.
+        check(f"{ch!r}: still sits exactly on the baseline", abs(ob[1]) <= 2.0,
+              f"yMin={ob[1]:.1f}")
+real_n = gs._polys(bold, "n")
+if real_n:
+    top_syn = fmet.poly_bbox(xf.apply(gs._polys(reg, "n")))[3]
+    top_real = fmet.poly_bbox(real_n)[3]
+    check("'n' top height matches the real Bold within 1%",
+          abs(top_syn - top_real) / top_real <= 0.01,
+          f"synth {top_syn:.0f} vs real {top_real:.0f}")
+
+print()
+print("=== 4e) the in-place engine can now do this edit without a redraw ===")
+import inplace_spike as sp  # noqa: E402
+
+with open(FIXTURE, "rb") as fh:
+    _src_bytes = fh.read()
+_res = sp.edit(_src_bytes, "Sara Idrissi", "Abdurrahamn Chahrour", page=0)
+check("in-place edit succeeds on a font missing 'h' and 'm'",
+      _res.get("ok"), f"{ {k: v for k, v in _res.items() if k != 'pdf_b64'} }")
+if _res.get("ok"):
+    check("it reports the extend tier", _res.get("tier") == "extend", f"{_res.get('tier')}")
+    check("it injected exactly the missing characters",
+          _res.get("extended_chars") == ["h", "m"], f"{_res.get('extended_chars')}")
+    check("nothing outside the edited field changed",
+          _res.get("diff_outside") == 0 and _res.get("guarantee"),
+          f"diff_outside={_res.get('diff_outside')}")
+
+    import base64  # noqa: E402
+    _orig = fitz.open(FIXTURE)
+    _out = fitz.open(stream=base64.b64decode(_res["pdf_b64"]), filetype="pdf")
+    _of = sorted(f[3].split("+")[-1] for f in _orig[0].get_fonts(full=True))
+    _nf = sorted(f[3].split("+")[-1] for f in _out[0].get_fonts(full=True))
+    # The whole point of staying in place: the page must not gain a font
+    # resource or a form XObject. The redraw path adds both, which is a
+    # structural fingerprint of the edit that survives in the file.
+    check("no font resource was added to the page", _of == _nf,
+          f"{len(_of)} -> {len(_nf)}")
+    check("no form XObject was added to the page",
+          len(_orig[0].get_xobjects()) == len(_out[0].get_xobjects()),
+          f"{len(_orig[0].get_xobjects())} -> {len(_out[0].get_xobjects())}")
+
+    _hit = None
+    for _b in _out[0].get_text("dict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _sp in _l.get("spans", []):
+                if "Abdur" in _sp["text"]:
+                    _hit = _sp
+    check("the replacement extracts as real text", _hit is not None)
+    if _hit:
+        check("it kept the ORIGINAL font", _hit["font"].split("+")[-1] == "TwCenMT-Bold",
+              f"{_hit['font']}")
+        # Size is identity: the redraw path silently shrank this field to
+        # 9.83pt to make longer text fit.
+        check("it kept the original size exactly (no silent shrink)",
+              abs(_hit["size"] - 14.04) < 0.05, f"size={_hit['size']:.2f}")
+    # Longer replacement text must push whatever follows it on the same line,
+    # preserving the gap — otherwise it simply draws over it. Measured before
+    # this existed, the replacement name overran the following comma by 66pt.
+    check("following text on the line was reflowed", _res.get("reflowed", 0) >= 1,
+          f"reflowed={_res.get('reflowed')}")
+
+    def _spans_on_line(d):
+        out = []
+        for _b in d[0].get_text("dict")["blocks"]:
+            for _l in _b.get("lines", []):
+                for _s in _l.get("spans", []):
+                    if 280 < _s["bbox"][1] < 300 and _s["bbox"][0] < 330:
+                        out.append((_s["text"], _s["bbox"][0], _s["bbox"][2]))
+        return out
+
+    _o_line, _n_line = _spans_on_line(_orig), _spans_on_line(_out)
+    _o_name = next((t for t in _o_line if "Idrissi" in t[0]), None)
+    _n_name = next((t for t in _n_line if "Abdur" in t[0]), None)
+    _o_com = next((t for t in _o_line if t[0].strip() == "," and t[1] > _o_name[2]), None)
+    _n_com = next((t for t in _n_line if t[0].strip() == "," and t[1] > _n_name[2]), None)
+    check("the comma after the field still follows it", _n_com is not None)
+    if _o_name and _n_name and _o_com and _n_com:
+        _gap_before = _o_com[1] - _o_name[2]
+        _gap_after = _n_com[1] - _n_name[2]
+        check("the gap to it is preserved to within 0.05pt",
+              abs(_gap_after - _gap_before) < 0.05,
+              f"{_gap_before:.3f}pt -> {_gap_after:.3f}pt")
+        check("the comma actually moved rather than being overrun",
+              _n_com[1] > _o_com[1] + 1.0,
+              f"x {_o_com[1]:.2f} -> {_n_com[1]:.2f}")
+
+    # Lines other than the edited one must not move at all.
+    def _other_lines(d):
+        out = []
+        for _b in d[0].get_text("dict")["blocks"]:
+            for _l in _b.get("lines", []):
+                for _s in _l.get("spans", []):
+                    if not (280 < _s["bbox"][1] < 300):
+                        out.append((_s["text"], round(_s["bbox"][0], 2)))
+        return sorted(out)
+    check("no other line on the page moved", _other_lines(_orig) == _other_lines(_out))
+
+    _orig.close()
+    _out.close()
+
+print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
 try:
     import font_extend  # noqa: E402

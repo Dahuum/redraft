@@ -851,7 +851,8 @@ def _font_stream_refs(doc, type0_xref):
     return {"cid_xref": cid_xref, "ff_xref": int(m3.group(1)), "tu_xref": tu_xref}
 
 
-def _add_tounicode_entries(doc, tu_xref, gid_to_unicode: dict) -> bool:
+def _add_tounicode_entries(doc, tu_xref, gid_to_unicode: dict,
+                           hex_digits: int = 4) -> bool:
     """Append a beginbfchar/endbfchar block mapping each new GID (as a 2-byte
     CID, since CIDToGIDMap=Identity) to its Unicode codepoint, right before
     endcmap. Multiple bfchar blocks in one CMap are standard, valid syntax —
@@ -864,7 +865,10 @@ def _add_tounicode_entries(doc, tu_xref, gid_to_unicode: dict) -> bool:
         return False
     lines = [f"{len(gid_to_unicode)} beginbfchar"]
     for gid, cp in gid_to_unicode.items():
-        lines.append(f"<{gid:04X}> <{cp:04X}>")
+        # A simple font's CMap keys are 1-byte character codes; a CID font's
+        # are 2-byte CIDs. Writing four hex digits into a 1-byte codespace
+        # produces a CMap no extractor can follow.
+        lines.append(f"<{gid:0{hex_digits}X}> <{cp:04X}>")
     lines.append("endbfchar\n")
     block = ("\n".join(lines)).encode("latin-1")
     idx = data.rfind(b"endcmap")
@@ -955,6 +959,249 @@ def _try_extend(doc, font_display_name, missing_chars):
     _add_tounicode_entries(doc, refs.get("tu_xref"),
                            {result["gid"][ch]: ord(ch) for ch in missing_chars})
     return result["gid"], None
+
+
+_SIMPLE_EXTEND_FAIL_MSG = {
+    "no_font_ref": "Couldn't locate this font's own reference on the page.",
+    "no_fontfile": "This font's outlines aren't embedded as a TrueType program.",
+    "no_donor": ("No other cut of this family is embedded in the document, and no "
+                 "open-source donor could be resolved for it."),
+    "bad_widths": "This font's width table has an unexpected structure — skipped rather than risk misaligned text.",
+    "inject_failed": "Couldn't merge the glyph into this font.",
+}
+
+
+def _simple_font_refs(doc, font_display_name: str):
+    """Locate a SIMPLE (non-CID) TrueType font by display name.
+
+    Returns {"font_xref", "fd_xref", "ff_xref", "first_char", "last_char",
+    "widths_kind", "widths_ref", "tu_xref"} or None.
+
+    Kept separate from _font_stream_refs, which walks the Type0 ->
+    DescendantFonts -> CIDFontType2 chain. A simple font has no descendant:
+    its widths live in a flat /Widths array indexed from /FirstChar, and its
+    outlines hang directly off its own /FontDescriptor.
+    """
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[3].split("+")[-1] != font_display_name:
+                continue
+            xref = f[0]
+            obj = doc.xref_object(xref, compressed=True)
+            if "/Subtype/TrueType" not in obj.replace(" ", ""):
+                continue
+            m = re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", obj)
+            if not m:
+                return None
+            fd_xref = int(m.group(1))
+            fd = doc.xref_object(fd_xref, compressed=True)
+            m2 = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", fd)
+            if not m2:
+                return None
+            fc = re.search(r"/FirstChar\s+(\d+)", obj)
+            lc = re.search(r"/LastChar\s+(\d+)", obj)
+            tu = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", obj)
+            kind, val = doc.xref_get_key(xref, "Widths")
+            return {"font_xref": xref, "fd_xref": fd_xref,
+                    "ff_xref": int(m2.group(1)),
+                    "first_char": int(fc.group(1)) if fc else None,
+                    "last_char": int(lc.group(1)) if lc else None,
+                    "widths_kind": kind, "widths_val": val,
+                    "tu_xref": int(tu.group(1)) if tu else None}
+    return None
+
+
+def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
+    """Write real advance widths into the font's /Widths array.
+
+    Not optional. A subsetter that drops a glyph also zeroes its width, and
+    the attestation fixture's Bold font really does carry 0 for 'h', 'm' and
+    '4'. A simple font positions text from /Widths, not from the font
+    program's own hmtx, so injecting a beautiful glyph and leaving its width
+    at 0 stacks every following letter on top of it.
+    """
+    first, last = refs["first_char"], refs["last_char"]
+    if first is None or last is None:
+        return False
+    kind, val = refs["widths_kind"], refs["widths_val"]
+    if kind == "array" and val:
+        text = val
+        w_xref = None
+    elif kind == "xref" and val:
+        m = re.match(r"(\d+)\s+0\s+R", val)
+        if not m:
+            return False
+        w_xref = int(m.group(1))
+        text = doc.xref_object(w_xref, compressed=True)
+    else:
+        return False
+
+    nums = re.findall(r"-?\d+(?:\.\d+)?", text)
+    widths = [float(n) for n in nums]
+    if len(widths) != (last - first + 1):
+        return False   # unexpected shape — refuse rather than misalign the table
+
+    for code, w in code_to_width.items():
+        idx = code - first
+        if 0 <= idx < len(widths):
+            widths[idx] = w
+        else:
+            return False   # outside the declared range; extending it is a
+                           # bigger change than this path should make silently
+    body = "[" + " ".join(f"{int(round(w))}" for w in widths) + "]"
+    if w_xref is not None:
+        doc.update_object(w_xref, body)
+    else:
+        doc.xref_set_key(refs["font_xref"], "Widths", body)
+    return True
+
+
+def _try_extend_simple(doc, font_display_name, missing_chars):
+    """Inject `missing_chars` into a SIMPLE font's embedded subset, in place.
+
+    This is what keeps an edit from leaving a trace. Without it the caller
+    refuses, the request falls through to the redraw engine, and that engine
+    rewrites the page: it paints over the original text with a sampled
+    background rectangle, stamps replacement text from a NEWLY EMBEDDED font,
+    and leaves the document carrying a font resource its producer never
+    wrote. Here nothing new is added to the page at all — the original font
+    object keeps its name and its identity and simply gains the glyphs it was
+    missing.
+
+    Returns ({char: gid}, None) or (None, reason).
+    """
+    refs = _simple_font_refs(doc, font_display_name)
+    if not refs:
+        return None, "no_font_ref"
+    try:
+        subset_bytes = doc.xref_stream(refs["ff_xref"])
+    except Exception:  # noqa: BLE001
+        return None, "no_fontfile"
+    if not subset_bytes:
+        return None, "no_fontfile"
+
+    result = None
+    provenance = None
+    # 1. The family's own other cut, already in this document.
+    try:
+        import font_donors
+        import glyph_synth
+        donor = font_donors.find_in_document_donor(
+            doc, font_display_name, missing_chars)
+        if donor:
+            result = glyph_synth.inject_into_font(subset_bytes, donor["glyphs"])
+            provenance = donor["provenance"]
+    except Exception:  # noqa: BLE001 — fall through to the network donor
+        result = None
+
+    # 2. An open-source donor, as before.
+    if result is None:
+        try:
+            raw = font_extend.resolve_donor(font_display_name)
+            if not raw:
+                return None, "no_donor"
+            result = font_extend.extend_font(subset_bytes, raw, missing_chars)
+            provenance = "open-source donor font"
+        except Exception:  # noqa: BLE001
+            return None, "inject_failed"
+
+    if not _set_simple_widths(doc, refs,
+                              {ord(ch): result["width_1000"][ch] for ch in missing_chars}):
+        return None, "bad_widths"
+
+    doc.update_stream(refs["ff_xref"], result["font_bytes"])
+    # A simple font's /ToUnicode is keyed by character CODE, not by glyph id.
+    _add_tounicode_entries(doc, refs.get("tu_xref"),
+                           {ord(ch): ord(ch) for ch in missing_chars},
+                           hex_digits=2)
+    return result["gid"], None
+
+
+_TM_RE = re.compile(
+    rb"(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm")
+# Operators that move the pen WITHIN a text object. A block containing one of
+# these draws at more than one position, so shifting its Tm would drag every
+# one of them — including lines on other baselines.
+_MULTIPOS_RE = re.compile(rb"(?:^|[\s\]>)])(?:Td|TD|T\*|'|\")(?=[\s/\[(<]|$)")
+
+
+def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
+                      tol: float = 0.6):
+    """Shift text that follows the edited field on the SAME line by *dx*.
+
+    Replacing a field with longer text makes it run into whatever came after
+    it — on the attestation fixture the name overran the comma that follows
+    it by 66pt, because each span is positioned by its own ABSOLUTE text
+    matrix and therefore does not move when the text before it grows.
+
+    A word processor would push that comma along, and so does this: for every
+    text object on the same baseline whose origin is at or right of the edited
+    field's original end, the x translation of its Tm is increased by *dx*.
+    Nothing else about those objects changes — same font, same size, same
+    string, same y — so the gaps between them are preserved exactly.
+
+    Refuses (returns None) rather than guessing when any affected block
+    positions text more than once (a Td/TD/T*/quote inside the block), since
+    shifting that block's matrix would move text on other lines too.
+
+    Returns the number of runs shifted, or None if reflow isn't safe here.
+    """
+    if abs(dx) < 0.01:
+        return 0
+    edits, shifted = [], 0
+    for st in _content_streams(doc, page):
+        data = st["data"]
+        out = bytearray()
+        last = 0
+        changed = False
+        for m in _TM_RE.finditer(data):
+            try:
+                a, b, c, d, e, f = (float(m.group(i)) for i in range(1, 7))
+            except ValueError:
+                continue
+            if abs(b) > 1e-6 or abs(c) > 1e-6:
+                continue          # rotated/skewed text: not this pass's business
+            if abs(f - base_y) > tol or e < from_x - tol:
+                continue
+            bt = data.rfind(b"BT", 0, m.start())
+            et = data.find(b"ET", m.end())
+            if bt == -1 or et == -1:
+                return None
+            if _MULTIPOS_RE.search(data[bt:et]):
+                return None       # block draws at several positions — refuse
+            new_tm = (f"{a:g} {b:g} {c:g} {d:g} {e + dx:.4f} {f:g} Tm").encode("latin-1")
+            out += data[last:m.start()] + new_tm
+            last = m.end()
+            changed = True
+            shifted += 1
+        if changed:
+            out += data[last:]
+            edits.append((st["xref"], bytes(out)))
+    for xref, payload in edits:
+        doc.update_stream(xref, payload)
+    return shifted
+
+
+def _tm_origin_before(doc, page, needle: bytes):
+    """(x, y) of the absolute Tm that positions the run containing *needle*,
+    or None. Used to learn the edited field's own baseline so reflow can tell
+    which following runs are on the same line."""
+    for st in _content_streams(doc, page):
+        data = st["data"]
+        idx = data.find(needle)
+        if idx < 0:
+            continue
+        best = None
+        for m in _TM_RE.finditer(data, 0, idx):
+            best = m
+        if best is None:
+            continue
+        try:
+            e, f = float(best.group(5)), float(best.group(6))
+        except ValueError:
+            return None
+        return (e, f)
+    return None
 
 
 def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
@@ -1058,10 +1305,24 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
             if coverage is not None:
                 missing = sorted({ch for ch in new if not ch.isspace() and ch not in coverage})
                 if missing:
-                    doc.close()
-                    return {"ok": False, "reason": "missing_glyph", "missing": missing,
-                            "message": (f"This field's font is an embedded subset that doesn't "
-                                        f"contain these characters yet: {missing}.")}
+                    # Try to give the ORIGINAL font the glyphs it lacks rather
+                    # than refusing. Refusing here is not neutral: the caller
+                    # falls through to the redraw engine, which repaints the
+                    # background, stamps the text from a newly embedded font
+                    # and leaves the document carrying a font resource its
+                    # producer never wrote. Extending in place changes nothing
+                    # on the page except the characters that were edited.
+                    new_gids, fail_reason = _try_extend_simple(doc, nm, missing)
+                    if new_gids is None:
+                        doc.close()
+                        why = _SIMPLE_EXTEND_FAIL_MSG.get(
+                            fail_reason, "Couldn't add the missing glyph(s).")
+                        return {"ok": False, "reason": "missing_glyph",
+                                "missing": missing, "extend_reason": fail_reason,
+                                "message": (f"This field's font is an embedded subset that "
+                                            f"doesn't contain these characters yet: "
+                                            f"{missing}. {why}")}
+                    extended_chars = missing
 
     streams = _content_streams(doc, page)
     if not streams:
@@ -1077,8 +1338,36 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
 
     _apply(doc, runs, loc_result, new_codes, is_cid)
+    old_x1 = fitz.Rect(target["bbox"]).x1
+    page_h = doc[tpage].rect.height
+    base_y_pdf = page_h - target["origin"][1]
     edited = doc.tobytes(garbage=4, deflate=True)
     doc.close()
+
+    # ── reflow: push whatever follows on this line so it keeps its place ──
+    # A longer replacement runs into the next span, because each span carries
+    # its own absolute text matrix and so does not move when the text before
+    # it grows. Measured on the attestation fixture, the replacement name
+    # overran the comma after it by 66pt.
+    reflowed = 0
+    new_n = _norm(new)
+    rdoc = fitz.open(stream=edited, filetype="pdf")
+    try:
+        new_x1 = None
+        for s2 in _spans(rdoc[tpage]):
+            if new_n and new_n in _norm(s2["text"]):
+                new_x1 = fitz.Rect(s2["bbox"]).x1
+                break
+        if new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
+            n = _reflow_same_line(rdoc, rdoc[tpage], base_y_pdf,
+                                  old_x1, new_x1 - old_x1)
+            if n:
+                reflowed = n
+                edited = rdoc.tobytes(garbage=4, deflate=True)
+    except Exception:  # noqa: BLE001 — reflow is an improvement, never a
+        reflowed = 0   # reason to lose an otherwise-good edit
+    finally:
+        rdoc.close()
 
     diff = {"outside": None, "inside": None}
     if verify:
@@ -1093,17 +1382,26 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         # written data (e.g. a ToUnicode fix) even though the bytes
         # themselves are already correct.
         excl_bbox = fitz.Rect(target["bbox"])
-        new_n = _norm(new)
         edoc = fitz.open(stream=edited, filetype="pdf")
         for s2 in _spans(edoc[tpage]):
             if new_n and new_n in _norm(s2["text"]):
                 excl_bbox |= fitz.Rect(s2["bbox"])
                 break
+        if reflowed:
+            # Content was deliberately moved, so pixels outside the field DID
+            # change and claiming otherwise would be false. The guarantee is
+            # narrowed honestly to "nothing outside the edited LINE changed":
+            # the exclusion runs from the field's left edge to the page edge,
+            # across that line's own band only.
+            band = fitz.Rect(target["bbox"])
+            band.x1 = edoc[tpage].rect.width
+            excl_bbox |= band
         edoc.close()
         diff = _pixel_diff(pdf_bytes, edited, excl_bbox, tpage)
 
     return {"ok": True, "tier": ("extend" if extended_chars else ("remap" if is_cid else "clean")),
             "page": tpage, "case": loc_result["case"], "extended_chars": extended_chars,
+            "reflowed": reflowed,
             "diff_outside": diff["outside"], "diff_inside": diff["inside"],
             "guarantee": (diff["outside"] == 0) if verify else None,
             "pdf_b64": base64.b64encode(edited).decode()}

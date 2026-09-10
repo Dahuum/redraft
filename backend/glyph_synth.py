@@ -53,6 +53,7 @@ nonzero winding rule — becomes exact and dependency-free.
 """
 from __future__ import annotations
 
+import io
 import math
 
 from fontTools.pens.ttGlyphPen import TTGlyphPen
@@ -503,8 +504,22 @@ def shared_chars(src_tt, dst_tt, restrict: str = None) -> list:
 
 # ── the learned weight transform ────────────────────────────────────────────
 
-def _fit_line(pairs):
-    """Least-squares y = a·x + b over (x, y) pairs; (1.0, 0.0) if degenerate."""
+def _fit_line(pairs, through_origin: bool = False):
+    """Least-squares y = a·x + b over (x, y) pairs; (1.0, 0.0) if degenerate.
+
+    `through_origin` forces b = 0. Used for the VERTICAL fit, where the
+    intercept is not a free parameter: y = 0 is the baseline, the shared
+    origin every glyph in a font sits on, so it must map to y = 0 exactly.
+    Fitting it freely put a +15 unit intercept on this family — the
+    synthesized letters floated 0.10pt above the line their neighbours sat on,
+    which is small, systematic, and precisely the kind of defect that makes
+    otherwise-correct text look subtly wrong.
+    """
+    if through_origin:
+        sxx = sum(x * x for x, _ in pairs)
+        if sxx <= 1e-9:
+            return 1.0, 0.0
+        return sum(x * y for x, y in pairs) / sxx, 0.0
     n = len(pairs)
     if n < 2:
         return 1.0, 0.0
@@ -517,6 +532,50 @@ def _fit_line(pairs):
         return 1.0, (sy - sx) / n
     a = (n * sxy - sx * sy) / denom
     return a, (sy - a * sx) / n
+
+
+def build_y_anchors(m_src: dict, m_dst: dict, unit_scale: float) -> list:
+    """Anchor pairs (source y -> destination y) for the vertical mapping.
+
+    A single scale cannot do this job. The baseline is a hard constraint —
+    y=0 is the shared origin every glyph sits on, and letting a least-squares
+    fit put an intercept there floated the synthesized letters 0.10pt above
+    the line their neighbours sat on. But forcing the fit through the origin
+    then misses the other heights, because a family's cuts are not related by
+    one number: measured here, Regular->Bold scales the x-height by 1.0400,
+    the cap height by 1.0305 and the ascender by 1.0286.
+
+    So each landmark is mapped to its own measured counterpart and the space
+    between them is interpolated. Every anchor comes from font_metrics'
+    outline measurements; nothing is assumed.
+    """
+    pairs = {0.0: 0.0}   # baseline, always, exactly
+    for key in ("descender_units", "x_height_units",
+                "cap_height_units", "ascender_units"):
+        a, b = m_src.get(key), m_dst.get(key)
+        if a and b:
+            pairs[round(a * unit_scale, 3)] = b
+    return sorted(pairs.items())
+
+
+def map_y(anchors: list, y: float) -> float:
+    """Piecewise-linear vertical map through `anchors`, extrapolating beyond
+    the outermost pair with that pair's own slope."""
+    n = len(anchors)
+    if n < 2:
+        return y
+    if y <= anchors[0][0]:
+        (x0, y0), (x1, y1) = anchors[0], anchors[1]
+    elif y >= anchors[-1][0]:
+        (x0, y0), (x1, y1) = anchors[-2], anchors[-1]
+    else:
+        i = 0
+        while i < n - 2 and y > anchors[i + 1][0]:
+            i += 1
+        (x0, y0), (x1, y1) = anchors[i], anchors[i + 1]
+    if x1 == x0:
+        return y0
+    return y0 + (y - x0) * (y1 - y0) / (x1 - x0)
 
 
 class WeightTransform:
@@ -546,13 +605,14 @@ class WeightTransform:
          cancel the thickening this whole step exists to apply.
     """
 
-    def __init__(self, upm, unit_scale, va, vb, stem_dx, bar_dy,
+    def __init__(self, upm, unit_scale, y_anchors, va, stem_dx, bar_dy,
                  lsb_a, lsb_b, adv_anchors, rsb_med, report,
                  adv_model="local_ratio", diag_k=4.0, rsb_a=1.0, rsb_b=0.0,
                  outer_frac=1.0, exact_map=None):
         self.upm = upm
         self.unit_scale = unit_scale
-        self.va, self.vb = va, vb           # vertical affine, dst units
+        self.y_anchors = y_anchors          # measured vertical landmarks
+        self.va = va                        # effective x-height scale
         self.stem_dx = stem_dx              # units added to vertical stems
         self.bar_dy = bar_dy                # units added to horizontal bars
         self.lsb_a, self.lsb_b = lsb_a, lsb_b   # left-sidebearing affine
@@ -700,7 +760,7 @@ class WeightTransform:
         boundaries but leaves the frame alone.
         """
         u = self.unit_scale
-        pre = [[(x * u, (y * u) * self.va + self.vb) for (x, y) in poly]
+        pre = [[(x * u, map_y(self.y_anchors, y * u)) for (x, y) in poly]
                for poly in polys]
         dil = dilate_xy(pre, self.stem_dx, self.bar_dy, self.diag_k, self.outer_frac)
         p = dil
@@ -729,7 +789,7 @@ class WeightTransform:
         r = self.report
         return (f"<WeightTransform stem{self.stem_dx:+.0f}u bar{self.bar_dy:+.0f}u "
                 f"k={self.diag_k:g} of={self.outer_frac:g} "
-                f"vy({self.va:.4f},{self.vb:+.0f}) "
+                f"vy={len(self.y_anchors)}anch "
                 f"iou={r.get('iou_mean') or 0:.3f} "
                 f"stem_err={r.get('stem_err') or 1:.1%} "
                 f"h_err={r.get('height_err') or 1:.1%} "
@@ -752,7 +812,8 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
 
     pool = shared_chars(src_tt, dst_tt)
     if len(pool) < MIN_HELDOUT_GLYPHS * 2:
-        return WeightTransform(upm, unit_scale, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, [], 0.0,
+        return WeightTransform(upm, unit_scale, [(0.0, 0.0)], 1.0, 0.0, 0.0,
+                               1.0, 0.0, [], 0.0,
                                {"usable": False, "reason": "too_few_shared_glyphs",
                                 "shared": len(pool)})
 
@@ -773,30 +834,35 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
         # boxes. Using every glyph's top AND bottom (rather than one x-height
         # reading) means overshoots, ascenders, descenders and cap height all
         # constrain the same fit, and one odd glyph cannot dominate it.
-        v_pairs, lsb_pairs, anchors, rsbs, rsb_pairs = [], [], [], [], []
+        lsb_pairs, anchors, rsbs, rsb_pairs = [], [], [], []
         for ch in chars:
             bs = fmet.poly_bbox(_polys(src_tt, ch))
             bd = fmet.poly_bbox(_polys(dst_tt, ch))
             if not bs or not bd:
                 continue
-            v_pairs.append((bs[1] * unit_scale, bd[1]))
-            v_pairs.append((bs[3] * unit_scale, bd[3]))
             lsb_pairs.append((bs[0] * unit_scale, bd[0]))
             a_s, a_d = _advance(src_tt, ch), _advance(dst_tt, ch)
             if a_s and a_d:
                 anchors.append((a_s * unit_scale, a_d))
                 rsbs.append(a_d - bd[2])
                 rsb_pairs.append(((a_s - bs[2]) * unit_scale, a_d - bd[2]))
-        va, vb = _fit_line(v_pairs)
+        y_anchors = build_y_anchors(m_src, m_dst, unit_scale)
+        va = ((m_dst["x_height_units"] / (m_src["x_height_units"] * unit_scale))
+              if (m_dst.get("x_height_units") and m_src.get("x_height_units")) else 1.0)
         lsb_a, lsb_b = _fit_line(lsb_pairs)
 
         stem_src = (m_src["stem_units"] or 0) * unit_scale
         stem_dst = m_dst["stem_units"] or 0
         bar_src = (m_src["bar_units"] or 0) * unit_scale
         bar_dst = m_dst["bar_units"] or 0
-        # The vertical affine already scales bar thickness by `va`; the
-        # offsets only make up what remains.
-        stem_dx = (stem_dst - stem_src * va) if (stem_src and stem_dst) else 0.0
+        # A vertical STEM's width is horizontal, and the vertical map does not
+        # touch x, so its whole difference has to come from the offset.
+        # A horizontal BAR's thickness IS vertical, so the vertical map has
+        # already scaled it by `va` and the offset only makes up the rest.
+        # Applying `va` to both (which looked harmless while the vertical
+        # scale was ~1.003) under-thickened every stem by 7 units once the
+        # anchored map put the real x-height ratio of 1.040 in play.
+        stem_dx = (stem_dst - stem_src) if (stem_src and stem_dst) else 0.0
         bar_dy = (bar_dst - bar_src * va) if (bar_src and bar_dst) else 0.0
 
         # The destination font's own right-sidebearing habit, for the
@@ -818,7 +884,7 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
             vals.sort()
             exact_map[key] = vals[len(vals) // 2]
 
-        return WeightTransform(upm, unit_scale, va, vb, stem_dx, bar_dy,
+        return WeightTransform(upm, unit_scale, y_anchors, va, stem_dx, bar_dy,
                                lsb_a, lsb_b, anchors, rsb_med, {}, diag_k=diag_k,
                                rsb_a=rsb_a, rsb_b=rsb_b, outer_frac=outer_frac,
                                exact_map=exact_map)
@@ -1022,3 +1088,79 @@ def polys_to_ttglyph(polys: list, glyph_set=None):
             pen.lineTo((round(pt[0]), round(pt[1])))
         pen.closePath()
     return pen.glyph()
+
+
+def inject_into_font(subset_bytes: bytes, glyphs: dict) -> dict:
+    """Add synthesized glyphs to a COPY of an embedded subset font.
+
+    `glyphs` maps character -> {"polys", "advance"} in the subset's own font
+    units (what synthesize_char returns). Returns
+    {"font_bytes", "gid": {char: glyph id}, "width_1000": {char: width}},
+    matching font_extend.extend_font's contract so a caller can use either
+    source of glyphs interchangeably.
+
+    Adding the outline is only half of it. A glyph is unreachable until the
+    font's own cmap maps a codepoint to it, because a simple (non-CID) PDF
+    font resolves a character code through its encoding to a glyph NAME and
+    then through the font program's Unicode cmap — unlike the CID case, where
+    CIDToGIDMap indexes glyphs directly and no cmap is consulted at all.
+    Injecting outlines without cmap entries produced glyphs that existed in
+    the file and rendered as nothing.
+    """
+    from fontTools.ttLib import TTFont   # local: keeps module import cheap
+
+    tt = TTFont(io.BytesIO(subset_bytes))
+    if "glyf" not in tt:
+        raise ValueError("not a glyf-outline (TrueType) font — not supported yet")
+    upm = float(tt["head"].unitsPerEm or 1000)
+    existing = set(tt.getGlyphOrder())
+    gid_out, width_out = {}, {}
+
+    for ch, spec in glyphs.items():
+        polys, advance = spec.get("polys"), spec.get("advance")
+        if not polys or advance is None:
+            raise ValueError(f"no synthesized outline for {ch!r}")
+
+        name = f"synth{ord(ch):04X}"
+        while name in existing:
+            name += "_"
+        glyph = polys_to_ttglyph(polys)
+
+        order = tt.getGlyphOrder()
+        order.append(name)
+        tt.setGlyphOrder(order)
+        # glyf caches its own order — syncing it explicitly is required, or the
+        # new glyph compiles against a stale index.
+        tt["glyf"].glyphOrder = order
+        tt["glyf"][name] = glyph
+        try:
+            glyph.recalcBounds(tt["glyf"])
+        except Exception:  # noqa: BLE001 — bounds are recomputed on compile anyway
+            pass
+
+        bb = fmet.poly_bbox(polys)
+        lsb = int(round(bb[0])) if bb else 0
+        tt["hmtx"][name] = (max(int(round(advance)), 0), lsb)
+        tt["maxp"].numGlyphs = len(order)
+        existing.add(name)
+
+        gid = tt.getGlyphID(name)
+        gid_out[ch] = gid
+        width_out[ch] = round(advance * 1000.0 / upm)
+
+        cp = ord(ch)
+        if "cmap" not in tt:
+            continue
+        for table in tt["cmap"].tables:
+            if table.format == 0:
+                # format 0 is a raw byte-per-codepoint table and physically
+                # cannot reference a glyph id past 255, which a newly appended
+                # glyph almost always is.
+                if cp < 256 and gid < 256:
+                    table.cmap[cp] = name
+            else:
+                table.cmap[cp] = name
+
+    buf = io.BytesIO()
+    tt.save(buf)
+    return {"font_bytes": buf.getvalue(), "gid": gid_out, "width_1000": width_out}
