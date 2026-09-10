@@ -816,9 +816,31 @@ def _locate(runs, refmap, font_name, old_codes, is_cid, which=None,
              and str_toks[t]["gap_before"] <= _SPACE_GAP_THRESHOLD)
             for t in range(ti0 + 1, ti1 + 1)
         )
-        if ci0 == 0 and ci1 == last_tok_len - 1 and boundaries_ok:
+        if ci0 == 0 and ci1 == last_tok_len - 1:
+            # Whole tokens on both ends, so nothing outside the match is
+            # touched. If a crossed gap is a real inter-word space this is the
+            # plain multi-token case. If one of them is a KERNING nudge, the
+            # rewrite also discards that nudge — and that is now allowed
+            # rather than refused, because the nudge belongs to text being
+            # replaced in its entirety. Preserving one letter-pair's spacing
+            # from a value that no longer exists is not fidelity, and refusing
+            # over it was the single largest category of otherwise-editable
+            # fields (18 of 55 refusals across four documents).
+            #
+            # It is still a real difference, so it is REPORTED rather than
+            # done quietly: `dekerned` says it happened and `dropped_gaps`
+            # says by how much.
+            #
+            # Partial token coverage stays refused: with ci0 > 0 the token
+            # holds text BEFORE the match, and collapsing from the token's
+            # start would eat it.
+            dropped = [str_toks[t].get("gap_before")
+                       for t in range(ti0 + 1, ti1 + 1)]
             return {"ok": True, "case": "multi_token", "run": r_first,
-                    "tok_lo": ti0, "tok_hi": ti1, "n_occurrences": n_occurrences}
+                    "tok_lo": ti0, "tok_hi": ti1, "n_occurrences": n_occurrences,
+                    "dekerned": not boundaries_ok,
+                    "dropped_gaps": [g for g in dropped if g is not None]
+                                    if not boundaries_ok else []}
         return {"ok": False, "reason": "kerning_split_within_run"}
 
     last_run = runs[r_last]
@@ -880,9 +902,11 @@ _REASON_MSG = {
     "spans_multiple_streams": ("This text would need to be edited across two different embedded objects "
                               "at once (e.g. partly on the page, partly inside an embedded object) — "
                               "refusing rather than risk a mismatched edit."),
-    "kerning_split_within_run": ("This text has custom letter-spacing INSIDE a single drawing instruction "
-                                "(a kerning-adjusted run) — splicing that safely needs spacing-aware "
-                                "reconstruction, not built yet."),
+    "kerning_split_within_run": ("This text starts or ends part-way through a drawing instruction that "
+                                "carries its own letter-spacing, so rewriting it would disturb the "
+                                "spacing of neighbouring text that isn't being changed. (A kerned run "
+                                "the change covers COMPLETELY is rebuilt instead — only the partial "
+                                "case is refused.)"),
     "ragged_multirun_boundary": ("This text starts or ends in the middle of a drawing instruction that "
                                 "ALSO contains other, unrelated text — this test only edits runs that are "
                                 "cleanly and entirely covered by the change."),
@@ -2175,6 +2199,8 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     return {"ok": True, "tier": ("extend" if extended_chars else ("remap" if is_cid else "clean")),
             "page": tpage, "case": loc_result["case"], "extended_chars": extended_chars,
             "reflowed": reflowed, "tracking": round(tracking, 4),
+            "dekerned": bool(loc_result.get("dekerned")),
+            "dropped_gaps": loc_result.get("dropped_gaps") or [],
             "wordspace": round(wordspace, 4), "glyph_scale": round(glyph_scale, 3),
             "diff_outside": diff["outside"], "diff_inside": diff["inside"],
             "guarantee": (diff["outside"] == 0) if verify else None,

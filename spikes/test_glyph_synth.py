@@ -545,10 +545,14 @@ _d.close()
 check("the fixture still contains the kerned footer field", bool(_ct))
 if _ct:
     _r = sp.edit(_src_bytes, _ct[0]["text"].strip(), "contact@1337.zz",
-                 page=0, bbox=_ct[0]["bbox"], verify=False)
-    check("it is refused (splicing a kerned run isn't safe)", not _r.get("ok"))
-    check("and the reason given is the structural one, not 'not found'",
-          _r.get("reason") == "kerning_split_within_run", f"{_r.get('reason')}")
+                 page=0, bbox=_ct[0]["bbox"], verify=True)
+    # It sits in a kerning-adjusted run, which is now rebuilt rather than
+    # refused — the nudges belonged to the value being replaced. What matters
+    # is that it is disclosed and that nothing else on the page moves.
+    check("the kerned footer field now edits", _r.get("ok"), f"{_r.get('reason')}")
+    check("and says it dropped kerning", _r.get("dekerned") is True)
+    check("and nothing outside the field changed",
+          _r.get("diff_outside") == 0 and _r.get("guarantee"))
 check("a specific limit outranks a generic miss",
       sp._better_refusal({"reason": "sequence_not_found"},
                          {"reason": "kerning_split_within_run"}

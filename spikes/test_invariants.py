@@ -190,8 +190,18 @@ def stress(doc_name, data, n_spans=8, seed=7):
                                     if not fitz.Rect(dd[0].rect).contains(cb):
                                         continue    # off-page: nothing to draw
                                     pm = dd[0].get_pixmap(matrix=fitz.Matrix(8, 8), clip=cb)
-                                    dark = sum(1 for i in range(0, len(pm.samples), pm.n)
-                                               if pm.samples[i] < 160)
+                                    # Ink is any pixel that is not near-white
+                                    # in EVERY channel. Sampling only the red
+                                    # channel called pure-red text blank: the
+                                    # arXiv licence footer is 0xff0000, so it
+                                    # reads 255 there and the original page
+                                    # "failed" its own invariant.
+                                    buf, ch = pm.samples, pm.n
+                                    dark = 0
+                                    for i in range(0, len(buf), ch):
+                                        if min(buf[i:i + min(3, ch)]) < 200:
+                                            dark += 1
+                                            break
                                     if dark == 0:
                                         blank.append(c["c"])
                                 if blank:
