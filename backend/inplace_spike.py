@@ -122,6 +122,30 @@ def _spans(page):
 # this is the honest source of truth for "which characters (and which glyph-id)
 # this specific embedding already has" — there is no reliable cmap to consult
 # directly for a Type0/CID-subset font.
+def _name_key(name: str) -> str:
+    """A font name reduced to its identity: lowercase alphanumerics only.
+
+    Two naming conventions meet in this engine and do not agree. Maps built
+    from the PDF structure key on the BaseFont ("Tw Cen MT Bold"); maps built
+    from extraction key on whatever the extractor normalises that to
+    ("TwCenMT-Bold"). Looking one up with the other's key silently missed, so
+    the glyph map for a font came back empty and every character in it looked
+    missing. Reduced this way both become "twcenmtbold".
+    """
+    return "".join(c for c in name.lower() if c.isalnum())
+
+
+def _lookup_by_name(mapping: dict, name: str):
+    """mapping[name], falling back to a match on _name_key."""
+    if name in mapping:
+        return mapping[name]
+    want = _name_key(name)
+    for k, v in mapping.items():
+        if _name_key(k) == want:
+            return v
+    return None
+
+
 def _gid_maps(doc):
     gm = {}
     for pno in range(doc.page_count):
@@ -1289,6 +1313,12 @@ def _tm_origin_before(doc, page, needle: bytes):
 # itself proof that it left the page.
 _TRUNCATED = object()
 
+# Bounds on the search for the right (font object, encoding, occurrence).
+# The ordinary case resolves on the first attempt; these only stop a
+# pathological page from turning one edit into hundreds of parses.
+_MAX_OCCURRENCE_TRIES = 6
+_MAX_LOCATE_ATTEMPTS = 24
+
 MAX_WORDSPACE_SHRINK = 0.20
 MAX_TRACK_EM = 0.02
 MIN_GLYPH_SCALE = 0.97
@@ -1548,7 +1578,7 @@ def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
     return total * size / 1000.0
 
 
-def _prepare_edit(doc, tpage, nm, is_cid, old_n, new):
+def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
     """Encode old/new for one assumed encoding, extend the font if needed, and
     locate the splice — all on `doc`, which this MUTATES on success.
 
@@ -1560,7 +1590,7 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new):
     """
     extended_chars: list = []
     if is_cid:
-        fm = _gid_maps(doc).get(nm, {})
+        fm = _lookup_by_name(_gid_maps(doc), nm) or {}
         missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
         if missing:
             new_gids, fail_reason = _try_extend(doc, nm, missing)
@@ -1577,8 +1607,8 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new):
         if any(c is None for c in old_codes) or any(c is None for c in new_codes):
             return {"ok": False, "reason": "unmappable", "message": _REASON_MSG["unmappable"]}
     else:
-        cm = _simple_font_code_maps(doc).get(nm)
-        enc_name = _simple_font_encodings(doc).get(nm)
+        cm = _lookup_by_name(_simple_font_code_maps(doc), nm)
+        enc_name = _lookup_by_name(_simple_font_encodings(doc), nm)
         old_codes = _encode_simple_text(old_n, cm["rev"], cm["max_len"]) if cm else None
         new_codes = _encode_simple_text(new, cm["rev"], cm["max_len"]) if cm else None
         if old_codes is None:
@@ -1625,7 +1655,7 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new):
     runs = _all_runs(streams)
     refmap = _page_font_refmap(page)
 
-    loc_result = _locate(runs, refmap, nm, old_codes, is_cid,
+    loc_result = _locate(runs, refmap, nm, old_codes, is_cid, which=which,
                          refsub=_page_font_subtypes(page))
     if not loc_result["ok"]:
         reason = loc_result["reason"]
@@ -1705,54 +1735,25 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     cid_options = sorted(set(cid_options), reverse=True)   # try CID first
     page = doc[tpage]
 
-    # Try each encoding this display name really uses, on a fresh copy of the
-    # document, and keep the one that can locate the text.
-    prep, prep_error, is_cid = None, None, cid_options[0]
-    for _cid in cid_options:
-        adoc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        try:
-            res = _prepare_edit(adoc, tpage, nm, _cid, old_n, new)
-        except Exception:  # noqa: BLE001 — a bad guess must not kill the good one
-            adoc.close()
-            continue
-        if res.get("ok"):
-            doc.close()
-            doc, prep, is_cid = adoc, res, _cid
-            break
-        adoc.close()
-        if prep_error is None:
-            prep_error = res
-    if prep is None:
-        doc.close()
-        return prep_error or {"ok": False, "reason": "sequence_not_found",
-                              "message": _REASON_MSG["sequence_not_found"]}
-
-    page = doc[tpage]
-    old_codes = prep["old_codes"]
-    new_codes = prep["new_codes"]
-    extended_chars = prep["extended_chars"]
-    runs = prep["runs"]
-    refmap = prep["refmap"]
-    loc_result = prep["loc"]
-
-    # WHICH occurrence to splice, when the same string appears more than once
-    # in this font on this page. The caller named one by bbox and that has to
-    # be honoured: splicing the first match regardless is how editing the
-    # second of two identical values silently rewrote the first instead —
-    # found by stressing a LaTeX paper ('models' twice) and a Chrome-printed
-    # export ('language.' twice), where the edit landed on a different line
-    # each time.
+    # WHICH font object, WHICH encoding, and WHICH occurrence to splice.
     #
-    # The right one is found by TRYING and CHECKING rather than by estimating
-    # positions from the content stream. An earlier attempt did estimate them,
-    # walking back to the enclosing BT for the last Tm and accumulating any
-    # Td/TD after it; that worked on the LaTeX paper and produced coordinates
-    # matching nothing at all on the Chrome export, whose text objects are
-    # built differently. Applying each candidate to a throwaway copy and
-    # asking whether the SPAN THE CALLER POINTED AT changed cannot be fooled
-    # by how the producer chose to position its text.
+    # None of the three can be read off the span. A span's reported font name
+    # does not identify a font object: this fixture draws '12/05/2001' and
+    # 'Essaouira' with a Type0 font whose BaseFont is 'Tw Cen MT Bold', and
+    # the extractor reports their font as 'TwCenMT-Bold' — the name of a
+    # DIFFERENT, TrueType object on the same page. Searching only the runs of
+    # the name the span reported therefore found nothing at all and refused
+    # with sequence_not_found, which is why five of eight sampled fields on
+    # this document could not be edited in place. The same name can also
+    # cover two objects of different subtype, and the same string can appear
+    # several times in one font.
+    #
+    # So every plausible combination is TRIED and the result CHECKED: does the
+    # span the caller pointed at now read as the replacement? Only a splice
+    # into the right run can make that true, so verification — not a guess
+    # about names, encodings or positions — decides. The span's own name and
+    # subtype are tried first, so the ordinary case costs exactly one attempt.
     target_rect = fitz.Rect(target["bbox"])
-    n_occ = loc_result.get("n_occurrences", 1)
 
     def _hits_target(pdf_bytes_):
         try:
@@ -1765,47 +1766,98 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                     continue
                 if fitz.Rect(s2["bbox"]).intersects(target_rect) or \
                         abs(s2["bbox"][0] - target_rect.x0) < 2.0:
-                    # It must CONTAIN the replacement and no longer read as
-                    # the original. Testing only for the replacement is
-                    # satisfied by an untouched span whenever the new text is
-                    # a substring of the old one — replacing 'models' with
-                    # 'mod' looked like a hit on the span that had not
-                    # changed at all, so the wrong occurrence was kept.
+                    # Must show the replacement's BEGINNING and no longer read
+                    # as the original.
+                    #
+                    # A prefix, not the whole string: a run that overflows the
+                    # page extracts truncated, so demanding the full text made
+                    # the correct candidate fail verification — the edit was
+                    # then refused as sequence_not_found instead of
+                    # would_overflow, and everything downstream that keeps
+                    # over-long text on the page stopped firing.
+                    #
+                    # And it must DIFFER from the original, because testing
+                    # only for the replacement is satisfied by an untouched
+                    # span whenever the new text is a substring of the old —
+                    # 'models' -> 'mod' looked like a hit on a span that had
+                    # not changed at all.
                     txt = _norm(s2["text"])
-                    if _norm(new) in txt and txt != _norm(old):
+                    head = _norm(new)[:10]
+                    if head and head in txt and txt != _norm(old_n):
                         return True
             return False
         finally:
             probe.close()
 
-    _apply(doc, runs, loc_result, new_codes, is_cid)
-    if n_occ > 1:
-        trial = doc.tobytes(garbage=0)
-        if not _hits_target(trial):
-            for which in range(n_occ):
-                cand_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                cand_streams = _content_streams(cand_doc, cand_doc[tpage])
-                cand_runs = _all_runs(cand_streams)
-                cand_loc = _locate(cand_runs, _page_font_refmap(cand_doc[tpage]),
-                                   nm, old_codes, is_cid, which=which)
-                if not cand_loc.get("ok"):
-                    cand_doc.close()
-                    continue
-                # Re-inject glyphs on this copy; the first pass mutated the
-                # original document object, not this one.
-                if extended_chars:
-                    if is_cid:
-                        _try_extend(cand_doc, nm, extended_chars)
-                    else:
-                        _try_extend_simple(cand_doc, nm, extended_chars)
-                _apply(cand_doc, cand_runs, cand_loc, new_codes, is_cid)
-                cand_bytes = cand_doc.tobytes(garbage=0)
-                cand_doc.close()
-                if _hits_target(cand_bytes):
-                    doc.close()
-                    doc = fitz.open(stream=cand_bytes, filetype="pdf")
-                    loc_result = cand_loc
+    page_names = []
+    for _f in doc[tpage].get_fonts(full=True):
+        _n = _f[3].split("+")[-1]
+        if _n not in page_names:
+            page_names.append(_n)
+    name_order = ([nm] if nm in page_names else []) + [n for n in page_names if n != nm]
+    if not name_order:
+        name_order = [nm]
+
+    def _subtypes_of(name):
+        out = []
+        for _pno in range(doc.page_count):
+            for _f in doc[_pno].get_fonts(full=True):
+                if _f[3].split("+")[-1] == name and _f[2] not in out:
+                    out.append(_f[2])
+        return out or ["TrueType"]
+
+    prep = prep_error = None
+    chosen_bytes = None
+    attempts = 0
+    for cand_nm in name_order:
+        cid_opts = sorted({t == "Type0" for t in _subtypes_of(cand_nm)}, reverse=True)
+        if cand_nm == nm:
+            cid_opts = sorted(cid_opts, key=lambda c: c != (subtype.get(nm) == "Type0"))
+        for cand_cid in cid_opts:
+            for which in range(_MAX_OCCURRENCE_TRIES):
+                if attempts >= _MAX_LOCATE_ATTEMPTS:
                     break
+                attempts += 1
+                adoc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                try:
+                    res = _prepare_edit(adoc, tpage, cand_nm, cand_cid, old_n, new,
+                                        which=which)
+                except Exception:  # noqa: BLE001 — a bad guess must not lose a good one
+                    adoc.close()
+                    break
+                if not res.get("ok"):
+                    adoc.close()
+                    if prep_error is None and cand_nm == nm:
+                        prep_error = res
+                    break
+                if which >= res["loc"].get("n_occurrences", 1):
+                    adoc.close()
+                    break
+                _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid)
+                cand_bytes = adoc.tobytes(garbage=0)
+                adoc.close()
+                if _hits_target(cand_bytes):
+                    prep, chosen_bytes = res, cand_bytes
+                    nm, is_cid = cand_nm, cand_cid
+                    break
+            if prep is not None:
+                break
+        if prep is not None:
+            break
+
+    if prep is None:
+        doc.close()
+        return prep_error or {"ok": False, "reason": "sequence_not_found",
+                              "message": _REASON_MSG["sequence_not_found"]}
+
+    doc.close()
+    doc = fitz.open(stream=chosen_bytes, filetype="pdf")
+    page = doc[tpage]
+    old_codes = prep["old_codes"]
+    new_codes = prep["new_codes"]
+    extended_chars = prep["extended_chars"]
+    loc_result = prep["loc"]
+
     old_x1 = fitz.Rect(target["bbox"]).x1
     old_x0 = target["origin"][0]
     page_h = doc[tpage].rect.height

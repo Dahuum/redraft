@@ -495,6 +495,44 @@ if _amb_name:
               f"{ {k: v for k, v in _rr.items() if k != 'pdf_b64'} }")
 
 print()
+print("=== 4i) text inside a form XObject is editable in place ===")
+# 'Réf : AS202100125' was written by the REDRAW engine when this fixture was
+# produced, so it lives in a stamp XObject and is drawn by a Type0 font whose
+# BaseFont is 'Tw Cen MT Bold' — while the extractor reports its span's font
+# as 'TwCenMT-Bold', the name of a different, TrueType object on the page.
+# Searching only the runs of the name the span reported found nothing, so the
+# field refused with sequence_not_found: a document the redraw engine had
+# touched could not afterwards be edited in place at all.
+_d = fitz.open(FIXTURE)
+_xo = [x for x in sp._spans(_d[0]) if x["text"].strip() == "Réf : AS202100125"]
+_d.close()
+check("the fixture still contains the XObject-drawn field", bool(_xo))
+if _xo:
+    _t = _xo[0]
+    _r = sp.edit(_src_bytes, _t["text"].strip(), "Réf : AS202100999",
+                 page=0, bbox=_t["bbox"], verify=True)
+    check("it can be edited in place", _r.get("ok"),
+          f"{ {k: v for k, v in _r.items() if k != 'pdf_b64'} }")
+    if _r.get("ok"):
+        check("with nothing outside the field changed",
+              _r.get("diff_outside") == 0 and _r.get("guarantee"),
+              f"diff_outside={_r.get('diff_outside')}")
+        _o = fitz.open(FIXTURE)
+        _n = fitz.open(stream=base64.b64decode(_r["pdf_b64"]), filetype="pdf")
+        check("and no font resource or XObject added",
+              len(_n[0].get_fonts(full=True)) == len(_o[0].get_fonts(full=True))
+              and len(_n[0].get_xobjects()) == len(_o[0].get_xobjects()))
+        _txt = " ".join(sp_["text"] for b in _n[0].get_text("dict")["blocks"]
+                        for l in b.get("lines", []) for sp_ in l.get("spans", []))
+        check("and the new value reads back", "AS202100999" in _txt)
+        _o.close()
+        _n.close()
+
+check("a font name maps to its identity regardless of convention",
+      sp._name_key("Tw Cen MT Bold") == sp._name_key("TwCenMT-Bold") == "twcenmtbold",
+      f"{sp._name_key('Tw Cen MT Bold')!r} vs {sp._name_key('TwCenMT-Bold')!r}")
+
+print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
 try:
     import font_extend  # noqa: E402
