@@ -1204,6 +1204,215 @@ def _tm_origin_before(doc, page, needle: bytes):
     return None
 
 
+# Typographic compression budget before an edit is refused as not fitting.
+# Tracking (per-character spacing) is the least visible way to reclaim width —
+# it is what a typesetter reaches for first, and at a fiftieth of an em it is
+# invisible in running text. Glyph scaling distorts letterforms and font-size
+# changes are a visible change of identity, so neither is done silently here.
+MAX_TRACK_EM = 0.02
+
+
+def _text_right_limit(page, exclude_bbox=None) -> float:
+    """The x past which an edit must not push text on this page.
+
+    Two candidates, and the LARGER wins:
+
+      - where the page's own text actually ends, which is where the producer's
+        right margin is. The edited field itself is excluded, or a field that
+        happens to be the rightmost thing on the page becomes its own limit
+        and any growth at all reads as an overflow — which is exactly what
+        happened on the small single-line fixtures, refused at "x=216 past the
+        margin at x=216".
+      - the page width less its left margin, taken from where text starts on
+        the left. This is what makes a one-line document work at all: with
+        nothing else on the page to measure against, the paper is the only
+        real constraint.
+
+    Running off the PAGE is unambiguously wrong; running past the text block
+    but still on the paper is a judgement call, so the rule refuses only the
+    former.
+    """
+    right, left = 0.0, None
+    for blk in page.get_text("dict")["blocks"]:
+        for line in blk.get("lines", []):
+            for span in line.get("spans", []):
+                if not span.get("text", "").strip():
+                    continue
+                bb = span["bbox"]
+                if exclude_bbox is not None and abs(bb[0] - exclude_bbox[0]) < 0.6 \
+                        and abs(bb[1] - exclude_bbox[1]) < 0.6:
+                    continue
+                right = max(right, bb[2])
+                left = bb[0] if left is None else min(left, bb[0])
+    page_limit = page.rect.width - min(left if left is not None else 0.0, 72.0)
+    return max(right, page_limit)
+
+
+def _line_extent(page, base_y_topdown: float, tol: float = 0.6):
+    """(leftmost x0, rightmost x1) of the text sharing this baseline."""
+    lo, hi = None, None
+    for blk in page.get_text("dict")["blocks"]:
+        for line in blk.get("lines", []):
+            for span in line.get("spans", []):
+                if abs(span["origin"][1] - base_y_topdown) > tol:
+                    continue
+                if not span.get("text", "").strip():
+                    continue
+                lo = span["bbox"][0] if lo is None else min(lo, span["bbox"][0])
+                hi = span["bbox"][2] if hi is None else max(hi, span["bbox"][2])
+    return lo, hi
+
+
+def _apply_tracking(doc, page, base_y_pdf: float, at_x: float, tc: float,
+                    tol: float = 0.6) -> bool:
+    """Set character spacing (Tc) on the one text object at (at_x, base_y).
+
+    Tc is a real PDF text-state operator: it adds `tc` to every glyph's
+    advance, so a small negative value tightens the run. It is scoped by
+    resetting it to 0 before the block's ET, so it cannot leak into any text
+    drawn afterwards even in a document that does not wrap its runs in q/Q.
+    """
+    for st in _content_streams(doc, page):
+        data = st["data"]
+        for m in _TM_RE.finditer(data):
+            try:
+                b, c, e, f = (float(m.group(i)) for i in (2, 3, 5, 6))
+            except ValueError:
+                continue
+            if abs(b) > 1e-6 or abs(c) > 1e-6:
+                continue
+            if abs(f - base_y_pdf) > tol or abs(e - at_x) > tol:
+                continue
+            et = data.find(b"ET", m.end())
+            if et == -1:
+                return False
+            payload = (data[:m.end()] + f" {tc:.4f} Tc".encode("latin-1")
+                       + data[m.end():et] + b" 0 Tc " + data[et:])
+            doc.update_stream(st["xref"], payload)
+            return True
+    return False
+
+
+def _parse_widths_array(doc, refs):
+    """(first_char, [w1000, ...]) from a simple font's /Widths, or None."""
+    first, last = refs.get("first_char"), refs.get("last_char")
+    if first is None or last is None:
+        return None
+    kind, val = refs.get("widths_kind"), refs.get("widths_val")
+    if kind == "array" and val:
+        text = val
+    elif kind == "xref" and val:
+        m = re.match(r"(\d+)\s+0\s+R", val)
+        if not m:
+            return None
+        text = doc.xref_object(int(m.group(1)), compressed=True)
+    else:
+        return None
+    widths = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", text)]
+    if len(widths) != (last - first + 1):
+        return None
+    return first, widths
+
+
+def _cid_widths_map(doc, cid_xref) -> dict:
+    """{cid: width} from a CIDFont's /W array, which comes in two shapes:
+    `c [w1 w2 …]` (consecutive) and `c_first c_last w` (a run at one width)."""
+    kind, val = doc.xref_get_key(cid_xref, "W")
+    if kind == "array" and val:
+        text = val
+    elif kind == "xref" and val:
+        m = re.match(r"(\d+)\s+0\s+R", val)
+        if not m:
+            return {}
+        text = doc.xref_object(int(m.group(1)), compressed=True)
+    else:
+        return {}
+    toks = re.findall(r"\[|\]|-?\d+(?:\.\d+)?", text)
+    out, i = {}, 0
+    while i < len(toks):
+        if toks[i] == "[":
+            i += 1
+            continue
+        if toks[i] == "]":
+            i += 1
+            continue
+        try:
+            c = int(float(toks[i]))
+        except ValueError:
+            i += 1
+            continue
+        if i + 1 < len(toks) and toks[i + 1] == "[":
+            j = i + 2
+            cid = c
+            while j < len(toks) and toks[j] != "]":
+                out[cid] = float(toks[j])
+                cid += 1
+                j += 1
+            i = j + 1
+        elif i + 2 < len(toks):
+            try:
+                c2, w = int(float(toks[i + 1])), float(toks[i + 2])
+                for cid in range(c, min(c2, c + 65535) + 1):
+                    out[cid] = w
+            except ValueError:
+                pass
+            i += 3
+        else:
+            break
+    return out
+
+
+def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
+    """Width of `codes` in points, from the PDF's OWN advance widths.
+
+    Computed rather than measured back out of the edited page, because a run
+    that overflows the page is exactly the case that needs measuring and
+    exactly the case extraction cannot report: glyphs drawn past the media box
+    are not extracted at all, so the text comes back silently truncated (a
+    76-character name extracted as 73 and looked like it fit). /Widths is
+    also what the viewer itself uses to advance the pen, so this is the
+    number that actually decides the layout.
+
+    Returns -1.0 when the width table cannot be read, so the caller can refuse
+    rather than proceed on a guess.
+    """
+    if is_cid:
+        type0 = None
+        for pno in range(doc.page_count):
+            for f in doc[pno].get_fonts(full=True):
+                if f[3].split("+")[-1] == font_display_name:
+                    type0 = f[0]
+                    break
+            if type0:
+                break
+        if type0 is None:
+            return -1.0
+        refs = _font_stream_refs(doc, type0)
+        if not refs or refs == "cff":
+            return -1.0
+        wmap = _cid_widths_map(doc, refs["cid_xref"])
+        if not wmap:
+            return -1.0
+        kind, dw = doc.xref_get_key(refs["cid_xref"], "DW")
+        default = float(dw) if kind == "int" and dw else 1000.0
+        total = sum(wmap.get(c, default) for c in codes)
+    else:
+        refs = _simple_font_refs(doc, font_display_name)
+        if not refs:
+            return -1.0
+        parsed = _parse_widths_array(doc, refs)
+        if not parsed:
+            return -1.0
+        first, widths = parsed
+        total = 0.0
+        for c in codes:
+            idx = c - first
+            if not (0 <= idx < len(widths)):
+                return -1.0
+            total += widths[idx]
+    return total * size / 1000.0
+
+
 def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof.
@@ -1339,6 +1548,7 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
 
     _apply(doc, runs, loc_result, new_codes, is_cid)
     old_x1 = fitz.Rect(target["bbox"]).x1
+    old_x0 = target["origin"][0]
     page_h = doc[tpage].rect.height
     base_y_pdf = page_h - target["origin"][1]
     edited = doc.tobytes(garbage=4, deflate=True)
@@ -1350,14 +1560,82 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     # it grows. Measured on the attestation fixture, the replacement name
     # overran the comma after it by 66pt.
     reflowed = 0
+    tracking = 0.0
     new_n = _norm(new)
+
+    # New right edge of the field, from the PDF's own advance widths rather
+    # than by re-extracting the edited page (see _run_width_pt: an overflowing
+    # run extracts truncated, which is the one case this must get right).
+    def _field_x1(track: float = 0.0):
+        """New right edge of the edited field, or None if neither method can
+        establish it.
+
+        Prefers the PDF's own advance widths (see _run_width_pt), because that
+        is the only method that works when the run overflows the page: glyphs
+        past the media box are not extracted, so re-reading the edited page
+        reports the text silently truncated and makes an overflow look like a
+        fit. Falls back to extraction for fonts whose width table can't be
+        parsed — many can't, and refusing those outright turned a safety check
+        into a regression that failed 16 previously-passing edits.
+        """
+        d = fitz.open(stream=edited, filetype="pdf")
+        try:
+            w = _run_width_pt(d, nm, new_codes, target["size"], is_cid)
+            if w >= 0:
+                return old_x0 + w + track * len(new_codes)
+            for s2 in _spans(d[tpage]):
+                if new_n and new_n in _norm(s2["text"]):
+                    return fitz.Rect(s2["bbox"]).x1
+        finally:
+            d.close()
+        return None
+
+    # ── does the edited line still fit the page's own text margin? ────────
+    # Reflow moves what follows, so a longer replacement pushes the whole
+    # line rightward; without this check a long enough value simply runs off
+    # the page (measured: a 76-character name ended at x=603 on a 595pt page).
+    odoc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        right_limit = _text_right_limit(odoc[tpage], target["bbox"])
+        _, line_end_old = _line_extent(odoc[tpage], target["origin"][1])
+    finally:
+        odoc.close()
+    trailing = max(0.0, (line_end_old or old_x1) - old_x1)
+
+    # When the extent can't be established at all, the overflow check and the
+    # reflow are both skipped and the edit proceeds exactly as it did before
+    # either existed — an unmeasurable line is a reason to add nothing, not a
+    # reason to throw away a good edit.
+    new_x1 = _field_x1()
+    if new_x1 is not None:
+        overflow = (new_x1 + trailing) - right_limit
+        if overflow > 0.05:
+            # Tighten the run's tracking, the least visible way to reclaim
+            # width. Refuse if that isn't enough rather than either running
+            # past the margin or silently changing the font size — the caller
+            # then falls back to the redraw engine, which resizes visibly but
+            # at least keeps the text on the page.
+            n_chars = max(len(new), 1)
+            tc = -overflow / n_chars
+            if abs(tc) <= MAX_TRACK_EM * target["size"]:
+                tdoc = fitz.open(stream=edited, filetype="pdf")
+                try:
+                    if _apply_tracking(tdoc, tdoc[tpage], base_y_pdf, old_x0, tc):
+                        edited = tdoc.tobytes(garbage=4, deflate=True)
+                        tracking = tc
+                        new_x1 = _field_x1(tc) or new_x1
+                finally:
+                    tdoc.close()
+            if (new_x1 + trailing) - right_limit > 0.05:
+                return {"ok": False, "reason": "would_overflow",
+                        "message": (f"The replacement is too long for this line: it would "
+                                    f"reach x={new_x1 + trailing:.0f} past the page's text "
+                                    f"margin at x={right_limit:.0f}, and tightening the "
+                                    f"spacing within an invisible range isn't enough to "
+                                    f"recover it.")}
+
     rdoc = fitz.open(stream=edited, filetype="pdf")
     try:
-        new_x1 = None
-        for s2 in _spans(rdoc[tpage]):
-            if new_n and new_n in _norm(s2["text"]):
-                new_x1 = fitz.Rect(s2["bbox"]).x1
-                break
         if new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
             n = _reflow_same_line(rdoc, rdoc[tpage], base_y_pdf,
                                   old_x1, new_x1 - old_x1)
@@ -1401,7 +1679,7 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
 
     return {"ok": True, "tier": ("extend" if extended_chars else ("remap" if is_cid else "clean")),
             "page": tpage, "case": loc_result["case"], "extended_chars": extended_chars,
-            "reflowed": reflowed,
+            "reflowed": reflowed, "tracking": round(tracking, 4),
             "diff_outside": diff["outside"], "diff_inside": diff["inside"],
             "guarantee": (diff["outside"] == 0) if verify else None,
             "pdf_b64": base64.b64encode(edited).decode()}

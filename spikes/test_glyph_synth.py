@@ -338,6 +338,51 @@ if _res.get("ok"):
     _out.close()
 
 print()
+print("=== 4f) too-long text: tighten invisibly, then refuse — never resize ===")
+_base = "Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun El Amrani"
+_ladder = []
+for _extra in ("", " T", " Ta", " Taz", " Tazi", " Tazi Bennani Sqalli"):
+    _n = _base + _extra
+    _r = sp.edit(_src_bytes, "Sara Idrissi", _n, page=0, verify=False)
+    _ladder.append((len(_n), _r.get("ok"), _r.get("tracking", 0.0), _r.get("reason")))
+
+check("a replacement that fits needs no tracking at all",
+      _ladder[0][1] and abs(_ladder[0][2]) < 1e-9, f"{_ladder[0]}")
+_tracked = [t for _, ok, t, _r in _ladder if ok and abs(t) > 1e-9]
+check("a slight overrun is absorbed by tightening the spacing",
+      len(_tracked) >= 1, f"{_ladder}")
+check("tracking never exceeds the invisible budget",
+      all(abs(t) <= sp.MAX_TRACK_EM * 14.04 + 1e-6 for t in _tracked),
+      f"max |tc| = {max((abs(t) for t in _tracked), default=0):.4f}pt, "
+      f"budget {sp.MAX_TRACK_EM * 14.04:.4f}pt")
+check("beyond that it is refused rather than silently resized",
+      any((not ok) and reason == "would_overflow" for _, ok, _t, reason in _ladder),
+      f"{_ladder}")
+# Running off the paper is the failure this whole check exists to prevent, so
+# assert it on the real output of every case that WAS accepted.
+_pw = fitz.open(FIXTURE)[0].rect.width
+_worst_end = 0.0
+for _extra in ("", " T", " Ta", " Taz", " Tazi", " Tazi Bennani Sqalli"):
+    _n = _base + _extra
+    _r = sp.edit(_src_bytes, "Sara Idrissi", _n, page=0, verify=False)
+    if not _r.get("ok"):
+        continue
+    _d = fitz.open(stream=base64.b64decode(_r["pdf_b64"]), filetype="pdf")
+    for _b in _d[0].get_text("dict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _s in _l.get("spans", []):
+                if _s["text"].strip():
+                    _worst_end = max(_worst_end, _s["bbox"][2])
+    _d.close()
+check("no accepted edit puts text past the page edge",
+      _worst_end <= _pw, f"rightmost text {_worst_end:.1f} vs page {_pw:.1f}")
+_worst = sp.edit(_src_bytes, "Sara Idrissi", _base + " Tazi Bennani Sqalli",
+                 page=0, verify=False)
+check("the longest case reports a reason a person can act on",
+      (not _worst.get("ok")) and "too long" in (_worst.get("message") or ""),
+      f"{_worst.get('message')}")
+
+print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
 try:
     import font_extend  # noqa: E402

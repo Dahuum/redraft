@@ -500,7 +500,10 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     document, and the pixel-diff proof is a reporting extra, not something
     the edit's own correctness depends on (see edit()'s docstring).
 
-    Returns (current_bytes, in_place_count, still_needed) — `still_needed`
+    Returns (current_bytes, in_place_count, still_needed, refusals) —
+    `refusals` records WHY each field the engine declined was declined, so a
+    caller can surface a real reason ("too long for this line") instead of a
+    silent change of behaviour. `still_needed`
     is every replacement this engine honestly refused (an unsupported font/
     encoding shape, a kerning split it can't safely reconstruct, etc — see
     spikes/README.md's "known limits"), for the caller to fall back to the
@@ -510,18 +513,21 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     current = pdf_bytes
     in_place_count = 0
     still_needed = []
+    refusals = []
     for sd, new_text in replacements:
         try:
             r = _spike.edit(current, sd["text"], new_text,
                             page=sd["page"], bbox=sd["bbox"], verify=False)
         except Exception:  # noqa: BLE001
-            r = {"ok": False}
+            r = {"ok": False, "reason": "engine_error"}
         if r.get("ok"):
             current = base64.b64decode(r["pdf_b64"])
             in_place_count += 1
         else:
             still_needed.append((sd, new_text))
-    return current, in_place_count, still_needed
+            refusals.append({"text": sd["text"][:60], "reason": r.get("reason"),
+                             "message": r.get("message")})
+    return current, in_place_count, still_needed, refusals
 
 
 def apply_replacements(pdf_bytes: bytes, replacements: list,
@@ -545,11 +551,15 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
     byte-for-byte guarantee instead of a redraw.
     """
     in_place_count = 0
+    inplace_refusals = []
     if try_inplace:
-        pdf_bytes, in_place_count, replacements = _try_inplace_batch(pdf_bytes, replacements)
+        (pdf_bytes, in_place_count, replacements,
+         inplace_refusals) = _try_inplace_batch(pdf_bytes, replacements)
         if not replacements:
             return pdf_bytes, {"fonts": [], "warnings": [],
-                               "in_place": {"count": in_place_count, "total": in_place_count}}
+                               "in_place": {"count": in_place_count,
+                                            "total": in_place_count,
+                                            "refusals": inplace_refusals}}
 
     total = in_place_count + len(replacements)
     with _TmpPDF(pdf_bytes) as in_path:
@@ -599,7 +609,8 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                 edited = f.read()
             return edited, {"fonts": report,
                             "warnings": [str(w.message) for w in caught],
-                            "in_place": {"count": in_place_count, "total": total}}
+                            "in_place": {"count": in_place_count, "total": total,
+                                         "refusals": inplace_refusals}}
         finally:
             if os.path.exists(out_path):
                 try: os.unlink(out_path)
