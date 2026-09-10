@@ -627,14 +627,24 @@ def _codes_to_bytes(codes, is_cid):
 
 
 # ── locate (pure — never mutates) ────────────────────────────────────────────
-def _locate(runs, refmap, font_name, old_codes, is_cid):
+def _locate(runs, refmap, font_name, old_codes, is_cid, which=None):
     flat, loc = _flatten(runs, font_name, refmap, is_cid)
     if not flat:
         return {"ok": False, "reason": "no_runs_for_font"}
     positions = _find_all(flat, old_codes)
     if not positions:
         return {"ok": False, "reason": "sequence_not_found"}
+    n_occurrences = len(positions)
     p = positions[0]
+    # `which` selects among several occurrences of the same string in this
+    # font on this page. The caller decides which one it means by TRYING each
+    # and checking that the span it pointed at actually changed (see edit),
+    # because estimating each occurrence's position from the content stream
+    # proved producer-dependent: walking back for the last Tm and
+    # accumulating Td/TD works on a LaTeX paper and yields coordinates
+    # matching nothing on a Chrome-printed export.
+    if which is not None and 0 <= which < n_occurrences:
+        p = positions[which]
     L = len(old_codes)
     touched = []
     for k in range(p, p + L):
@@ -653,7 +663,7 @@ def _locate(runs, refmap, font_name, old_codes, is_cid):
             return {"ok": False, "reason": "kerning_split_within_run"}
         if ti0 == ti1:
             return {"ok": True, "case": "single_token", "run": r_first, "tok": ti0,
-                    "code_lo": ci0, "code_hi": ci1}
+                    "code_lo": ci0, "code_hi": ci1, "n_occurrences": n_occurrences}
         # Spans multiple string tokens WITHIN one TJ call (e.g. one token per
         # word, as dvips/pdfTeX commonly emits). Landing cleanly on both
         # token boundaries (start of the first, end of the last) only proves
@@ -676,7 +686,7 @@ def _locate(runs, refmap, font_name, old_codes, is_cid):
         )
         if ci0 == 0 and ci1 == last_tok_len - 1 and boundaries_ok:
             return {"ok": True, "case": "multi_token", "run": r_first,
-                    "tok_lo": ti0, "tok_hi": ti1}
+                    "tok_lo": ti0, "tok_hi": ti1, "n_occurrences": n_occurrences}
         return {"ok": False, "reason": "kerning_split_within_run"}
 
     last_run = runs[r_last]
@@ -686,7 +696,7 @@ def _locate(runs, refmap, font_name, old_codes, is_cid):
     ends_clean = (loc[p + L - 1][1] == last_tok_idx and loc[p + L - 1][2] == last_code_idx)
     if not (starts_clean and ends_clean):
         return {"ok": False, "reason": "ragged_multirun_boundary"}
-    return {"ok": True, "case": "multi_run", "touched": touched}
+    return {"ok": True, "case": "multi_run", "touched": touched, "n_occurrences": n_occurrences}
 
 
 # ── apply (mutating — given a successful locate result) ─────────────────────
@@ -971,8 +981,15 @@ _SIMPLE_EXTEND_FAIL_MSG = {
 }
 
 
-def _simple_font_refs(doc, font_display_name: str):
-    """Locate a SIMPLE (non-CID) TrueType font by display name.
+def _simple_font_refs(doc, font_display_name: str, require_truetype: bool = True):
+    """Locate a SIMPLE (non-CID) font by display name.
+
+    `require_truetype` gates only the OUTLINE requirement. Glyph injection
+    needs a /FontFile2 TrueType program, but reading advance widths does not:
+    /FirstChar and /Widths are on the font dictionary of a Type1 font just the
+    same. Demanding TrueType for both meant width lookups failed on every
+    Type1 font — which is most of a LaTeX document — and that silently
+    disabled the overflow check on exactly those files.
 
     Returns {"font_xref", "fd_xref", "ff_xref", "first_char", "last_char",
     "widths_kind", "widths_ref", "tu_xref"} or None.
@@ -988,7 +1005,10 @@ def _simple_font_refs(doc, font_display_name: str):
                 continue
             xref = f[0]
             obj = doc.xref_object(xref, compressed=True)
-            if "/Subtype/TrueType" not in obj.replace(" ", ""):
+            flat = obj.replace(" ", "")
+            if "/Subtype/Type0" in flat:
+                continue          # CID font: a different structure entirely
+            if require_truetype and "/Subtype/TrueType" not in flat:
                 continue
             m = re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", obj)
             if not m:
@@ -996,14 +1016,14 @@ def _simple_font_refs(doc, font_display_name: str):
             fd_xref = int(m.group(1))
             fd = doc.xref_object(fd_xref, compressed=True)
             m2 = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", fd)
-            if not m2:
+            if not m2 and require_truetype:
                 return None
             fc = re.search(r"/FirstChar\s+(\d+)", obj)
             lc = re.search(r"/LastChar\s+(\d+)", obj)
             tu = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", obj)
             kind, val = doc.xref_get_key(xref, "Widths")
             return {"font_xref": xref, "fd_xref": fd_xref,
-                    "ff_xref": int(m2.group(1)),
+                    "ff_xref": int(m2.group(1)) if m2 else None,
                     "first_char": int(fc.group(1)) if fc else None,
                     "last_char": int(lc.group(1)) if lc else None,
                     "widths_kind": kind, "widths_val": val,
@@ -1222,6 +1242,10 @@ def _tm_origin_before(doc, page, needle: bytes):
 # of identity, which is the thing this whole engine exists to avoid, so when
 # the three levers together are not enough the edit is refused with the exact
 # shortfall rather than silently resized.
+# Sentinel: the edited run could only be read back truncated, which is
+# itself proof that it left the page.
+_TRUNCATED = object()
+
 MAX_WORDSPACE_SHRINK = 0.20
 MAX_TRACK_EM = 0.02
 MIN_GLYPH_SCALE = 0.97
@@ -1465,7 +1489,7 @@ def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
         default = float(dw) if kind == "int" and dw else 1000.0
         total = sum(wmap.get(c, default) for c in codes)
     else:
-        refs = _simple_font_refs(doc, font_display_name)
+        refs = _simple_font_refs(doc, font_display_name, require_truetype=False)
         if not refs:
             return -1.0
         parsed = _parse_widths_array(doc, refs)
@@ -1614,7 +1638,77 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         reason = loc_result["reason"]
         return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
 
+    # WHICH occurrence to splice, when the same string appears more than once
+    # in this font on this page. The caller named one by bbox and that has to
+    # be honoured: splicing the first match regardless is how editing the
+    # second of two identical values silently rewrote the first instead —
+    # found by stressing a LaTeX paper ('models' twice) and a Chrome-printed
+    # export ('language.' twice), where the edit landed on a different line
+    # each time.
+    #
+    # The right one is found by TRYING and CHECKING rather than by estimating
+    # positions from the content stream. An earlier attempt did estimate them,
+    # walking back to the enclosing BT for the last Tm and accumulating any
+    # Td/TD after it; that worked on the LaTeX paper and produced coordinates
+    # matching nothing at all on the Chrome export, whose text objects are
+    # built differently. Applying each candidate to a throwaway copy and
+    # asking whether the SPAN THE CALLER POINTED AT changed cannot be fooled
+    # by how the producer chose to position its text.
+    target_rect = fitz.Rect(target["bbox"])
+    n_occ = loc_result.get("n_occurrences", 1)
+
+    def _hits_target(pdf_bytes_):
+        try:
+            probe = fitz.open(stream=pdf_bytes_, filetype="pdf")
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            for s2 in _spans(probe[tpage]):
+                if abs(s2["origin"][1] - target["origin"][1]) > 1.0:
+                    continue
+                if fitz.Rect(s2["bbox"]).intersects(target_rect) or \
+                        abs(s2["bbox"][0] - target_rect.x0) < 2.0:
+                    # It must CONTAIN the replacement and no longer read as
+                    # the original. Testing only for the replacement is
+                    # satisfied by an untouched span whenever the new text is
+                    # a substring of the old one — replacing 'models' with
+                    # 'mod' looked like a hit on the span that had not
+                    # changed at all, so the wrong occurrence was kept.
+                    txt = _norm(s2["text"])
+                    if _norm(new) in txt and txt != _norm(old):
+                        return True
+            return False
+        finally:
+            probe.close()
+
     _apply(doc, runs, loc_result, new_codes, is_cid)
+    if n_occ > 1:
+        trial = doc.tobytes(garbage=0)
+        if not _hits_target(trial):
+            for which in range(n_occ):
+                cand_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                cand_streams = _content_streams(cand_doc, cand_doc[tpage])
+                cand_runs = _all_runs(cand_streams)
+                cand_loc = _locate(cand_runs, _page_font_refmap(cand_doc[tpage]),
+                                   nm, old_codes, is_cid, which=which)
+                if not cand_loc.get("ok"):
+                    cand_doc.close()
+                    continue
+                # Re-inject glyphs on this copy; the first pass mutated the
+                # original document object, not this one.
+                if extended_chars:
+                    if is_cid:
+                        _try_extend(cand_doc, nm, extended_chars)
+                    else:
+                        _try_extend_simple(cand_doc, nm, extended_chars)
+                _apply(cand_doc, cand_runs, cand_loc, new_codes, is_cid)
+                cand_bytes = cand_doc.tobytes(garbage=0)
+                cand_doc.close()
+                if _hits_target(cand_bytes):
+                    doc.close()
+                    doc = fitz.open(stream=cand_bytes, filetype="pdf")
+                    loc_result = cand_loc
+                    break
     old_x1 = fitz.Rect(target["bbox"]).x1
     old_x0 = target["origin"][0]
     page_h = doc[tpage].rect.height
@@ -1653,9 +1747,20 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
             w = _run_width_pt(d, nm, new_codes, target["size"], is_cid)
             if w >= 0:
                 return old_x0 + w + track * len(new_codes)
-            for s2 in _spans(d[tpage]):
-                if new_n and new_n in _norm(s2["text"]):
+            texts = [_norm(s2["text"]) for s2 in _spans(d[tpage])]
+            for s2, t in zip(_spans(d[tpage]), texts):
+                if new_n and new_n in t:
                     return fitz.Rect(s2["bbox"]).x1
+            # The full replacement isn't there but its beginning is: the run
+            # was cut off at the page boundary, because glyphs outside the
+            # media box are not extracted. Truncation IS the overflow, so it
+            # is reported as one rather than as "couldn't measure" — which
+            # would skip the check and ship the very document this is meant
+            # to prevent. Found on a LaTeX paper, where the replacement ran
+            # to x=613 on a 612pt page and came back looking like it fit.
+            head = new_n[:12]
+            if head and any(head in t for t in texts):
+                return _TRUNCATED
         finally:
             d.close()
         return None
@@ -1677,6 +1782,11 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     # either existed — an unmeasurable line is a reason to add nothing, not a
     # reason to throw away a good edit.
     new_x1 = _field_x1()
+    if new_x1 is _TRUNCATED:
+        return {"ok": False, "reason": "would_overflow",
+                "message": ("The replacement runs past the edge of the page — far enough "
+                            "that the text is cut off entirely, so it can't be fitted on "
+                            "this line.")}
     if new_x1 is not None:
         avail = right_limit - old_x0 - trailing
         base_w = new_x1 - old_x0
