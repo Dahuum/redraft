@@ -22,6 +22,13 @@ real bugs that the case-by-case suites did not:
      substring of the original: checking that the target span "contains the
      new text" is satisfied by a span that never changed, so replacing
      'models' with 'mod' kept the wrong occurrence.
+  4. Encoding a character from the font's /ToUnicode drew NOTHING for it.
+     /ToUnicode is a reverse map for extraction and can name a code the glyph
+     program has no outline for, so the page extracted as 'Fécture' with zero
+     ink where the 'é' should be. Only I6 catches that class: every other
+     invariant here, and every check in the other suites, reads text back
+     through extraction — which reports exactly what the edit intended
+     regardless of whether a rasterizer can draw it.
 
 INVARIANTS
 ----------
@@ -30,6 +37,7 @@ INVARIANTS
   I3  the replacement reads back as the text that was asked for
   I4  no line other than the edited one moves
   I5  a refusal always names a reason
+  I6  every visible character of the replacement actually has INK
 
 The local fixture runs always; the three downloaded documents are skipped
 cleanly without network, matching test_real_world_pdfs.py's convention.
@@ -93,6 +101,7 @@ def stress(doc_name, data, n_spans=8, seed=7):
     spans = spans[:n_spans]
     base_lines, page_w = snapshot(data, 0)
     attempts = 0
+    ink_budget = [10]
 
     for s in spans:
         old = s["text"].strip()
@@ -148,6 +157,51 @@ def stress(doc_name, data, n_spans=8, seed=7):
                 VIOLATIONS.append(f"[{doc_name}] {label} {old[:20]!r}: I3 replacement "
                                   f"not found: {probe!r}")
 
+            # I6 — ink where the replacement is. Deliberately measured off a
+            # rasterization rather than read back through extraction, because
+            # extraction reports what the edit INTENDED: a glyph with no
+            # outline still extracts as its character.
+            #
+            # The span is found by POSITION, not by matching its text. A first
+            # attempt matched on the replacement's opening characters and
+            # picked up an unrelated paragraph — shortening 'propose' to 'pro'
+            # matched the arXiv licence footer's "Provided proper attribution"
+            # and reported that as inkless. Capped per document to keep the
+            # suite quick.
+            if ink_budget[0] > 0:
+                ink_budget[0] -= 1
+                dd = fitz.open(stream=out, filetype="pdf")
+                try:
+                    tgt = fitz.Rect(s["bbox"])
+                    for b in dd[0].get_text("rawdict")["blocks"]:
+                        for l in b.get("lines", []):
+                            for hsp in l.get("spans", []):
+                                if abs(hsp["origin"][1] - s["origin"][1]) > 1.0:
+                                    continue
+                                if abs(hsp["bbox"][0] - tgt.x0) > 2.0:
+                                    continue
+                                blank = []
+                                for c in hsp["chars"]:
+                                    if not c["c"].strip():
+                                        continue
+                                    cb = fitz.Rect(c["bbox"])
+                                    if cb.is_empty or cb.width < 0.5 or cb.height < 0.5:
+                                        continue
+                                    if not fitz.Rect(dd[0].rect).contains(cb):
+                                        continue    # off-page: nothing to draw
+                                    pm = dd[0].get_pixmap(matrix=fitz.Matrix(8, 8), clip=cb)
+                                    dark = sum(1 for i in range(0, len(pm.samples), pm.n)
+                                               if pm.samples[i] < 160)
+                                    if dark == 0:
+                                        blank.append(c["c"])
+                                if blank:
+                                    VIOLATIONS.append(
+                                        f"[{doc_name}] {label} {old[:20]!r}: I6 "
+                                        f"characters drew NO ink: {blank!r}")
+                                break
+                finally:
+                    dd.close()
+
             edited_line = round(s["origin"][1], 1)
             for ln, items in base_lines.items():                           # I4
                 if abs(ln - edited_line) < 0.6:
@@ -185,7 +239,7 @@ print()
 check("no invariant was violated on any document",
       not VIOLATIONS,
       "\n        " + "\n        ".join(VIOLATIONS[:12]))
-print(f"       {n_local + n_remote} edit attempts checked against I1-I5")
+print(f"       {n_local + n_remote} edit attempts checked against I1-I6")
 
 print()
 print("=" * 70)

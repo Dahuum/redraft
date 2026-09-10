@@ -69,6 +69,7 @@ a bug:
     keys glyph maps by font name, not by the specific embedded font object.
 """
 import base64
+import io
 import re
 
 import fitz
@@ -219,12 +220,98 @@ def _parse_tounicode_cmap(data: bytes) -> dict:
 # via a custom /Encoding /Differences array) actually editable: the naive
 # `text.encode("latin-1")` assumption silently splits a ligature into two
 # ASCII bytes that never appear together in the real content stream. ──────
+_CID_GLYPH_MEMO: dict = {}
+
+
+def _cid_glyph_coverage(doc, font_display_name: str, cids):
+    """Do these CIDs have real outlines in the embedded program?
+
+    True / False, or None when it can't be determined (then the caller must
+    not treat absence of proof as proof).
+
+    This is the CID counterpart of _simple_font_glyph_coverage, and it exists
+    because /ToUnicode is NOT evidence that a glyph can be drawn. It is a
+    reverse map for text extraction: it can name a CID for a character the
+    font program has no outline for. Encoding from it alone produced a page
+    whose text extracted as 'Fécture' while the 'é' cell contained ZERO ink —
+    the exact silent corruption this engine was built to stop, reintroduced
+    by trusting the wrong table. The glyph program is the only authority on
+    what can actually be drawn.
+    """
+    type0_xref = None
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[3].split("+")[-1] != font_display_name:
+                continue
+            if "/Subtype/Type0" not in doc.xref_object(f[0], compressed=True).replace(" ", ""):
+                continue
+            type0_xref = f[0]
+            break
+        if type0_xref:
+            break
+    if type0_xref is None:
+        return None
+    refs = _font_stream_refs(doc, type0_xref)
+    if not refs or refs == "cff":
+        return None
+    try:
+        raw = doc.xref_stream(refs["ff_xref"])
+        if not raw:
+            return None
+        key = (len(raw), raw[:24], raw[-24:])
+        glyf = _CID_GLYPH_MEMO.get(key)
+        if glyf is None:
+            from fontTools.ttLib import TTFont
+            tt = TTFont(io.BytesIO(raw), fontNumber=0, lazy=True)
+            if "glyf" not in tt:
+                return None
+            order = tt.getGlyphOrder()
+            table = tt["glyf"]
+            glyf = set()
+            for gid, gname in enumerate(order):
+                try:
+                    g = table[gname]
+                except Exception:  # noqa: BLE001
+                    continue
+                if getattr(g, "numberOfContours", 0) != 0:
+                    glyf.add(gid)
+            _CID_GLYPH_MEMO[key] = glyf
+    except Exception:  # noqa: BLE001
+        return None
+    # CIDToGIDMap Identity is the overwhelmingly common case and the only one
+    # this checks; anything else is reported as unknown rather than guessed.
+    kind, val = doc.xref_get_key(refs["cid_xref"], "CIDToGIDMap")
+    if kind == "name" and val not in ("/Identity", "Identity"):
+        return None
+    if kind == "xref":
+        return None
+    return all((c in glyf) or c == 0 for c in cids)
+
+
+def _cid_code_maps(doc):
+    """Type0 font display name -> {"rev": {text: CID}, "max_len": n}.
+
+    The CID analogue of _simple_font_code_maps, and it exists because the
+    merged map from get_texttrace cannot serve a CID font whose display name
+    is shared. The extractor normalises 'Tw Cen MT Bold' and 'TwCenMT-Bold'
+    to one name, so a texttrace map for that name mixes one font's TrueType
+    glyph ids with the other's CIDs and neither font's codes come out whole.
+    Reading each font OBJECT's own /ToUnicode keeps them apart — which is
+    exactly what _simple_font_code_maps has always done for simple fonts.
+    """
+    return _tounicode_code_maps(doc, want_type0=True)
+
+
 def _simple_font_code_maps(doc):
+    return _tounicode_code_maps(doc, want_type0=False)
+
+
+def _tounicode_code_maps(doc, want_type0: bool):
     out, seen_xrefs = {}, set()
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
             xref, subtype, name = f[0], f[2], f[3].split("+")[-1]
-            if subtype == "Type0" or name in out or xref in seen_xrefs:
+            if (subtype == "Type0") != want_type0 or name in out or xref in seen_xrefs:
                 continue
             seen_xrefs.add(xref)
             obj = doc.xref_object(xref, compressed=True)
@@ -1578,6 +1665,27 @@ def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
     return total * size / 1000.0
 
 
+def _finish_prepare(doc, tpage, nm, is_cid, old_codes, new_codes,
+                    extended_chars, which):
+    """Tokenise the page and locate the splice for already-encoded codes."""
+    page = doc[tpage]
+    streams = _content_streams(doc, page)
+    if not streams:
+        return {"ok": False, "reason": "no_content_stream", "message": _REASON_MSG["no_content_stream"]}
+    runs = _all_runs(streams)
+    refmap = _page_font_refmap(page)
+
+    loc_result = _locate(runs, refmap, nm, old_codes, is_cid, which=which,
+                         refsub=_page_font_subtypes(page))
+    if not loc_result["ok"]:
+        reason = loc_result["reason"]
+        return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
+
+    return {"ok": True, "old_codes": old_codes, "new_codes": new_codes,
+            "extended_chars": extended_chars, "runs": runs, "refmap": refmap,
+            "loc": loc_result}
+
+
 def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
     """Encode old/new for one assumed encoding, extend the font if needed, and
     locate the splice — all on `doc`, which this MUTATES on success.
@@ -1590,6 +1698,22 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
     """
     extended_chars: list = []
     if is_cid:
+        # This font OBJECT'S own /ToUnicode first. The map from get_texttrace
+        # is keyed by the extractor's normalised font name, which can cover
+        # two different objects — mixing one's TrueType glyph ids with the
+        # other's CIDs so that neither font's codes come out whole. Reading
+        # the object's own CMap keeps them apart.
+        cidmap = _lookup_by_name(_cid_code_maps(doc), nm)
+        if cidmap:
+            _old = _encode_simple_text(old_n, cidmap["rev"], cidmap["max_len"])
+            _new = _encode_simple_text(new, cidmap["rev"], cidmap["max_len"])
+            # /ToUnicode can name a CID whose glyph the font program does not
+            # actually contain, so the program itself is asked before this
+            # shortcut is taken. Skipping that check produced text extracting
+            # as 'Fécture' with no ink at all where the 'é' should be.
+            if _old is not None and _new is not None and \
+                    _cid_glyph_coverage(doc, nm, _new) is not False:
+                return _finish_prepare(doc, tpage, nm, is_cid, _old, _new, [], which)
         fm = _lookup_by_name(_gid_maps(doc), nm) or {}
         missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
         if missing:
@@ -1648,22 +1772,8 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
                                             f"{missing}. {why}")}
                     extended_chars = missing
 
-    page = doc[tpage]
-    streams = _content_streams(doc, page)
-    if not streams:
-        return {"ok": False, "reason": "no_content_stream", "message": _REASON_MSG["no_content_stream"]}
-    runs = _all_runs(streams)
-    refmap = _page_font_refmap(page)
-
-    loc_result = _locate(runs, refmap, nm, old_codes, is_cid, which=which,
-                         refsub=_page_font_subtypes(page))
-    if not loc_result["ok"]:
-        reason = loc_result["reason"]
-        return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
-
-    return {"ok": True, "old_codes": old_codes, "new_codes": new_codes,
-            "extended_chars": extended_chars, "runs": runs, "refmap": refmap,
-            "loc": loc_result}
+    return _finish_prepare(doc, tpage, nm, is_cid, old_codes, new_codes,
+                           extended_chars, which)
 
 
 def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
