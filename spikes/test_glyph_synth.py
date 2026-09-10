@@ -533,6 +533,32 @@ check("a font name maps to its identity regardless of convention",
       f"{sp._name_key('Tw Cen MT Bold')!r} vs {sp._name_key('TwCenMT-Bold')!r}")
 
 print()
+print("=== 4j) a refusal names the real limit, not the first guess ===")
+# 'contact@1337.ma' genuinely cannot be spliced: it sits inside a
+# kerning-adjusted run. But the search tries several (font, encoding,
+# occurrence) combinations, and most fail merely because they are the wrong
+# combination. Reporting the FIRST refusal told users "unusual encoding"
+# about a field whose actual problem was custom letter-spacing.
+_d = fitz.open(FIXTURE)
+_ct = [x for x in sp._spans(_d[0]) if "contact@" in x["text"]]
+_d.close()
+check("the fixture still contains the kerned footer field", bool(_ct))
+if _ct:
+    _r = sp.edit(_src_bytes, _ct[0]["text"].strip(), "contact@1337.zz",
+                 page=0, bbox=_ct[0]["bbox"], verify=False)
+    check("it is refused (splicing a kerned run isn't safe)", not _r.get("ok"))
+    check("and the reason given is the structural one, not 'not found'",
+          _r.get("reason") == "kerning_split_within_run", f"{_r.get('reason')}")
+check("a specific limit outranks a generic miss",
+      sp._better_refusal({"reason": "sequence_not_found"},
+                         {"reason": "kerning_split_within_run"}
+                         )["reason"] == "kerning_split_within_run")
+check("and order doesn't matter",
+      sp._better_refusal({"reason": "kerning_split_within_run"},
+                         {"reason": "sequence_not_found"}
+                         )["reason"] == "kerning_split_within_run")
+
+print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
 try:
     import font_extend  # noqa: E402

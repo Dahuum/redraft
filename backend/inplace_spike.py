@@ -1406,6 +1406,37 @@ _TRUNCATED = object()
 _MAX_OCCURRENCE_TRIES = 6
 _MAX_LOCATE_ATTEMPTS = 24
 
+# How informative each refusal is, highest first. The search tries several
+# (font object, encoding, occurrence) combinations, and most of them fail
+# simply because they are the wrong combination — "sequence_not_found" from a
+# wrong guess says nothing. When one attempt reaches a real structural limit,
+# THAT is what the caller should be told. Reporting the first refusal instead
+# told users "unusual encoding" about a field whose actual problem was custom
+# letter-spacing, because the wrong-encoding attempt happened to run first.
+_REFUSAL_RANK = {
+    "kerning_split_within_run": 90,
+    "ragged_multirun_boundary": 85,
+    "spans_multiple_streams": 80,
+    "would_overflow": 78,
+    "missing_glyph": 75,
+    "extend": 70,
+    "unmappable": 60,
+    "encoding": 55,
+    "no_content_stream": 50,
+    "no_runs_for_font": 10,
+    "sequence_not_found": 5,
+}
+
+
+def _better_refusal(a, b):
+    """Whichever of two refusal dicts says more about why. Either may be None."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return b if _REFUSAL_RANK.get(b.get("reason"), 0) > \
+        _REFUSAL_RANK.get(a.get("reason"), 0) else a
+
 MAX_WORDSPACE_SHRINK = 0.20
 MAX_TRACK_EM = 0.02
 MIN_GLYPH_SCALE = 0.97
@@ -1937,8 +1968,12 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                     break
                 if not res.get("ok"):
                     adoc.close()
-                    if prep_error is None and cand_nm == nm:
-                        prep_error = res
+                    # Keep the most informative refusal seen, from ANY
+                    # candidate: a real structural limit reached by one
+                    # attempt explains the field far better than "not found"
+                    # from an attempt that was simply looking in the wrong
+                    # font or encoding.
+                    prep_error = _better_refusal(prep_error, res)
                     break
                 if which >= res["loc"].get("n_occurrences", 1):
                     adoc.close()
