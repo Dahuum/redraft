@@ -534,6 +534,26 @@ def _fit_line(pairs, through_origin: bool = False):
     return a, (sy - a * sx) / n
 
 
+# How far apart two cuts' landmark ratios may be before the pointwise
+# landmark map stops being the right tool. Measured: this family's own
+# Regular->Bold spans 1.0286..1.0400, a spread of 1.011, and the pointwise
+# map serves it well — it matches the descender as well as the height, which
+# a single scale cannot. Poppins Bold standing in for Tw Cen MT Bold spans
+# 0.751..0.913, a spread of 1.216, and there the pointwise map's own slopes
+# reach 1.543 and visibly distort the letterform. The two cases are an order
+# of magnitude apart, so the threshold between them is not delicate.
+MAX_LANDMARK_SPREAD = 1.05
+
+
+def landmark_spread(anchors: list) -> float:
+    """max/min of the landmark ratios in *anchors*, or 1.0 if undeterminable."""
+    ratios = [dst / src for src, dst in anchors if src > 0.0 and dst]
+    if len(ratios) < 2:
+        return 1.0
+    lo, hi = min(ratios), max(ratios)
+    return (hi / lo) if lo > 0 else 1.0
+
+
 def build_y_anchors(m_src: dict, m_dst: dict, unit_scale: float) -> list:
     """Anchor pairs (source y -> destination y) for the vertical mapping.
 
@@ -608,7 +628,9 @@ class WeightTransform:
     def __init__(self, upm, unit_scale, y_anchors, va, stem_dx, bar_dy,
                  lsb_a, lsb_b, adv_anchors, rsb_med, report,
                  adv_model="local_ratio", diag_k=4.0, rsb_a=1.0, rsb_b=0.0,
-                 outer_frac=1.0, exact_map=None):
+                 outer_frac=1.0, exact_map=None,
+                 src_stem=None, dst_stem=None, src_bar=None, dst_bar=None,
+                 uniform_v=False):
         self.upm = upm
         self.unit_scale = unit_scale
         self.y_anchors = y_anchors          # measured vertical landmarks
@@ -623,6 +645,16 @@ class WeightTransform:
         self.rsb_a, self.rsb_b = rsb_a, rsb_b   # right-sidebearing affine
         self.outer_frac = outer_frac         # outward vs inward thickening split
         self.exact_map = exact_map or {}     # (class, src advance) -> dst advance
+        # Measured stem/bar widths of both cuts, in their OWN font units. With
+        # a per-glyph uniform scale the weight correction is a subtraction, not
+        # a search: scaling by k takes the source stem to src_stem*scale*k, and
+        # what the destination wants is dst_stem.
+        self.src_stem, self.dst_stem = src_stem, dst_stem
+        self.src_bar, self.dst_bar = src_bar, dst_bar
+        # Whether to scale each glyph uniformly (see glyph_scale) or map its
+        # points through the landmarks one by one. Decided from how far apart
+        # the two cuts' landmark ratios are — see landmark_spread.
+        self.uniform_v = uniform_v
         self.report = report
 
     @property
@@ -759,10 +791,18 @@ class WeightTransform:
         Comparing `pre` with `dilated` needs no mapping at all: dilation moves
         boundaries but leaves the frame alone.
         """
-        u = self.unit_scale
-        pre = [[(x * u, map_y(self.y_anchors, y * u)) for (x, y) in poly]
-               for poly in polys]
-        dil = dilate_xy(pre, self.stem_dx, self.bar_dy, self.diag_k, self.outer_frac)
+        if self.uniform_v:
+            k = self.glyph_scale(polys)
+            u = self.unit_scale * k
+            pre = [[(x * u, y * u) for (x, y) in poly] for poly in polys]
+        else:
+            k = 1.0
+            u = self.unit_scale
+            pre = [[(x * u, map_y(self.y_anchors, y * u)) for (x, y) in poly]
+                   for poly in polys]
+        sdx, bdy = self.weight_offsets(k) if self.uniform_v else (self.stem_dx,
+                                                                  self.bar_dy)
+        dil = dilate_xy(pre, sdx, bdy, self.diag_k, self.outer_frac)
         p = dil
         bb_before = fmet.poly_bbox(pre)
         bb_after = fmet.poly_bbox(dil)
@@ -776,6 +816,71 @@ class WeightTransform:
             target_x0 = bb_before[0] * self.lsb_a + self.lsb_b
             p = translate_polys(p, target_x0 - bb_after[0], 0.0)
         return pre, dil, p
+
+    def glyph_scale(self, polys: list) -> float:
+        """One uniform scale for THIS glyph, from the landmark it reaches.
+
+        The vertical mapping used to interpolate between every measured
+        landmark at once — baseline, x-height, cap height, ascender — which is
+        right when the two cuts are close, and wrong when they are not. Within
+        a family the landmark ratios sit within a few per cent of each other
+        (measured Regular->Bold: 1.0400, 1.0305, 1.0286) so the piecewise map
+        is very nearly a single scale. Across families they diverge (Poppins
+        Bold standing in for Tw Cen MT Bold: 0.751, 0.913, 0.881), and the
+        SLOPES BETWEEN anchors diverge far more: 0.751 below the x-height and
+        1.543 from there to the cap height. That discontinuity runs straight
+        through the upper curve of a round letter, stretching its top while
+        compressing the rest — a circle came out visibly faceted and lopsided.
+
+        A glyph cannot match two landmarks at once anyway, so it matches its
+        own top exactly — the height map read once, at the height this glyph
+        actually reaches — and is scaled uniformly, which leaves its shape
+        alone. The baseline stays pinned because a uniform scale about the
+        origin fixes y=0. Measured, held-out, with no dilation on either side:
+
+                                        piecewise   uniform
+            Poppins -> Tw Cen MT  mean      0.570     0.772
+                                  worst     0.388     0.507
+            in-document Reg->Bold mean      0.653     0.662
+                                  worst     0.545     0.566
+
+        Uniform won on every one of the sixteen cross-family glyphs ('o'
+        went 0.500 -> 0.969) and was a small net gain within the family.
+        """
+        top = max((y for poly in polys for (_, y) in poly), default=0.0)
+        if top <= 0.0:
+            return 1.0
+        t = top * self.unit_scale
+        if t <= 0.0:
+            return 1.0
+        # map_y stays the authority on HEIGHT — it is built from the measured
+        # landmarks and it is what makes a synthesized letter stand as tall as
+        # its neighbours. It is read once, at this glyph's own top, and used as
+        # a single scale for the whole glyph. Applying it pointwise instead
+        # matched every landmark at once and distorted everything between
+        # them; snapping to the nearest landmark kept the shape but left the
+        # height 3.1% out, past the 3% this is held to.
+        return map_y(self.y_anchors, t) / t
+
+    def weight_offsets(self, k: float):
+        """(stem_dx, bar_dy) for a glyph scaled by *k*, derived not searched.
+
+        A single searched offset cannot serve every glyph once the scale is
+        per-glyph. Measured, Poppins Bold standing in for Tw Cen MT Bold: at
+        the lowercase scale (0.751) its 171-per-mille stem lands on 128
+        against a target of 125 and needs almost nothing, while at the cap
+        scale (0.913) the same stem lands on 156 and needs 25% taken off. One
+        number fitted to both left stem error at 20%. Subtracting what this
+        glyph's own scale actually leaves is exact for every class.
+        """
+        if not (self.src_stem and self.dst_stem):
+            return self.stem_dx, self.bar_dy
+        sdx = self.dst_stem - self.src_stem * self.unit_scale * k
+        if self.src_bar and self.dst_bar:
+            bdy = self.dst_bar - self.src_bar * self.unit_scale * k
+        else:
+            bdy = sdx
+        return sdx, bdy
 
     def apply(self, polys: list) -> list:
         return self._stages(polys)[2]
@@ -887,7 +992,13 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
         return WeightTransform(upm, unit_scale, y_anchors, va, stem_dx, bar_dy,
                                lsb_a, lsb_b, anchors, rsb_med, {}, diag_k=diag_k,
                                rsb_a=rsb_a, rsb_b=rsb_b, outer_frac=outer_frac,
-                               exact_map=exact_map)
+                               exact_map=exact_map,
+                               uniform_v=(landmark_spread(y_anchors)
+                                          > MAX_LANDMARK_SPREAD),
+                               src_stem=m_src.get("stem_units"),
+                               dst_stem=m_dst.get("stem_units"),
+                               src_bar=m_src.get("bar_units"),
+                               dst_bar=m_dst.get("bar_units"))
 
     def mean_iou(cand, chars):
         """Mean overlap against the real glyphs — or None if this candidate

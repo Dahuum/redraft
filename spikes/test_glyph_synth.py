@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import fitz  # noqa: E402
 from fontTools.ttLib import TTFont  # noqa: E402
 
+import font_extend as fe  # noqa: E402
 import font_metrics as fmet  # noqa: E402
 import glyph_synth as gs  # noqa: E402
 
@@ -341,8 +342,17 @@ if _res.get("ok"):
 print()
 print("=== 4f) too-long text: tighten invisibly, then refuse — never resize ===")
 _base = "Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun El Amrani"
+# The rungs are chosen from a measurement, not guessed: with the substituted
+# letters corrected to this font's own proportions they are NARROWER than the
+# donor drew them, so the same name takes less room and the band where
+# compression is needed moved. Measured here, word spacing first engages at
+# 63 characters, tracking at 65, glyph scaling at 67, and 69 cannot be fitted
+# at all — so the ladder has to have a rung inside 65..68 or it steps straight
+# over every lever it exists to exercise.
+_LADDER = ("", " T", " Ta", " Taz", " Tazi", " Tazi B", " Tazi Ben",
+           " Tazi Bennani Sqalli")
 _ladder = []
-for _extra in ("", " T", " Ta", " Taz", " Tazi", " Tazi Bennani Sqalli"):
+for _extra in _LADDER:
     _n = _base + _extra
     _r = sp.edit(_src_bytes, "Sara Idrissi", _n, page=0, verify=False)
     _ladder.append((len(_n), _r.get("ok"), _r.get("tracking", 0.0), _r.get("reason")))
@@ -363,7 +373,7 @@ check("beyond that it is refused rather than silently resized",
 # assert it on the real output of every case that WAS accepted.
 _pw = fitz.open(FIXTURE)[0].rect.width
 _worst_end = 0.0
-for _extra in ("", " T", " Ta", " Taz", " Tazi", " Tazi Bennani Sqalli"):
+for _extra in _LADDER:
     _n = _base + _extra
     _r = sp.edit(_src_bytes, "Sara Idrissi", _n, page=0, verify=False)
     if not _r.get("ok"):
@@ -855,6 +865,92 @@ if _r.get("ok"):
                   abs(1143 - _x_own) / _x_own > 0.08,
                   f"raw injection put it at 1143 against {_x_own}")
         _tt.close()
+
+print()
+print("=== 4m) a substituted letter keeps its SHAPE, not just its height ===")
+# The vertical mapping ran every point through every measured landmark at
+# once. Within a family that is right — the landmark ratios sit within about
+# 1% of each other, so the map is very nearly a single scale AND it matches
+# the descender, which one scale cannot. Across families they diverge, and
+# the map then scales a glyph's height by one factor while leaving its width
+# scaled by another: measured, a lowercase letter came out 31-33% wider
+# relative to its height than the donor drew it, and the round ones rendered
+# visibly faceted and lopsided.
+_d = fitz.open(FIXTURE)
+_sub21 = None
+for _f in _d[0].get_fonts(full=True):
+    if _f[2] == "Type0" or _f[3].split("+")[-1] != "TwCenMT-Bold":
+        continue
+    _o = _d.xref_object(_f[0], compressed=True)
+    _fdx = _d.xref_object(
+        int(re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", _o).group(1)), compressed=True)
+    _m = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", _fdx)
+    if _m:
+        _sub21 = _d.xref_stream(int(_m.group(1)))
+        break
+_reg = None
+for _f in _d[0].get_fonts(full=True):
+    if _f[2] == "Type0" or _f[3].split("+")[-1] != "TwCenMT-Regular":
+        continue
+    _o = _d.xref_object(_f[0], compressed=True)
+    _fdx = _d.xref_object(
+        int(re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", _o).group(1)), compressed=True)
+    _m = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", _fdx)
+    if _m:
+        _reg = _d.xref_stream(int(_m.group(1)))
+        break
+_d.close()
+check("both cuts of the fixture's font are readable", _sub21 and _reg)
+if _sub21 and _reg:
+    _tgt = TTFont(io.BytesIO(_sub21))
+    _donor_raw = fe.resolve_donor("TwCenMT-Bold")
+    check("a substitute donor resolves for this family", bool(_donor_raw))
+    if _donor_raw:
+        _sub = TTFont(io.BytesIO(_donor_raw))
+        _xf = gs.learn_weight_transform(_sub, _tgt)
+        # Which treatment each pair gets is decided by how far apart their
+        # landmark ratios are, and the two cases are an order of magnitude
+        # apart rather than close to the threshold.
+        _spread_x = gs.landmark_spread(_xf.y_anchors)
+        check("a cross-family pair is spotted by its landmark spread",
+              _spread_x > gs.MAX_LANDMARK_SPREAD * 1.1,
+              f"spread={_spread_x:.3f} vs threshold {gs.MAX_LANDMARK_SPREAD}")
+        check("and it is scaled uniformly per glyph", _xf.uniform_v)
+        check("the substitute's transform still validates", _xf.usable,
+              f"{_xf.report.get('checks')}")
+        # The property: a uniform scale cannot change a letter's proportions.
+        for _ch in "oze":
+            _sp_ = gs._polys(_sub, _ch)
+            if not _sp_:
+                continue
+            _bs = fmet.poly_bbox(_sp_)
+            _bo = fmet.poly_bbox(_xf.apply(_sp_))
+            _ar_s = (_bs[2] - _bs[0]) / (_bs[3] - _bs[1])
+            _ar_o = (_bo[2] - _bo[0]) / (_bo[3] - _bo[1])
+            check(f"{_ch!r} keeps the donor's proportions",
+                  abs(_ar_o - _ar_s) / _ar_s <= 0.08,
+                  f"aspect {_ar_s:.3f} -> {_ar_o:.3f} "
+                  f"({abs(_ar_o - _ar_s) / _ar_s * 100:.1f}% off)")
+            # ...and what the pointwise map did, so this cannot come back.
+            _u = _xf.unit_scale
+            _pw = [[(x * _u, gs.map_y(_xf.y_anchors, y * _u)) for (x, y) in _p]
+                   for _p in _sp_]
+            _bp = fmet.poly_bbox(_pw)
+            _ar_p = (_bp[2] - _bp[0]) / (_bp[3] - _bp[1])
+            check(f"and the pointwise map would not have",
+                  abs(_ar_p - _ar_s) / _ar_s > 0.08,
+                  f"pointwise aspect {_ar_p:.3f} vs donor {_ar_s:.3f}")
+        _sub.close()
+    # The same-family path must be untouched: it matches the descender too,
+    # which a single scale cannot, and it was already inside every gate.
+    _rt = TTFont(io.BytesIO(_reg))
+    _xf2 = gs.learn_weight_transform(_rt, _tgt)
+    check("a same-family pair is left on the pointwise map",
+          not _xf2.uniform_v,
+          f"spread={gs.landmark_spread(_xf2.y_anchors):.3f}")
+    check("and it still validates", _xf2.usable, f"{_xf2.report.get('checks')}")
+    _rt.close()
+    _tgt.close()
 
 print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
