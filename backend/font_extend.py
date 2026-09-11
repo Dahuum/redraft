@@ -256,32 +256,62 @@ def _resolve_from_repo(family: str, weight: int, style: str):
 
 
 def resolve_donor(fontname: str) -> bytes | None:
-    """Given an embedded font's display name (e.g. 'Montserrat-Bold'), return
-    a full, static donor font at the matching weight/style — resolved
-    generically against the Google Fonts catalog, not a hardcoded per-family
-    table. None if genuinely not found (custom/commercial font with no
-    open-source relative, or a transient fetch failure)."""
+    """Donor bytes for *fontname*, or None. See resolve_donor_detailed."""
+    return resolve_donor_detailed(fontname)[0]
+
+
+def resolve_donor_detailed(fontname: str):
+    """(donor bytes, kind) for an embedded font's display name, or (None, None).
+
+    *kind* is "family" when the donor IS this typeface — an installed copy, or
+    the same family from the open-source catalogue — and "substitute" when it
+    is a different typeface standing in for one that has no open-source
+    relative. The caller has to know which: the same designer's letterforms at
+    the same weight need no correction and inject as they are, while another
+    typeface's need measuring before they are allowed anywhere near the page.
+    Injecting a substitute unmeasured is how a Tw Cen MT field came to be
+    drawn with Poppins letterforms 33% too tall — see
+    font_donors.correct_external_donor.
+    """
     family, weight, style = _parse_font_name(fontname)
     key = _family_key(family)
     cache_key = (key, weight, style)
     if cache_key in _donor_cache:
         return _donor_cache[cache_key]
 
-    tried = [family]
-    if key in _KNOWN_RENAMES:
-        tried.append(_KNOWN_RENAMES[key])
-    if family in _FONT_SUBSTITUTES:
-        tried.append(_FONT_SUBSTITUTES[family][0])
-    if family in _DONOR_ONLY_SUBSTITUTES:
-        tried.append(_DONOR_ONLY_SUBSTITUTES[family])
+    # An installed copy of the REAL family beats anything downloadable: it is
+    # the actual typeface, not a lookalike. Measured, this was the whole
+    # reason a Chrome-printed document could not gain 'q', 'z' or 'k' — its
+    # font is Liberation Sans, which sits in /usr/share/fonts on the machine
+    # doing the editing, while this resolver only ever looked at the Google
+    # Fonts repository and reported "no donor".
+    try:
+        from pdf_editor import _find_system_font
+        sys_raw = _find_system_font(family, weight, style)
+        if sys_raw:
+            _donor_cache[cache_key] = (sys_raw, "family")
+            return _donor_cache[cache_key]
+    except Exception:  # noqa: BLE001 — no system font search is not fatal
+        pass
 
-    data = None
-    for candidate in tried:
+    # "family" spellings first — the same typeface under its own name, or a
+    # catalogue rename of it. Only after those is a different typeface tried.
+    tried = [(family, "family")]
+    if key in _KNOWN_RENAMES:
+        tried.append((_KNOWN_RENAMES[key], "family"))
+    if family in _FONT_SUBSTITUTES:
+        tried.append((_FONT_SUBSTITUTES[family][0], "substitute"))
+    if family in _DONOR_ONLY_SUBSTITUTES:
+        tried.append((_DONOR_ONLY_SUBSTITUTES[family], "substitute"))
+
+    data, kind = None, None
+    for candidate, cand_kind in tried:
         data = _resolve_from_repo(candidate, weight, style)
         if data:
+            kind = cand_kind
             break
-    _donor_cache[cache_key] = data
-    return data
+    _donor_cache[cache_key] = (data, kind)
+    return _donor_cache[cache_key]
 
 
 def extend_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dict:

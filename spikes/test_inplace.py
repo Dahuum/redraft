@@ -8,6 +8,7 @@ one instruction, ragged multi-run boundaries), and checks each gets the RIGHT
 outcome: a correct edit with 0 pixels changed outside it, or an honest refusal
 with the right reason.
 """
+import base64
 import os
 import sys
 
@@ -261,9 +262,48 @@ print("\n=== 3) split per CHARACTER — the extreme case ===")
 chars = build_split_by_char(PHRASE)
 prove("char-split (full phrase)", chars, PHRASE, "Facture N W2099 99 999", True, expect_case="multi_run")
 
-print("\n=== 4) kerning-split WITHIN one instruction — must be refused, not mis-edited ===")
+print("\n=== 4) kerning-split WITHIN one instruction — rebuilt, and disclosed ===")
+# This used to be refused outright. It no longer is: the match covers BOTH
+# string tokens completely, so rewriting them as one token discards only the
+# kerning nudge BETWEEN them — spacing that belonged to the text being
+# replaced. Refusing over it was the largest category of otherwise-editable
+# fields (18 of 55 refusals across four real documents).
+#
+# What must still hold: the replacement is exactly what was asked for, every
+# character of it actually draws, nothing outside the field moves, and the
+# dropped adjustment is REPORTED rather than silently applied. Partial token
+# coverage is a different matter and stays refused — see case 5.
 kern = build_kerning_split_within_run(PHRASE)
-prove("kerning-within-run", kern, PHRASE, "Facture N W2099 99 999", False, expect_reason="kerning_split_within_run")
+rk = sp.edit(kern, PHRASE, "Facture N W2099 99 999")
+print("  [kerning-within-run]", {k: v for k, v in rk.items() if k != "pdf_b64"})
+check("kerning-within-run: now edited", rk.get("ok") is True)
+check("kerning-within-run: reported as de-kerned", rk.get("dekerned") is True)
+check("kerning-within-run: names the adjustment it dropped",
+      bool(rk.get("dropped_gaps")), f"{rk.get('dropped_gaps')}")
+check("kerning-within-run: guarantee (0 px outside)", rk.get("diff_outside") == 0)
+if rk.get("ok"):
+    _kd = fitz.open(stream=base64.b64decode(rk["pdf_b64"]), filetype="pdf")
+    check("kerning-within-run: extracts as the requested text",
+          _kd[0].get_text().strip() == "Facture N W2099 99 999",
+          repr(_kd[0].get_text().strip()))
+    _blank = []
+    for _b in _kd[0].get_text("rawdict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _sp in _l.get("spans", []):
+                for _c in _sp["chars"]:
+                    if not _c["c"].strip():
+                        continue
+                    _pm = _kd[0].get_pixmap(matrix=fitz.Matrix(8, 8),
+                                            clip=fitz.Rect(*_c["bbox"]))
+                    _buf, _ch = _pm.samples, _pm.n
+                    if not any(min(_buf[i:i + min(3, _ch)]) < 200
+                               for i in range(0, len(_buf), _ch)):
+                        _blank.append(_c["c"])
+    # The point of rebuilding a run is that it still DRAWS. Extraction alone
+    # would report success for glyphs that render as nothing.
+    check("kerning-within-run: every character actually has ink",
+          not _blank, f"blank: {_blank}")
+    _kd.close()
 
 print("\n=== 5) ragged boundary (unrelated text sharing a token) — must be refused ===")
 ragged = build_ragged_boundary("REF:", PHRASE)
@@ -273,11 +313,50 @@ print("\n=== 6) simple (non-CID) font, split across Tj calls ===")
 simple_split = build_simple_font_split("Reference REF 2026 001")
 prove("simple-split", simple_split, "Reference REF 2026 001", "Reference REF 2099 777", True, expect_case="multi_run")
 
-print("\n=== 7) missing-glyph / extend tier (regression) ===")
-r = sp.edit(base, "Facture", "Fécture")   # é not in the subset
+print("\n=== 7) missing-glyph / extend tier ===")
+# 'é' is not in this fixture's subset. What SHOULD happen depends on whether a
+# donor for the real family is reachable, and both outcomes are correct:
+#
+#   donor available  -> the glyph is injected and must actually DRAW. The
+#                       fixture's font is Liberation Sans, so on a machine
+#                       that has it installed the donor is the genuine
+#                       typeface rather than a lookalike.
+#   no donor         -> honest refusal, naming the reason.
+#
+# The one thing that must never happen is the middle case: an edit that
+# reports success while rendering nothing, which is what encoding a character
+# from /ToUnicode alone used to produce. Extraction cannot see that, so ink is
+# measured directly.
+r = sp.edit(base, "Facture", "Fécture")
 print("  [extend]", {k: v for k, v in r.items() if k != "pdf_b64"})
-check("extend: ok=False", r.get("ok") is False)
-check("extend: reason=extend", r.get("reason") == "extend")
+if r.get("ok"):
+    check("extend: injected the missing glyph", r.get("extended_chars") == ["é"],
+          f"{r.get('extended_chars')}")
+    check("extend: guarantee (0 px outside)", r.get("diff_outside") == 0)
+    _ed = fitz.open(stream=base64.b64decode(r["pdf_b64"]), filetype="pdf")
+    check("extend: extracts as the requested text",
+          _ed[0].get_text().strip() == "Fécture N W2026 04 089",
+          repr(_ed[0].get_text().strip()))
+    _blank = []
+    for _b in _ed[0].get_text("rawdict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _sp in _l.get("spans", []):
+                for _c in _sp["chars"]:
+                    if not _c["c"].strip():
+                        continue
+                    _pm = _ed[0].get_pixmap(matrix=fitz.Matrix(8, 8),
+                                            clip=fitz.Rect(*_c["bbox"]))
+                    _buf, _ch = _pm.samples, _pm.n
+                    if not any(min(_buf[i:i + min(3, _ch)]) < 200
+                               for i in range(0, len(_buf), _ch)):
+                        _blank.append(_c["c"])
+    check("extend: the injected glyph actually has ink", not _blank,
+          f"blank: {_blank}")
+    _ed.close()
+else:
+    check("extend: refusal names a reason", bool(r.get("reason")), f"{r}")
+    check("extend: refusal names which characters were missing",
+          bool(r.get("missing")), f"{r.get('missing')}")
 
 print("\n=== 8) analyze() probe — per-field editability, no edit needed to see it ===")
 a = sp.analyze(words)
@@ -286,8 +365,11 @@ for f in a["fields"]:
 check("analyze: word-split field reports editable=True", all(f["editable"] for f in a["fields"]))
 
 a2 = sp.analyze(kern)
-check("analyze: kerning-split field reports editable=False",
-     any(not f["editable"] for f in a2["fields"]))
+# Editable now, for the reason set out in case 4. The genuinely-unsupported
+# shape — a match covering only PART of a token — is case 5.
+check("analyze: kerning-split field now reports editable=True",
+     all(f["editable"] for f in a2["fields"]),
+     f"{[(f['text'][:24], f['editable']) for f in a2['fields']]}")
 
 print("\n=== 9) word-space drawn as pure positioning, no space glyph (dvips/pdfTeX-style) ===")
 gap_split = build_word_gap_split(PHRASE)

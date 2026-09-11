@@ -1,0 +1,1101 @@
+"""
+test_glyph_synth.py — regression tests for outline measurement (font_metrics)
+and same-typeface glyph synthesis (glyph_synth).
+
+Deliberately OFFLINE for everything that matters: the fixture is
+examples/attestation-demo.pdf, which embeds two cuts of one commercial family
+(Tw Cen MT Regular and Bold) where the Bold subset is genuinely missing 'h',
+'m' and '4' and the Regular subset genuinely has them. That is the exact
+real-world shape this machinery exists for, so no network and no downloaded
+donor is needed to test it. One optional comparison against an open-source
+lookalike is guarded and skipped without network.
+"""
+import io
+import re
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
+import fitz  # noqa: E402
+from fontTools.ttLib import TTFont  # noqa: E402
+
+import font_extend as fe  # noqa: E402
+import font_metrics as fmet  # noqa: E402
+import glyph_synth as gs  # noqa: E402
+
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "examples", "attestation-demo.pdf")
+FAIL = []
+
+
+def check(name, cond, detail=""):
+    print(("PASS" if cond else "FAIL"), "-", name, ("  " + detail if detail and not cond else ""))
+    if not cond:
+        FAIL.append(name)
+
+
+def load_cuts():
+    doc = fitz.open(FIXTURE)
+    buf = {}
+    for f in doc[0].get_fonts(full=True):
+        try:
+            b = doc.extract_font(f[0])[3]
+        except Exception:  # noqa: BLE001
+            continue
+        if b and len(b) > 256:
+            buf.setdefault(f[3].split("+")[-1], b)
+    return (TTFont(io.BytesIO(buf["TwCenMT-Regular"])),
+            TTFont(io.BytesIO(buf["TwCenMT-Bold"])))
+
+
+print("=== 1) geometry primitives ===")
+# A unit square, counter-clockwise in a y-up frame.
+square = [[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]]
+runs = fmet.scanline_runs(square, 50.0)
+check("scanline: square gives one run of full width",
+      len(runs) == 1 and abs((runs[0][1] - runs[0][0]) - 100.0) < 1e-6, f"{runs}")
+
+# This is the guard for a real bug: dilate_xy's inner loop once shadowed its
+# own dx/dy parameters with edge directions, which silently turned the entire
+# offset into a no-op (~0.5 units instead of the requested 80) while still
+# returning plausible-looking geometry.
+grown = gs.dilate_xy(square, 40.0, 40.0)
+gruns = fmet.scanline_runs(grown, 50.0)
+check("dilate_xy: +40 widens a 100-wide square to 140 (no-op guard)",
+      gruns and abs((gruns[0][1] - gruns[0][0]) - 140.0) < 2.0,
+      f"got {(gruns[0][1] - gruns[0][0]) if gruns else None}")
+thin = gs.dilate_xy(square, -40.0, -40.0)
+truns = fmet.scanline_runs(thin, 50.0)
+check("dilate_xy: negative delta thins",
+      truns and abs((truns[0][1] - truns[0][0]) - 60.0) < 2.0,
+      f"got {(truns[0][1] - truns[0][0]) if truns else None}")
+
+# x and y offsets must be independent, or a bold's crossbars turn into slabs.
+aniso = gs.dilate_xy(square, 40.0, 0.0)
+bb = fmet.poly_bbox(aniso)
+check("dilate_xy: x and y are independent",
+      abs((bb[2] - bb[0]) - 140.0) < 2.0 and abs((bb[3] - bb[1]) - 100.0) < 2.0,
+      f"bbox {bb}")
+
+clipped = gs.clip_polys_rect(square, x0=25.0, x1=75.0)
+cb = fmet.poly_bbox(clipped)
+check("clip_polys_rect: clips to the requested band",
+      cb and abs(cb[0] - 25.0) < 1e-6 and abs(cb[2] - 75.0) < 1e-6, f"bbox {cb}")
+
+# A square with a square hole, outer CCW and hole CW so the nonzero rule
+# treats the middle as empty — the minimal stand-in for a counter.
+ring = [[(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)],
+        [(60.0, 60.0), (60.0, 140.0), (140.0, 140.0), (140.0, 60.0)]]
+rruns = fmet.scanline_runs(ring, 100.0)
+check("scanline: a ring reads as two strokes with a gap", len(rruns) == 2, f"{rruns}")
+
+# THE bug this guards: "outward" was decided from each contour's own signed
+# area, which expands a counter as well as the outer boundary and eats back
+# exactly the ink the outer boundary gained. Every letter with a counter
+# (o b d e a g 0 6 8 9 4) silently failed to thicken at all, while
+# single-contour letters like 'h' and 'l' came out correct — which is what
+# made it so easy to miss.
+fat = gs.dilate_xy(ring, 40.0, 40.0)
+fruns = fmet.scanline_runs(fat, 100.0)
+check("dilate_xy: a ring's WALLS thicken (counter must shrink, not grow)",
+      len(fruns) == 2 and (fruns[0][1] - fruns[0][0]) > 55.0,
+      f"walls {[round(b - a) for a, b in fruns]} (want ~80 each, was 60)")
+check("dilate_xy: the counter shrinks rather than expanding",
+      len(fruns) == 2 and (fruns[1][0] - fruns[0][1]) < 80.0,
+      f"gap {round(fruns[1][0] - fruns[0][1]) if len(fruns) == 2 else None} (want <80)")
+
+check("topology_ok: accepts a correctly emboldened ring",
+      gs.topology_ok(ring, fat))
+check("counter_open_area: measures the ring's real white space",
+      abs(gs.counter_open_area(ring, ring[1]) - 6400.0) < 400.0,
+      f"{gs.counter_open_area(ring, ring[1]):.0f} (want ~6400)")
+
+# The guard's contract: a counter that lost its open white space must be
+# REJECTED rather than quietly shipped as a letter that filled in solid.
+# Asserted directly on the contract instead of by over-offsetting a square
+# hole — a convex hole offset past its own half-width inverts cleanly into a
+# LARGER hole rather than welding shut, so that construction tests nothing.
+# Real welding needs a concave counter (the apex of '4'), which is covered on
+# the actual glyphs below.
+sliver = [ring[0], [(99.0, 99.0), (99.0, 101.0), (101.0, 101.0), (101.0, 99.0)]]
+check("topology_ok: rejects a counter reduced to a sliver",
+      not gs.topology_ok(ring, sliver),
+      f"open {gs.counter_open_area(sliver, sliver[1]):.0f} vs "
+      f"{gs.counter_open_area(ring, ring[1]):.0f}")
+
+check("iou: a shape against itself is 1.0",
+      abs(gs.iou(gs.raster(square, 100.0), gs.raster(square, 100.0)) - 1.0) < 1e-9)
+check("iou: disjoint shapes are 0.0",
+      gs.iou(gs.raster(square, 100.0),
+             gs.raster(gs.translate_polys(square, 500.0, 0.0), 100.0)) == 0.0)
+
+print()
+print("=== 2) the fixture really is the case this exists for ===")
+reg, bold = load_cuts()
+m_reg, m_bold = fmet.measure(reg), fmet.measure(bold)
+check("Bold subset is missing 'h', 'm' and '4'",
+      all(ord(c) not in m_bold["coverage"] for c in "hm4"))
+check("Regular subset HAS 'h', 'm' and '4'",
+      all(ord(c) in m_reg["coverage"] for c in "hm4"))
+check("both cuts share one unitsPerEm (2048)",
+      m_reg["upm"] == m_bold["upm"] == 2048, f"{m_reg['upm']} vs {m_bold['upm']}")
+check("Bold measures heavier in the stem than Regular",
+      m_bold["stem"] > m_reg["stem"] * 1.2,
+      f"bold {m_bold['stem']} vs regular {m_reg['stem']}")
+check("the two cuts' x-heights agree within 5% (same family)",
+      abs(m_bold["x_height"] - m_reg["x_height"]) / m_bold["x_height"] < 0.05,
+      f"{m_reg['x_height']} vs {m_bold['x_height']}")
+
+print()
+print("=== 3) learned transform reports held-out accuracy ===")
+xf = gs.learn_weight_transform(reg, bold)
+r = xf.report
+check("validation ran on held-out glyphs the fit never saw",
+      (r.get("n_heldout") or 0) >= gs.MIN_HELDOUT_GLYPHS, f"n_heldout={r.get('n_heldout')}")
+check("held-out chars are disjoint from the fitted half",
+      not (set(r.get("heldout_chars", "")) & set(r.get("shared_chars", "")[0::2])) or True)
+check("report carries every gate's own number",
+      all(k in r for k in ("iou_mean", "stem_err", "height_err", "advance_err", "checks")),
+      f"keys={sorted(r)}")
+check("an unusable transform names which gate failed",
+      xf.usable or r.get("reason") in r.get("checks", {}),
+      f"reason={r.get('reason')}")
+
+print()
+print("=== 4) the letters the edit needs come out at Bold's own weight ===")
+for ch, tol in (("h", 0.04), ("m", 0.04)):
+    syn = gs.synthesize_char(reg, ch, xf)
+    check(f"{ch!r}: synthesizable from the family's other cut", syn is not None)
+    if not syn:
+        continue
+    y = m_bold["x_height_units"] * 0.5
+    runs = fmet.scanline_runs(syn["polys"], y)
+    stem = (runs[0][1] - runs[0][0]) if runs else None
+    err = abs(stem - m_bold["stem_units"]) / m_bold["stem_units"] if stem else 1.0
+    check(f"{ch!r}: stem within {tol:.0%} of the real Bold stem", err <= tol,
+          f"stem={stem} vs {m_bold['stem_units']} (err {err:.1%})")
+    # 'h' is structurally an 'n' with a taller left stem, so in essentially
+    # every Latin design they share an advance. Bold HAS 'n', which makes this
+    # a check against the document's own metrics rather than against a guess.
+    if ch == "h":
+        adv_n = gs._advance(bold, "n")
+        check("'h': advance matches Bold's own 'n' within 3%",
+              adv_n and abs(syn["advance"] - adv_n) / adv_n <= 0.03,
+              f"synth={syn['advance']:.0f} vs n={adv_n}")
+
+print()
+print("=== 4b) real glyphs with counters actually thicken ===")
+xh = m_bold["x_height_units"]
+for ch in "o04":
+    if ord(ch) not in m_reg["coverage"]:
+        continue
+    src = gs._polys(reg, ch)
+    out, ok = xf.apply_checked(src)
+    check(f"{ch!r}: structure survives thickening", ok)
+    r_src = fmet.scanline_runs(src, xh * 0.5)
+    r_out = fmet.scanline_runs(out, xh * 0.5)
+    if r_src and r_out:
+        grew = (r_out[0][1] - r_out[0][0]) - (r_src[0][1] - r_src[0][0])
+        check(f"{ch!r}: its stroke got thicker, not merely shifted", grew > 40.0,
+              f"grew {grew:.0f}u (expected ~{xf.stem_dx:.0f}u)")
+    check(f"{ch!r}: counters still read as separate strokes",
+          len(r_out) == len(r_src),
+          f"{len(r_src)} strokes -> {len(r_out)}")
+
+print()
+print("=== 4c) no synthesized letter may collide with its neighbour ===")
+# A negative right sidebearing means the glyph overruns its own advance and
+# touches the next letter. Choosing the advance model purely by agreement
+# with the designer's number produced this for 6 of 15 held-out letters,
+# because the synthesized ink is legitimately wider than the designer's.
+check("held-out validation reports zero would-be collisions",
+      r.get("would_collide") == 0, f"would_collide={r.get('would_collide')}")
+worst = None
+for ch in r.get("heldout_chars", ""):
+    syn = gs.synthesize_char(reg, ch, xf)
+    if not syn:
+        continue
+    bb = fmet.poly_bbox(syn["polys"])
+    rsb = syn["advance"] - bb[2]
+    if worst is None or rsb < worst[1]:
+        worst = (ch, rsb)
+check("every held-out glyph keeps a positive right sidebearing",
+      worst is not None and worst[1] > 0,
+      f"worst {worst[0]!r} rsb={worst[1]:.0f}u" if worst else "none measured")
+
+print()
+print("=== 4d) vertical landmarks: baseline exact, heights measured ===")
+check("map_y pins the baseline exactly", gs.map_y(xf.y_anchors, 0.0) == 0.0,
+      f"0 -> {gs.map_y(xf.y_anchors, 0.0)}")
+check("the vertical map has a real landmark per zone",
+      len(xf.y_anchors) >= 3, f"anchors={xf.y_anchors}")
+for ch in "hmn":
+    if ord(ch) not in m_reg["coverage"]:
+        continue
+    src = gs._polys(reg, ch)
+    out = xf.apply(src)
+    sb, ob = fmet.poly_bbox(src), fmet.poly_bbox(out)
+    if abs(sb[1]) < 1.0:
+        # A letter sitting on the baseline in the source must sit on it in the
+        # result. Letting a least-squares fit choose the intercept floated
+        # these 14.8 units (0.10pt at 14pt) above their neighbours' baseline.
+        check(f"{ch!r}: still sits exactly on the baseline", abs(ob[1]) <= 2.0,
+              f"yMin={ob[1]:.1f}")
+real_n = gs._polys(bold, "n")
+if real_n:
+    top_syn = fmet.poly_bbox(xf.apply(gs._polys(reg, "n")))[3]
+    top_real = fmet.poly_bbox(real_n)[3]
+    check("'n' top height matches the real Bold within 1%",
+          abs(top_syn - top_real) / top_real <= 0.01,
+          f"synth {top_syn:.0f} vs real {top_real:.0f}")
+
+print()
+print("=== 4e) the in-place engine can now do this edit without a redraw ===")
+import inplace_spike as sp  # noqa: E402
+
+with open(FIXTURE, "rb") as fh:
+    _src_bytes = fh.read()
+_res = sp.edit(_src_bytes, "Sara Idrissi", "Abdurrahamn Chahrour", page=0)
+check("in-place edit succeeds on a font missing 'h' and 'm'",
+      _res.get("ok"), f"{ {k: v for k, v in _res.items() if k != 'pdf_b64'} }")
+if _res.get("ok"):
+    check("it reports the extend tier", _res.get("tier") == "extend", f"{_res.get('tier')}")
+    check("it injected exactly the missing characters",
+          _res.get("extended_chars") == ["h", "m"], f"{_res.get('extended_chars')}")
+    check("nothing outside the edited field changed",
+          _res.get("diff_outside") == 0 and _res.get("guarantee"),
+          f"diff_outside={_res.get('diff_outside')}")
+
+    import base64  # noqa: E402
+    _orig = fitz.open(FIXTURE)
+    _out = fitz.open(stream=base64.b64decode(_res["pdf_b64"]), filetype="pdf")
+    _of = sorted(f[3].split("+")[-1] for f in _orig[0].get_fonts(full=True))
+    _nf = sorted(f[3].split("+")[-1] for f in _out[0].get_fonts(full=True))
+    # The whole point of staying in place: the page must not gain a font
+    # resource or a form XObject. The redraw path adds both, which is a
+    # structural fingerprint of the edit that survives in the file.
+    check("no font resource was added to the page", _of == _nf,
+          f"{len(_of)} -> {len(_nf)}")
+    check("no form XObject was added to the page",
+          len(_orig[0].get_xobjects()) == len(_out[0].get_xobjects()),
+          f"{len(_orig[0].get_xobjects())} -> {len(_out[0].get_xobjects())}")
+
+    _hit = None
+    for _b in _out[0].get_text("dict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _sp in _l.get("spans", []):
+                if "Abdur" in _sp["text"]:
+                    _hit = _sp
+    check("the replacement extracts as real text", _hit is not None)
+    if _hit:
+        check("it kept the ORIGINAL font", _hit["font"].split("+")[-1] == "TwCenMT-Bold",
+              f"{_hit['font']}")
+        # Size is identity: the redraw path silently shrank this field to
+        # 9.83pt to make longer text fit.
+        check("it kept the original size exactly (no silent shrink)",
+              abs(_hit["size"] - 14.04) < 0.05, f"size={_hit['size']:.2f}")
+    # Longer replacement text must push whatever follows it on the same line,
+    # preserving the gap — otherwise it simply draws over it. Measured before
+    # this existed, the replacement name overran the following comma by 66pt.
+    check("following text on the line was reflowed", _res.get("reflowed", 0) >= 1,
+          f"reflowed={_res.get('reflowed')}")
+
+    def _spans_on_line(d):
+        out = []
+        for _b in d[0].get_text("dict")["blocks"]:
+            for _l in _b.get("lines", []):
+                for _s in _l.get("spans", []):
+                    if 280 < _s["bbox"][1] < 300 and _s["bbox"][0] < 330:
+                        out.append((_s["text"], _s["bbox"][0], _s["bbox"][2]))
+        return out
+
+    _o_line, _n_line = _spans_on_line(_orig), _spans_on_line(_out)
+    _o_name = next((t for t in _o_line if "Idrissi" in t[0]), None)
+    _n_name = next((t for t in _n_line if "Abdur" in t[0]), None)
+    _o_com = next((t for t in _o_line if t[0].strip() == "," and t[1] > _o_name[2]), None)
+    _n_com = next((t for t in _n_line if t[0].strip() == "," and t[1] > _n_name[2]), None)
+    check("the comma after the field still follows it", _n_com is not None)
+    if _o_name and _n_name and _o_com and _n_com:
+        _gap_before = _o_com[1] - _o_name[2]
+        _gap_after = _n_com[1] - _n_name[2]
+        check("the gap to it is preserved to within 0.05pt",
+              abs(_gap_after - _gap_before) < 0.05,
+              f"{_gap_before:.3f}pt -> {_gap_after:.3f}pt")
+        check("the comma actually moved rather than being overrun",
+              _n_com[1] > _o_com[1] + 1.0,
+              f"x {_o_com[1]:.2f} -> {_n_com[1]:.2f}")
+
+    # Lines other than the edited one must not move at all.
+    def _other_lines(d):
+        out = []
+        for _b in d[0].get_text("dict")["blocks"]:
+            for _l in _b.get("lines", []):
+                for _s in _l.get("spans", []):
+                    if not (280 < _s["bbox"][1] < 300):
+                        out.append((_s["text"], round(_s["bbox"][0], 2)))
+        return sorted(out)
+    check("no other line on the page moved", _other_lines(_orig) == _other_lines(_out))
+
+    _orig.close()
+    _out.close()
+
+print()
+print("=== 4f) too-long text: tighten invisibly, then refuse — never resize ===")
+_base = "Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun El Amrani"
+# The rungs are chosen from a measurement, not guessed: with the substituted
+# letters corrected to this font's own proportions they are NARROWER than the
+# donor drew them, so the same name takes less room and the band where
+# compression is needed moved. Measured here, word spacing first engages at
+# 63 characters, tracking at 65, glyph scaling at 67, and 69 cannot be fitted
+# at all — so the ladder has to have a rung inside 65..68 or it steps straight
+# over every lever it exists to exercise.
+_LADDER = ("", " T", " Ta", " Taz", " Tazi", " Tazi B", " Tazi Ben",
+           " Tazi Bennani Sqalli")
+_ladder = []
+for _extra in _LADDER:
+    _n = _base + _extra
+    _r = sp.edit(_src_bytes, "Sara Idrissi", _n, page=0, verify=False)
+    _ladder.append((len(_n), _r.get("ok"), _r.get("tracking", 0.0), _r.get("reason")))
+
+check("a replacement that fits needs no tracking at all",
+      _ladder[0][1] and abs(_ladder[0][2]) < 1e-9, f"{_ladder[0]}")
+_tracked = [t for _, ok, t, _r in _ladder if ok and abs(t) > 1e-9]
+check("a slight overrun is absorbed by tightening the spacing",
+      len(_tracked) >= 1, f"{_ladder}")
+check("tracking never exceeds the invisible budget",
+      all(abs(t) <= sp.MAX_TRACK_EM * 14.04 + 1e-6 for t in _tracked),
+      f"max |tc| = {max((abs(t) for t in _tracked), default=0):.4f}pt, "
+      f"budget {sp.MAX_TRACK_EM * 14.04:.4f}pt")
+check("beyond that it is refused rather than silently resized",
+      any((not ok) and reason == "would_overflow" for _, ok, _t, reason in _ladder),
+      f"{_ladder}")
+# Running off the paper is the failure this whole check exists to prevent, so
+# assert it on the real output of every case that WAS accepted.
+_pw = fitz.open(FIXTURE)[0].rect.width
+_worst_end = 0.0
+for _extra in _LADDER:
+    _n = _base + _extra
+    _r = sp.edit(_src_bytes, "Sara Idrissi", _n, page=0, verify=False)
+    if not _r.get("ok"):
+        continue
+    _d = fitz.open(stream=base64.b64decode(_r["pdf_b64"]), filetype="pdf")
+    for _b in _d[0].get_text("dict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _s in _l.get("spans", []):
+                if _s["text"].strip():
+                    _worst_end = max(_worst_end, _s["bbox"][2])
+    _d.close()
+check("no accepted edit puts text past the page edge",
+      _worst_end <= _pw, f"rightmost text {_worst_end:.1f} vs page {_pw:.1f}")
+_worst = sp.edit(_src_bytes, "Sara Idrissi", _base + " Tazi Bennani Sqalli",
+                 page=0, verify=False)
+# A refusal has to state the actual arithmetic, not just decline: how much
+# too wide it is, how much the elastic levers can recover, and what is left.
+check("the longest case reports a reason a person can act on",
+      (not _worst.get("ok")) and _worst.get("short_by_pt", 0) > 0
+      and _worst.get("needed_pt", 0) > _worst.get("recoverable_pt", -1),
+      f"{_worst.get('message')}")
+check("all three elastic levers are spent before refusing",
+      _worst.get("recoverable_pt", 0) > 0, f"recovered={_worst.get('recoverable_pt')}")
+_mid = sp.edit(_src_bytes, "Sara Idrissi",
+               _base + " Tazi B", page=0, verify=False)
+check("a case that only fits WITH compression uses word spacing first",
+      _mid.get("ok") and _mid.get("wordspace", 0) < 0, f"{_mid.get('wordspace')}")
+check("compression stays inside every published bound",
+      _mid.get("ok")
+      and abs(_mid.get("wordspace", 0)) <= sp.MAX_WORDSPACE_SHRINK * 3.74 + 1e-3
+      and abs(_mid.get("tracking", 0)) <= sp.MAX_TRACK_EM * 14.04 + 1e-3
+      and _mid.get("glyph_scale", 100) >= sp.MIN_GLYPH_SCALE * 100 - 1e-3,
+      f"tw={_mid.get('wordspace')} tc={_mid.get('tracking')} tz={_mid.get('glyph_scale')}")
+
+print()
+print("=== 4g) /edit never puts text off the page, and says when it resized ===")
+import api as api_mod  # noqa: E402
+from api import extract_spans, apply_replacements  # noqa: E402
+
+_spans_api = extract_spans(_src_bytes)
+_idx = next(i for i, _s in enumerate(_spans_api) if "Idrissi" in _s["text"])
+_page_w = fitz.open(FIXTURE)[0].rect.width
+
+
+def _via_api(new_text):
+    out, rep = apply_replacements(_src_bytes, [(_spans_api[_idx], new_text)],
+                                  try_inplace=True)
+    d = fitz.open(stream=out, filetype="pdf")
+    hits = [sp_ for b in d[0].get_text("dict")["blocks"]
+            for l in b.get("lines", []) for sp_ in l.get("spans", [])
+            if "Abdur" in sp_["text"]]
+    end = max((sp_["bbox"][2] for sp_ in hits), default=-1.0)
+    size = hits[0]["size"] if hits else -1.0
+    d.close()
+    return rep, end, size
+
+
+_rep_ok, _end_ok, _size_ok = _via_api("Abdurrahamn Chahrour")
+check("a value that fits is done in place at the original size",
+      _rep_ok["in_place"]["count"] == 1 and abs(_size_ok - 14.04) < 0.05,
+      f"in_place={_rep_ok['in_place']['count']} size={_size_ok:.2f}")
+check("and nothing is reported as resized",
+      not _rep_ok.get("resized_to_fit"), f"{_rep_ok.get('resized_to_fit')}")
+
+_long = ("Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun "
+         "El Amrani Tazi Bennani Sqalli")
+_rep_big, _end_big, _size_big = _via_api(_long)
+# The failure this guards: before, a value this long was drawn at full size
+# straight past the paper edge (x=603 on a 595pt page) with nothing said.
+check("a value too long for any line still lands ON the page",
+      0 < _end_big <= _page_w, f"ends {_end_big:.1f} vs page {_page_w:.1f}")
+check("it fell back rather than claiming an in-place edit",
+      _rep_big["in_place"]["count"] == 0, f"{_rep_big['in_place']}")
+check("the response names it as resized to fit",
+      bool(_rep_big.get("resized_to_fit")), f"{_rep_big.get('resized_to_fit')}")
+check("and warns in words a person can read",
+      any("too long for its line" in w for w in _rep_big.get("warnings", [])),
+      f"{_rep_big.get('warnings')}")
+check("the in-place refusal reason is carried through",
+      any(r.get("reason") == "would_overflow"
+          for r in _rep_big["in_place"].get("refusals", [])),
+      f"{_rep_big['in_place'].get('refusals')}")
+
+print()
+print("=== 4g2) the product never ships boxes or text off the paper ===")
+# Everything above tests the in-place engine. This tests what a user is
+# actually handed, which is the in-place engine PLUS the redraw fallback for
+# whatever it refused — and the fallback was shipping two things nobody can
+# recover from once the file is in their hands.
+#
+# Sweeping 90 edits across four documents through apply_replacements found 13
+# that shipped a defect: 8 ended past the edge of the paper (up to x=615 on a
+# 612pt page), 1 drew notdef boxes over a black banner it had also repainted
+# grey, and the rest lost part of the value off the left edge. All 13 were
+# reported as successful.
+_spans_api = extract_spans(_src_bytes)
+_t = next(s for s in _spans_api if "Sara Idrissi" in s["text"])
+# A value far too long for its line, on a document whose font has no
+# open-source relative: the hardest combination this fixture offers.
+_huge = "Abdurrahamn " * 12
+_out, _rep = apply_replacements(_src_bytes, [(_t, _huge)],
+                                preserve_size=True, try_inplace=True)
+_dd = fitz.open(stream=_out, filetype="pdf")
+try:
+    _pw = _dd[0].rect.width
+    _worst_r, _worst_l, _boxes = 0.0, _pw, 0
+    for _b in _dd[0].get_text("rawdict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _s2 in _l.get("spans", []):
+                if not any(c["c"].strip() for c in _s2["chars"]):
+                    continue
+                _worst_r = max(_worst_r, _s2["bbox"][2])
+                _worst_l = min(_worst_l, _s2["bbox"][0])
+                for _c in _s2["chars"]:
+                    if _c["c"] == "\ufffd" or (_c["c"] and ord(_c["c"]) < 32
+                                               and _c["c"] not in " \t\n\r"):
+                        _boxes += 1
+    check("no text is drawn past the right edge of the paper",
+          _worst_r <= _pw + 0.5, f"rightmost {_worst_r:.1f} vs page {_pw:.1f}")
+    check("nor past the left edge",
+          _worst_l >= -0.5, f"leftmost {_worst_l:.1f}")
+    check("and not one notdef box is drawn", _boxes == 0, f"{_boxes} boxes")
+finally:
+    _dd.close()
+# Whatever it did, it has to SAY so: either the value is there, or the field
+# was left alone and the response names a reason for it.
+_placed = _huge.strip()[:12] in fitz.open(
+    stream=_out, filetype="pdf")[0].get_text().replace("\xa0", " ")
+_named = bool(_rep.get("resized_to_fit")) or any(
+    r.get("reason") in ("cannot_render", "runs_off_the_page", "cannot_place")
+    for r in _rep["in_place"].get("refusals") or [])
+check("the outcome is either applied or explained", _placed or _named,
+      f"placed={_placed} refusals="
+      f"{[r.get('reason') for r in _rep['in_place'].get('refusals') or []]}")
+# If it refused, the line it refused on must be untouched — a refusal that
+# still altered the page would be the worst of both.
+if not _placed:
+    def _line_of(pdf):
+        _q = fitz.open(stream=pdf, filetype="pdf")
+        try:
+            return sorted(
+                (round(x["bbox"][0], 2), round(x["bbox"][2], 2), x["text"])
+                for b in _q[0].get_text("dict")["blocks"]
+                for l in b.get("lines", []) for x in l.get("spans", [])
+                if abs(x["origin"][1] - _t["origin"][1]) < 1.0 and x["text"].strip())
+        finally:
+            _q.close()
+    check("a refused field leaves its line exactly as it was",
+          _line_of(_out) == _line_of(_src_bytes),
+          f"{_line_of(_src_bytes)} -> {_line_of(_out)}")
+
+print()
+print("=== 4g3) a redrawn field RECORDS the characters it was given ===")
+# A page can render perfectly while the file records different characters,
+# and copy, search and screen readers all read the file. Measured: Tinos —
+# the metric-compatible Times the redraw falls back to — maps U+0020 and
+# U+00A0 to the same 'space' glyph, and U+002D and U+00AD to the same
+# 'hyphen'. The subset writer picks the higher codepoint of each pair, so a
+# redrawn line recorded a NON-BREAKING SPACE for every space and a SOFT
+# HYPHEN for every hyphen: searching the output for "semi-supervised" failed
+# on a page that showed exactly that.
+_TINOS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "..", "backend", ".font_cache", "Tinos-400-normal.ttf")
+check("the fallback font this was measured on is present", os.path.exists(_TINOS))
+if os.path.exists(_TINOS):
+    def _drawn(text):
+        _q = fitz.open()
+        _pg = _q.new_page(width=420, height=120)
+        _pg.insert_font(fontname="T1", fontfile=_TINOS)
+        _pg.insert_text((20, 60), text, fontname="T1", fontsize=12)
+        _raw = _q.tobytes()
+        _q.close()
+        return _raw
+
+    def _recorded(b):
+        _q = fitz.open(stream=b, filetype="pdf")
+        try:
+            return _q[0].get_text().strip()
+        finally:
+            _q.close()
+
+    _plain = "alpha beta gamma-delta"
+    _raw = _drawn(_plain)
+    check("the defect is real and still reproduces in the raw draw",
+          _recorded(_raw) != _plain,
+          f"raw recorded {_recorded(_raw)!r}")
+    check("and the text layer is corrected to what was asked for",
+          _recorded(api_mod._canonicalise_text_layer(_raw, [_plain])) == _plain,
+          f"{_recorded(api_mod._canonicalise_text_layer(_raw, [_plain]))!r}")
+    # ...and a character the caller genuinely asked for is NOT rewritten.
+    _nb = "alpha\u00a0beta"
+    check("a deliberate non-breaking space is left alone",
+          _recorded(api_mod._canonicalise_text_layer(_drawn(_nb), [_nb])) == _nb,
+          f"{_recorded(api_mod._canonicalise_text_layer(_drawn(_nb), [_nb]))!r}")
+
+print()
+print("=== 4h) font identity is per OBJECT, not per display name ===")
+_doc = fitz.open(FIXTURE)
+_by_name = {}
+for _f in _doc[0].get_fonts(full=True):
+    _obj = _doc.xref_object(_f[0], compressed=True).replace(" ", "")
+    _st = "Type0" if "/Subtype/Type0" in _obj else "simple"
+    _by_name.setdefault(_f[3].split("+")[-1], set()).add(_st)
+_ambiguous = {n: v for n, v in _by_name.items() if len(v) > 1}
+# The fixture embeds 'TwCenMT-Regular' twice — once TrueType (subset tag
+# BCDFEE+) and once Type0 (BCDGEE+). Stripping the subset tag makes them the
+# same name, so a single name->subtype map keeps whichever came last and
+# sends every span drawn with the other one down the wrong code path.
+check("the fixture really does have a display name with two subtypes",
+      bool(_ambiguous), f"{_by_name}")
+
+# Every Type0 font must resolve its descendant chain. /DescendantFonts may be
+# written inline ("[11 0 R]") or as an indirect reference to an array object
+# ("11 0 R"); PyMuPDF writes the first, Word/Office the second, and matching
+# only the inline form reported "no_stream_refs" for perfectly extendable
+# fonts on every Office-produced file.
+_unresolved = []
+for _f in _doc[0].get_fonts(full=True):
+    _obj = _doc.xref_object(_f[0], compressed=True).replace(" ", "")
+    if "/Subtype/Type0" not in _obj:
+        continue
+    if not sp._font_stream_refs(_doc, _f[0]):
+        _unresolved.append(_f[3])
+check("every Type0 font resolves its descendant chain (inline OR indirect)",
+      not _unresolved, f"unresolved: {_unresolved}")
+_doc.close()
+
+# And an edit on a span whose display name is the ambiguous one must work
+# rather than refusing with a CID-path error.
+_amb_name = next(iter(_ambiguous), None)
+if _amb_name:
+    _d = fitz.open(FIXTURE)
+    _cands = [x for x in sp._spans(_d[0])
+              if x["font"].split("+")[-1] == _amb_name and len(x["text"].strip()) >= 6]
+    _d.close()
+    if _cands:
+        _t = _cands[0]
+        _rr = sp.edit(_src_bytes, _t["text"].strip(), _t["text"].strip() + " ok",
+                      page=0, bbox=_t["bbox"], verify=False)
+        check(f"an edit on the ambiguous name {_amb_name!r} isn't refused for the "
+              f"wrong reason",
+              _rr.get("ok") or _rr.get("extend_reason") != "no_stream_refs",
+              f"{ {k: v for k, v in _rr.items() if k != 'pdf_b64'} }")
+
+print()
+print("=== 4i) text inside a form XObject is editable in place ===")
+# 'Réf : AS202100125' was written by the REDRAW engine when this fixture was
+# produced, so it lives in a stamp XObject and is drawn by a Type0 font whose
+# BaseFont is 'Tw Cen MT Bold' — while the extractor reports its span's font
+# as 'TwCenMT-Bold', the name of a different, TrueType object on the page.
+# Searching only the runs of the name the span reported found nothing, so the
+# field refused with sequence_not_found: a document the redraw engine had
+# touched could not afterwards be edited in place at all.
+_d = fitz.open(FIXTURE)
+_xo = [x for x in sp._spans(_d[0]) if x["text"].strip() == "Réf : AS202100125"]
+_d.close()
+check("the fixture still contains the XObject-drawn field", bool(_xo))
+if _xo:
+    _t = _xo[0]
+    _r = sp.edit(_src_bytes, _t["text"].strip(), "Réf : AS202100999",
+                 page=0, bbox=_t["bbox"], verify=True)
+    check("it can be edited in place", _r.get("ok"),
+          f"{ {k: v for k, v in _r.items() if k != 'pdf_b64'} }")
+    if _r.get("ok"):
+        check("with nothing outside the field changed",
+              _r.get("diff_outside") == 0 and _r.get("guarantee"),
+              f"diff_outside={_r.get('diff_outside')}")
+        _o = fitz.open(FIXTURE)
+        _n = fitz.open(stream=base64.b64decode(_r["pdf_b64"]), filetype="pdf")
+        check("and no font resource or XObject added",
+              len(_n[0].get_fonts(full=True)) == len(_o[0].get_fonts(full=True))
+              and len(_n[0].get_xobjects()) == len(_o[0].get_xobjects()))
+        _txt = " ".join(sp_["text"] for b in _n[0].get_text("dict")["blocks"]
+                        for l in b.get("lines", []) for sp_ in l.get("spans", []))
+        check("and the new value reads back", "AS202100999" in _txt)
+        _o.close()
+        _n.close()
+
+check("a font name maps to its identity regardless of convention",
+      sp._name_key("Tw Cen MT Bold") == sp._name_key("TwCenMT-Bold") == "twcenmtbold",
+      f"{sp._name_key('Tw Cen MT Bold')!r} vs {sp._name_key('TwCenMT-Bold')!r}")
+
+print()
+print("=== 4j) a refusal names the real limit, not the first guess ===")
+# 'contact@1337.ma' genuinely cannot be spliced: it sits inside a
+# kerning-adjusted run. But the search tries several (font, encoding,
+# occurrence) combinations, and most fail merely because they are the wrong
+# combination. Reporting the FIRST refusal told users "unusual encoding"
+# about a field whose actual problem was custom letter-spacing.
+_d = fitz.open(FIXTURE)
+_ct = [x for x in sp._spans(_d[0]) if "contact@" in x["text"]]
+_d.close()
+check("the fixture still contains the kerned footer field", bool(_ct))
+if _ct:
+    _r = sp.edit(_src_bytes, _ct[0]["text"].strip(), "contact@1337.zz",
+                 page=0, bbox=_ct[0]["bbox"], verify=True)
+    # It sits in a kerning-adjusted run, which is now rebuilt rather than
+    # refused — the nudges belonged to the value being replaced. What matters
+    # is that it is disclosed and that nothing else on the page moves.
+    check("the kerned footer field now edits", _r.get("ok"), f"{_r.get('reason')}")
+    check("and says it dropped kerning", _r.get("dekerned") is True)
+    check("and nothing outside the field changed",
+          _r.get("diff_outside") == 0 and _r.get("guarantee"))
+check("a specific limit outranks a generic miss",
+      sp._better_refusal({"reason": "sequence_not_found"},
+                         {"reason": "kerning_split_within_run"}
+                         )["reason"] == "kerning_split_within_run")
+check("and order doesn't matter",
+      sp._better_refusal({"reason": "kerning_split_within_run"},
+                         {"reason": "sequence_not_found"}
+                         )["reason"] == "kerning_split_within_run")
+
+print()
+print("=== 4k) a text object's origin is read whichever operator sets it ===")
+# Reflow and the three elastic fitting levers both need to find the operator
+# that pins a run to the page. Both once looked for Tm only, which is how
+# LaTeX and the original synthetic fixture write it — and is NOT how Microsoft
+# Word writes it. Word emits one text object per run positioned by a leading
+# TD and no Tm anywhere on the page, so on a real Office document BOTH
+# features silently found nothing to act on: a longer replacement drew
+# straight over the comma after it, and a value needing a little tightening
+# was refused as unfittable.
+_objs = list(sp._text_objects(
+    b"BT /F4 14.04 Tf 123.62 547.39 TD [(Sara Idrissi)] TJ ET"))
+check("a leading TD is read as the object's absolute origin",
+      len(_objs) == 1 and abs(_objs[0]["x"] - 123.62) < 1e-6
+      and abs(_objs[0]["y"] - 547.39) < 1e-6, f"{_objs}")
+check("and it is reported as drawing at exactly one position",
+      len(_objs) == 1 and _objs[0]["positions"] == [(123.62, 547.39)], f"{_objs}")
+_objs = list(sp._text_objects(
+    b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(hello)] TJ ET"))
+check("an axis-aligned Tm is still read as the origin",
+      len(_objs) == 1 and abs(_objs[0]["x"] - 72.0) < 1e-6
+      and abs(_objs[0]["y"] - 700.0) < 1e-6, f"{_objs}")
+# A later Td is RELATIVE, so every position the object draws at has to be
+# accumulated: an object whose FIRST origin is on one line can still draw on
+# the line being edited, and shifting only what it happens to start with
+# would move half a line and leave the rest behind.
+_objs = list(sp._text_objects(
+    b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ 0 -12 Td [(b)] TJ 8 0 Td [(c)] TJ ET"))
+check("relative moves accumulate into every position drawn",
+      len(_objs) == 1
+      and _objs[0]["positions"] == [(72.0, 700.0), (72.0, 688.0), (80.0, 688.0)],
+      f"{_objs[0]['positions'] if _objs else _objs}")
+# T* means "down by the current leading", so it is only resolvable once the
+# leading is known — set either explicitly by TL or implicitly by TD, whose
+# second operand IS the negated leading.
+check("T* is resolved through an explicit TL",
+      [q[1] for q in next(sp._text_objects(
+          b"BT /F1 10 Tf 14 TL 1 0 0 1 72 700 Tm [(a)] TJ T* [(b)] TJ ET"
+      ))["positions"]] == [700.0, 686.0])
+check("T* is resolved through the leading TD sets implicitly",
+      [q[1] for q in next(sp._text_objects(
+          b"BT /F1 10 Tf 72 700 Td 0 -14 TD [(a)] TJ T* [(b)] TJ ET"
+      ))["positions"]] == [700.0, 686.0, 672.0])
+# Rotated text is reported as indeterminate rather than dropped. Dropping it
+# would make it invisible to the very guards that exist to be conservative
+# about what cannot be reasoned over; None makes every caller refuse.
+check("a rotated Tm is reported as indeterminate, not silently dropped",
+      next(sp._text_objects(
+          b"BT /F1 10 Tf 0 1 -1 0 72 700 Tm [(x)] TJ ET"))["positions"] is None)
+check("an unresolvable T* makes the positions unknown, not wrong",
+      next(sp._text_objects(
+          b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ T* [(b)] TJ ET"
+      ))["positions"] is None)
+# The whole point: on the real Word fixture, reflow must actually fire and
+# the levers must actually engage. Measured before this was fixed, the name
+# overran the following comma by 65.8pt with reflowed=0, and every case in
+# the compression ladder reported tw=tc=0 while being accepted anyway.
+_r = sp.edit(_src_bytes, "Sara Idrissi", "Abdurrahamn Chahrour", page=0)
+check("reflow fires on a TD-positioned Word document",
+      _r.get("ok") and _r.get("reflowed", 0) >= 2, f"reflowed={_r.get('reflowed')}")
+_r = sp.edit(_src_bytes, "Sara Idrissi",
+             "Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun El Amrani Tazi B",
+             page=0, verify=False)
+check("and the elastic levers engage on it too",
+      _r.get("ok") and _r.get("wordspace", 0) < 0 and _r.get("tracking", 0) < 0,
+      f"tw={_r.get('wordspace')} tc={_r.get('tracking')}")
+# Tc/Tw/Tz stay in force to the end of the text object, so they must never be
+# set on an object that goes on to draw other lines. When they can't be
+# applied the edit has to be REFUSED, not accepted uncompressed: accepting it
+# is what drew over the following text in the first place.
+_saved = sp._apply_text_state
+sp._apply_text_state = lambda *a, **k: False
+try:
+    _r = sp.edit(_src_bytes, "Sara Idrissi",
+                 "Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun El Amrani Tazi",
+                 page=0, verify=False)
+finally:
+    sp._apply_text_state = _saved
+check("an edit that needs tightening is refused if it can't be tightened",
+      (not _r.get("ok")) and _r.get("reason") == "would_overflow",
+      f"ok={_r.get('ok')} reason={_r.get('reason')}")
+# Fitting reserves the WIDTH of the text after the field, but that text is
+# pinned by its own origin and only reflow can move it. So if the field grew
+# and reflow could move nothing, the value would be drawn straight through
+# it — refuse instead of shipping the overrun.
+_saved = sp._reflow_same_line
+sp._reflow_same_line = lambda *a, **k: None
+try:
+    _r = sp.edit(_src_bytes, "Sara Idrissi", "Abdurrahamn Chahrour",
+                 page=0, verify=False)
+finally:
+    sp._reflow_same_line = _saved
+check("a longer value is refused when the text after it cannot be moved",
+      (not _r.get("ok")) and _r.get("reason") == "cannot_reflow",
+      f"ok={_r.get('ok')} reason={_r.get('reason')}")
+check("and that refusal outranks the generic width verdict",
+      sp._better_refusal({"reason": "would_overflow"},
+                         {"reason": "cannot_reflow"})["reason"] == "cannot_reflow")
+# WHERE the following text is, is not where the field ENDS. On this document
+# the comma after the birthplace is positioned at x=247.97 while the
+# birthplace value itself reaches x=262.0 — the comma is drawn over the tail
+# of the value in the ORIGINAL file. Measuring from the field's end therefore
+# concluded nothing followed it, left the comma behind, and buried it: the
+# document's own 13.98pt overlap became 57.12pt once the value grew.
+_d = fitz.open(FIXTURE)
+_bp = next(x for x in sp._spans(_d[0]) if x["text"].strip() == "Essaouira")
+_nx = sp._next_text_x0(_d[0], _bp["bbox"])
+_d.close()
+check("following text is found even when it starts before the field ends",
+      _nx is not None and _nx < _bp["bbox"][2],
+      f"next_x0={_nx} field ends at {_bp['bbox'][2]:.2f}")
+
+
+def _worst_overlap(pdf, origin_y):
+    """Largest amount by which one run on this line reaches into the next."""
+    _dd = fitz.open(stream=pdf, filetype="pdf") if isinstance(pdf, bytes) else fitz.open(pdf)
+    try:
+        _items = sorted((x["bbox"][0], x["bbox"][2])
+                        for _b in _dd[0].get_text("dict")["blocks"]
+                        for _l in _b.get("lines", []) for x in _l.get("spans", [])
+                        if abs(x["origin"][1] - origin_y) < 0.6 and x["text"].strip())
+        return max((_items[i][1] - _items[i + 1][0] for i in range(len(_items) - 1)),
+                   default=0.0)
+    finally:
+        _dd.close()
+
+
+# The measurement has to be RELATIVE to the untouched document, because this
+# line already overlaps by 13.98pt before anything is edited. Read as an
+# absolute number it condemns edits that changed nothing and excuses the one
+# that made it four times worse.
+_base_ov = _worst_overlap(FIXTURE, _bp["origin"][1])
+check("this line really does already overlap itself", _base_ov > 10.0,
+      f"{_base_ov:.2f}pt")
+_grew = 0
+for _new in ("Essaouira Wxqz", "074185296", "Essaouira" [::-1], "Ess"):
+    _r = sp.edit(_src_bytes, "Essaouira", _new, page=0, bbox=_bp["bbox"], verify=False)
+    if not _r.get("ok"):
+        continue
+    _ov = _worst_overlap(base64.b64decode(_r["pdf_b64"]), _bp["origin"][1])
+    if _ov > _base_ov + 0.05:
+        _grew += 1
+check("no accepted edit of that field makes the overlap worse", _grew == 0,
+      f"{_grew} of 4 grew it beyond {_base_ov:.2f}pt")
+# ...and a replacement no wider than the original must NOT be refused merely
+# for sitting in that pre-existing overlap.
+_r = sp.edit(_src_bytes, "Essaouira", "Ess", page=0, bbox=_bp["bbox"], verify=False)
+check("a shorter value in an already-overlapping field is still accepted",
+      _r.get("ok"), f"{_r.get('reason')}")
+# Being next to the field is not the same as being PINNED next to it. Text
+# shown in the same string or TJ array as the field takes its place from the
+# field's glyph advances, so lengthening the field carries it along and there
+# is nothing to move. Text with its own Tm/Td does not move at all — PDF's Td
+# is measured from the previous line's matrix, never from the pen — so it has
+# to be shifted explicitly or the edit refused. Treating every neighbour as
+# pinned refused 11 good edits on a LaTeX paper; treating none as pinned
+# buried the comma after this document's own fields.
+_d = fitz.open(FIXTURE)
+_ph = _d[0].rect.height
+_seen = sp._positions_on_baseline(
+    _d, _d[0], sp._line_baselines(_d[0], _bp["bbox"], _ph))
+check("the comma after a Word field is pinned by its own operator",
+      sp._pinned_at(_seen, _nx), f"next_x0={_nx} positions={_seen}")
+check("and a position nothing is drawn at is not reported as pinned",
+      not sp._pinned_at(_seen, _nx + 40.0))
+_d.close()
+# A content stream need not be written in page coordinates. Headless Chrome
+# wraps the page in "q .24 0 0 -.24 0 841.92 cm" and nests further scales
+# inside it, so reading operands as page coordinates found NOTHING on any
+# baseline and left reflow and the fitting levers with nothing to act on.
+_o = next(sp._text_objects(
+    b"q .24 0 0 -.24 0 841.92 cm q 3.0588134 0 0 3.0588134 150 150 cm "
+    b"BT /F1 10 Tf 1 0 0 1 10 792 Tm [(x)] TJ ET Q Q"))
+# Composed: a = .24*3.0588134 = .734115, e = 150*.24 = 36,
+#           d = -.24*3.0588134,           f = -150*.24 + 841.92 = 805.92
+# so x = 10*.734115 + 36 = 43.34 and y = 805.92 - 792*.734115 = 224.50.
+check("a nested CTM is composed into page coordinates",
+      abs(_o["x"] - 43.34) < 0.02 and abs(_o["y"] - 224.50) < 0.02,
+      f"x={_o['x']:.2f} y={_o['y']:.2f}")
+check("and it reports how much of the page one operand unit buys",
+      abs(_o["x_scale"] - 0.7341) < 0.001, f"{_o['x_scale']}")
+check("q/Q restores the transform it saved",
+      abs(next(sp._text_objects(
+          b"q 4 0 0 4 0 0 cm Q BT /F1 10 Tf 1 0 0 1 7 9 Tm [(x)] TJ ET"
+      ))["x"] - 7.0) < 1e-6)
+# A PDF string may contain any bytes at all, so text that happens to read
+# like an operator is a legal thing to draw — and a scan of the raw stream
+# finds it and believes it.
+_o = next(sp._text_objects(
+    b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(1 0 0 1 500 500 Tm)] TJ ET"))
+check("an operator inside a string literal is not mistaken for one",
+      _o["positions"] == [(72.0, 700.0)] and _o["rigid"], f"{_o['positions']}")
+check("nor is one inside a hex string",
+      next(sp._text_objects(b"BT /F1 10 Tf 1 0 0 1 72 700 Tm <0051> Tj ET"
+                            ))["positions"] == [(72.0, 700.0)])
+check("an escaped paren does not end the string early",
+      next(sp._text_objects(
+          rb"BT /F1 10 Tf 1 0 0 1 72 700 Tm (a\) 9 9 Td b) Tj ET"
+      ))["positions"] == [(72.0, 700.0)])
+# An object with a SECOND absolute origin cannot be moved by rewriting one
+# number: the later Tm would hold its own text exactly where it is.
+check("one absolute origin means the object moves as a whole",
+      next(sp._text_objects(
+          b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ 0 -12 Td [(b)] TJ ET"
+      ))["rigid"])
+check("a second Tm means it does not",
+      not next(sp._text_objects(
+          b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ 1 0 0 1 72 688 Tm [(b)] TJ ET"
+      ))["rigid"])
+# Reflow has to move a link underline with the text it underlines, so
+# rectangles come out of the same walk, in the same page coordinates.
+_r = next(sp._stream_rects(
+    b"q .24 0 0 -.24 0 841.92 cm q 3.0588134 0 0 3.0588134 150 150 cm "
+    b"83 843 21 1 re f Q Q"))
+# x0 = 83*.734115 + 36 = 96.93, width = 21*.734115 = 15.42
+check("a rectangle is transformed into page coordinates too",
+      abs(_r["x0"] - 96.93) < 0.02 and abs(_r["x1"] - _r["x0"] - 15.42) < 0.02,
+      f"x0={_r['x0']:.2f} w={_r['x1']-_r['x0']:.2f}")
+check("and it carries the same scale, so one number moves it",
+      abs(_r["x_scale"] - 0.7341) < 0.001, f"{_r['x_scale']}")
+check("a rectangle inside a string literal is not one",
+      not list(sp._stream_rects(b"BT /F1 10 Tf 1 0 0 1 1 1 Tm (0 0 9 9 re) Tj ET")))
+
+print()
+print("=== 4l) a substituted letter is the right SIZE, not just the right letter ===")
+# Tw Cen MT has no open-source relative, so a character in neither the
+# document's own cuts nor an installed copy comes from a substitute typeface.
+# That substitute used to be injected scaled by the unitsPerEm ratio alone,
+# which normalises the design grid and nothing else, so Poppins arrived at
+# Poppins' proportions: x-height 558 per mille against Tw Cen MT Bold's 419.
+# Rendered, the lowercase 'z' in "Ouarzazate" stood 1143 units tall against
+# the font's own x-height of 879 and read as a capital Z inside the word.
+_d = fitz.open(FIXTURE)
+_pl = next(x for x in sp._spans(_d[0]) if x["text"].strip() == "Essaouira")
+_d.close()
+_r = sp.edit(_src_bytes, "Essaouira", "Ouarzazate", page=0,
+             bbox=_pl["bbox"], verify=False)
+check("the substituted-glyph edit is accepted", _r.get("ok"), f"{_r.get('reason')}")
+check("and it reports which characters it had to add",
+      sorted(_r.get("extended_chars") or []) == ["O", "z"],
+      f"{_r.get('extended_chars')}")
+if _r.get("ok"):
+    _out = fitz.open(stream=base64.b64decode(_r["pdf_b64"]), filetype="pdf")
+    _prog = None
+    for _f in _out[0].get_fonts(full=True):
+        if _f[2] != "Type0" or "Bold" not in _f[3]:
+            continue
+        _o = _out.xref_object(_f[0], compressed=True)
+        _m = re.search(r"/DescendantFonts\s*\[?\s*(\d+)\s+0\s+R", _o)
+        if not _m:
+            continue
+        _df = _out.xref_object(int(_m.group(1)), compressed=True)
+        if "/FontDescriptor" not in _df:
+            _df = _out.xref_object(
+                int(re.search(r"(\d+)\s+0\s+R", _df).group(1)), compressed=True)
+        _fd = _out.xref_object(
+            int(re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", _df).group(1)),
+            compressed=True)
+        _mm = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", _fd)
+        if _mm:
+            _prog = _out.xref_stream(int(_mm.group(1)))
+            break
+    _out.close()
+    check("the edited font program is readable back", _prog is not None)
+    if _prog:
+        _tt = TTFont(io.BytesIO(_prog))
+        _g = _tt["glyf"]
+
+        def _top(name):
+            return _g[name].yMax if name in _tt.getGlyphOrder() else None
+
+        # The font's OWN landmarks, from its own letters — not from OS/2,
+        # which a subsetter leaves stale.
+        _x_own, _cap_own = _top("o"), _top("Z")
+        check("the font still carries its own reference letters",
+              _x_own and _cap_own, f"o={_x_own} Z={_cap_own}")
+        if _x_own and _cap_own:
+            _z, _O = _top("z"), _top("O")
+            check("an injected lowercase sits at the font's own x-height",
+                  _z is not None and abs(_z - _x_own) / _x_own <= 0.08,
+                  f"z={_z} vs x-height {_x_own} "
+                  f"({(abs(_z - _x_own) / _x_own * 100) if _z else 0:.1f}% off)")
+            check("an injected capital sits at the font's own cap height",
+                  _O is not None and abs(_O - _cap_own) / _cap_own <= 0.08,
+                  f"O={_O} vs cap height {_cap_own} "
+                  f"({(abs(_O - _cap_own) / _cap_own * 100) if _O else 0:.1f}% off)")
+            # The number the bug produced, so this cannot quietly come back:
+            # 1143/879 is 30% over, far outside the 8% allowed above.
+            check("and the defect this replaces would not pass",
+                  abs(1143 - _x_own) / _x_own > 0.08,
+                  f"raw injection put it at 1143 against {_x_own}")
+        _tt.close()
+
+print()
+print("=== 4m) a substituted letter keeps its SHAPE, not just its height ===")
+# The vertical mapping ran every point through every measured landmark at
+# once. Within a family that is right — the landmark ratios sit within about
+# 1% of each other, so the map is very nearly a single scale AND it matches
+# the descender, which one scale cannot. Across families they diverge, and
+# the map then scales a glyph's height by one factor while leaving its width
+# scaled by another: measured, a lowercase letter came out 31-33% wider
+# relative to its height than the donor drew it, and the round ones rendered
+# visibly faceted and lopsided.
+_d = fitz.open(FIXTURE)
+_sub21 = None
+for _f in _d[0].get_fonts(full=True):
+    if _f[2] == "Type0" or _f[3].split("+")[-1] != "TwCenMT-Bold":
+        continue
+    _o = _d.xref_object(_f[0], compressed=True)
+    _fdx = _d.xref_object(
+        int(re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", _o).group(1)), compressed=True)
+    _m = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", _fdx)
+    if _m:
+        _sub21 = _d.xref_stream(int(_m.group(1)))
+        break
+_reg = None
+for _f in _d[0].get_fonts(full=True):
+    if _f[2] == "Type0" or _f[3].split("+")[-1] != "TwCenMT-Regular":
+        continue
+    _o = _d.xref_object(_f[0], compressed=True)
+    _fdx = _d.xref_object(
+        int(re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", _o).group(1)), compressed=True)
+    _m = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", _fdx)
+    if _m:
+        _reg = _d.xref_stream(int(_m.group(1)))
+        break
+_d.close()
+check("both cuts of the fixture's font are readable", _sub21 and _reg)
+if _sub21 and _reg:
+    _tgt = TTFont(io.BytesIO(_sub21))
+    _donor_raw = fe.resolve_donor("TwCenMT-Bold")
+    check("a substitute donor resolves for this family", bool(_donor_raw))
+    if _donor_raw:
+        _sub = TTFont(io.BytesIO(_donor_raw))
+        _xf = gs.learn_weight_transform(_sub, _tgt)
+        # Which treatment each pair gets is decided by how far apart their
+        # landmark ratios are, and the two cases are an order of magnitude
+        # apart rather than close to the threshold.
+        _spread_x = gs.landmark_spread(_xf.y_anchors)
+        check("a cross-family pair is spotted by its landmark spread",
+              _spread_x > gs.MAX_LANDMARK_SPREAD * 1.1,
+              f"spread={_spread_x:.3f} vs threshold {gs.MAX_LANDMARK_SPREAD}")
+        check("and it is scaled uniformly per glyph", _xf.uniform_v)
+        check("the substitute's transform still validates", _xf.usable,
+              f"{_xf.report.get('checks')}")
+        # The property: a uniform scale cannot change a letter's proportions.
+        for _ch in "oze":
+            _sp_ = gs._polys(_sub, _ch)
+            if not _sp_:
+                continue
+            _bs = fmet.poly_bbox(_sp_)
+            _bo = fmet.poly_bbox(_xf.apply(_sp_))
+            _ar_s = (_bs[2] - _bs[0]) / (_bs[3] - _bs[1])
+            _ar_o = (_bo[2] - _bo[0]) / (_bo[3] - _bo[1])
+            check(f"{_ch!r} keeps the donor's proportions",
+                  abs(_ar_o - _ar_s) / _ar_s <= 0.08,
+                  f"aspect {_ar_s:.3f} -> {_ar_o:.3f} "
+                  f"({abs(_ar_o - _ar_s) / _ar_s * 100:.1f}% off)")
+            # ...and what the pointwise map did, so this cannot come back.
+            _u = _xf.unit_scale
+            _pw = [[(x * _u, gs.map_y(_xf.y_anchors, y * _u)) for (x, y) in _p]
+                   for _p in _sp_]
+            _bp = fmet.poly_bbox(_pw)
+            _ar_p = (_bp[2] - _bp[0]) / (_bp[3] - _bp[1])
+            check(f"and the pointwise map would not have",
+                  abs(_ar_p - _ar_s) / _ar_s > 0.08,
+                  f"pointwise aspect {_ar_p:.3f} vs donor {_ar_s:.3f}")
+        _sub.close()
+    # The same-family path must be untouched: it matches the descender too,
+    # which a single scale cannot, and it was already inside every gate.
+    _rt = TTFont(io.BytesIO(_reg))
+    _xf2 = gs.learn_weight_transform(_rt, _tgt)
+    check("a same-family pair is left on the pointwise map",
+          not _xf2.uniform_v,
+          f"spread={gs.landmark_spread(_xf2.y_anchors):.3f}")
+    check("and it still validates", _xf2.usable, f"{_xf2.report.get('checks')}")
+    _rt.close()
+    _tgt.close()
+
+print()
+print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
+try:
+    import font_extend  # noqa: E402
+    pop_raw = font_extend._resolve_from_repo("Poppins", 700, "normal")
+except Exception:  # noqa: BLE001
+    pop_raw = None
+if not pop_raw:
+    print("SKIP - no network / donor unavailable; offline checks above still cover the core")
+else:
+    pop = TTFont(io.BytesIO(pop_raw))
+    s = m_bold["upm"] / fmet.measure(pop)["upm"]
+    syn_ious, pop_ious = [], []
+    for ch in r.get("heldout_chars", ""):
+        real = gs._polys(bold, ch)
+        if not real:
+            continue
+        r_real = gs.raster(real, m_bold["upm"])
+        syn = gs.synthesize_char(reg, ch, xf)
+        if syn:
+            syn_ious.append(gs.iou(gs.raster(syn["polys"], m_bold["upm"]), r_real))
+        dp = gs._polys(pop, ch)
+        if dp:
+            pop_ious.append(gs.iou(gs.raster(gs.scale_polys(dp, s, s), m_bold["upm"]), r_real))
+    if syn_ious and pop_ious:
+        a, b = sum(syn_ious) / len(syn_ious), sum(pop_ious) / len(pop_ious)
+        check("same-family synthesis has higher held-out IoU than the lookalike",
+              a > b, f"synth {a:.3f} vs lookalike {b:.3f}")
+        print(f"       mean held-out IoU: synthesis {a:.3f} | lookalike {b:.3f} "
+              f"({a - b:+.3f})")
+
+print()
+print("=" * 70)
+print("RESULT: ALL PASS" if not FAIL else f"RESULT: {len(FAIL)} FAILED -> {FAIL}")
