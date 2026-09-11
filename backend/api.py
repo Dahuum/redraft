@@ -615,6 +615,10 @@ _UNSHIPPABLE_MSG = {
         "wasn't there to read back, which means part or all of it fell "
         "outside the page. The field was left as it was; shorten the value, "
         "or give it a line of its own."),
+    "overlaps_neighbour": (
+        "This value is longer than the space it sits in, and redrawing it "
+        "would print it over the text beside it. The field was left as it "
+        "was — shorten the value, or give it a line of its own."),
     "runs_off_the_page": (
         "This value is too long for the space it sits in: even shrunk as far "
         "as is reasonable it would run past the edge of the paper, where the "
@@ -623,7 +627,7 @@ _UNSHIPPABLE_MSG = {
 }
 
 
-def _unshippable_fields(edited: bytes, items: list) -> dict:
+def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dict:
     """{index: reason} for *items* whose redraw produced something no user
     should be handed.
 
@@ -650,6 +654,15 @@ def _unshippable_fields(edited: bytes, items: list) -> dict:
     extracted. Sweeping the product path found 8 of 90 edits ending past the
     edge, up to x=615 on a 612pt page.
 
+    TEXT DRAWN ON TOP OF ITS NEIGHBOUR. The in-place engine guarantees that
+    no gap on the edited line is driven negative; the redraw did not. Its
+    alignment pass puts a field at bbox.x1 - text_width when it reads the
+    column as right-aligned, which for a longer value moves the field LEFT
+    into whatever precedes it: measured on an arXiv page, a field slid 21pt
+    left and the gap to the run before it went from +2.81pt to -18.36pt —
+    eighteen points of text over text. Gaps are compared before and against
+    after, so a document that already overlaps itself is not blamed for it.
+
     TEXT THAT DID NOT SURVIVE. Last and most general: the new text has to be
     readable back off the line it was drawn on. A threshold on the page edge
     cannot catch everything, because glyphs outside the media box are not
@@ -669,6 +682,22 @@ def _unshippable_fields(edited: bytes, items: list) -> dict:
         doc = fitz.open(stream=edited, filetype="pdf")
     except Exception:  # noqa: BLE001 — unreadable output is a different problem
         return {}
+    ref = None
+    if before is not None:
+        try:
+            ref = fitz.open(stream=before, filetype="pdf")
+        except Exception:  # noqa: BLE001
+            ref = None
+
+    def _gaps(d, pno, oy):
+        items_ = sorted(
+            (round(sp_["bbox"][0], 2), round(sp_["bbox"][2], 2))
+            for b in d[pno].get_text("dict")["blocks"]
+            for l in b.get("lines", []) for sp_ in l.get("spans", [])
+            if abs(sp_["origin"][1] - oy) < 1.0 and sp_["text"].strip())
+        return [round(items_[k + 1][0] - items_[k][1], 2)
+                for k in range(len(items_) - 1)]
+
     try:
         for i, (sd, _nt) in enumerate(items):
             pno = sd.get("page", 0)
@@ -706,6 +735,16 @@ def _unshippable_fields(edited: bytes, items: list) -> dict:
                     break
             if i in bad:
                 continue
+            if ref is not None and pno < ref.page_count:
+                g_before = _gaps(ref, pno, oy)
+                g_after = _gaps(doc, pno, oy)
+                if len(g_before) == len(g_after):
+                    for gb, ga in zip(g_before, g_after):
+                        if ga < -0.5 and ga < gb - 0.5:
+                            bad[i] = "overlaps_neighbour"
+                            break
+            if i in bad:
+                continue
             # The redrawn text layer reports NBSP for a space and a soft
             # hyphen for a hyphen, because that is what the substitute font's
             # codes map to. The page renders correctly, so those are
@@ -718,11 +757,14 @@ def _unshippable_fields(edited: bytes, items: list) -> dict:
                 bad[i] = "cannot_place"
     finally:
         doc.close()
+        if ref is not None:
+            ref.close()
     return bad
 
 
 def apply_replacements(pdf_bytes: bytes, replacements: list,
-                       preserve_size: bool = True, try_inplace: bool = False) -> tuple:
+                       preserve_size: bool = True, try_inplace: bool = False,
+                       _known_refusals: list = None) -> tuple:
     """Apply [(span_dict, new_text), …] → (edited_bytes, font_report).
 
     `try_inplace` (default False): first attempt every replacement as a true
@@ -742,7 +784,15 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
     byte-for-byte guarantee instead of a redraw.
     """
     in_place_count = 0
-    inplace_refusals = []
+    # Why a refused field must carry its reason into a RETRY. When a field
+    # turns out to be unshippable the rest are drawn again without it, and
+    # that second pass cannot re-run the in-place engine — the in-place edits
+    # are already in these bytes. Without the reasons it had, every other
+    # refused field lost its bounded resize AND its disclosure: measured on
+    # the W-9, a field that alone resized 8.0pt -> 5.6pt and reported
+    # "resized_to_fit" came back at full size, overflowing, with the response
+    # saying nothing at all.
+    inplace_refusals = list(_known_refusals or [])
     if try_inplace:
         (pdf_bytes, in_place_count, replacements,
          inplace_refusals) = _try_inplace_batch(pdf_bytes, replacements)
@@ -853,7 +903,7 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
             # paper. The offending fields are dropped and the rest redrawn
             # without them, so one unshippable field costs that field and
             # nothing else. See _unshippable_fields.
-            boxed = _unshippable_fields(edited, replacements)
+            boxed = _unshippable_fields(edited, replacements, before=pdf_bytes)
             if boxed:
                 keep = [rp for i, rp in enumerate(replacements) if i not in boxed]
                 dropped = [(replacements[i], boxed[i]) for i in sorted(boxed)]
@@ -862,9 +912,13 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                      "message": _UNSHIPPABLE_MSG[why]}
                     for (sd, _), why in dropped]
                 if keep:
+                    aligned = (
+                        [inplace_refusals[i] for i in range(len(replacements))
+                         if i not in boxed]
+                        if len(inplace_refusals) == len(replacements) else None)
                     edited, sub = apply_replacements(
                         pdf_bytes, keep, preserve_size=preserve_size,
-                        try_inplace=False)
+                        try_inplace=False, _known_refusals=aligned)
                     sub["in_place"] = {"count": in_place_count,
                                        "total": total,
                                        "refusals": refusals}
@@ -873,12 +927,21 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                         f"{_UNSHIPPABLE_MSG[why]}"
                         for (sd, _), why in dropped]
                     return edited, sub
+                # Nothing was kept, so nothing was resized. `resized` was
+                # computed before the draw was checked, and reporting it here
+                # would tell the user a field had been "resized to fit" when
+                # it was in fact left exactly as it was — the two statements
+                # in one response contradicting each other.
+                dropped_texts = {sd["text"][:60] for (sd, _), _ in dropped}
                 return pdf_bytes, {
                     "fonts": report,
-                    "warnings": [str(w.message) for w in caught] + extra_warnings + [
+                    "warnings": [w for w in
+                                 [str(x.message) for x in caught] + extra_warnings
+                                 if not any(t[:40] in w for t in dropped_texts)] + [
                         f"{sd['text'][:40]!r} was left unchanged: "
                         f"{_UNSHIPPABLE_MSG[why]}" for (sd, _), why in dropped],
-                    "resized_to_fit": resized,
+                    "resized_to_fit": [r for r in resized
+                                       if r["text"] not in dropped_texts],
                     "in_place": {"count": in_place_count, "total": total,
                                  "refusals": refusals}}
             return edited, {"fonts": report,

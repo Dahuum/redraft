@@ -570,6 +570,45 @@ if os.path.exists(_TINOS):
           f"{_recorded(api_mod._canonicalise_text_layer(_drawn(_nb), [_nb]))!r}")
 
 print()
+print("=== 4g4) a redrawn field is never printed over its neighbour ===")
+# The in-place engine guarantees no gap on the edited line goes negative
+# (invariant I7). The redraw did not: its alignment pass places a field at
+# bbox.x1 - text_width when it reads the column as right-aligned, which for a
+# longer value moves the field LEFT into whatever precedes it. Measured on an
+# arXiv page, a field slid 21pt left and the gap to the run before it went
+# from +2.81pt to -18.36pt — eighteen points of text over text, reported as a
+# success. Single-field testing never saw it; it took editing several fields
+# at once to surface.
+def _two_runs(x_second):
+    """A page with 'left' fixed and 'right' placed at x_second."""
+    _q = fitz.open()
+    _pg = _q.new_page(width=300, height=100)
+    _pg.insert_text((40, 50), "left", fontname="helv", fontsize=12)
+    _pg.insert_text((x_second, 50), "right", fontname="helv", fontsize=12)
+    _raw = _q.tobytes()
+    _q.close()
+    return _raw
+
+_field = {"page": 0, "origin": (120.0, 50.0), "text": "right",
+          "bbox": (120.0, 40.0, 150.0, 52.0)}
+_before = _two_runs(120)          # a clear gap after 'left'
+_ok = _two_runs(118)              # moved 2pt: gap +61.99pt, still clear
+_bad = _two_runs(45)              # moved onto 'left': gap -11.01pt
+check("an edit that keeps the gap is shippable",
+      api_mod._unshippable_fields(_ok, [(_field, "right")], before=_before) == {},
+      f"{api_mod._unshippable_fields(_ok, [(_field, 'right')], before=_before)}")
+check("an edit that prints over the run beside it is not",
+      api_mod._unshippable_fields(_bad, [(_field, "right")],
+                                  before=_before).get(0) == "overlaps_neighbour",
+      f"{api_mod._unshippable_fields(_bad, [(_field, 'right')], before=_before)}")
+# A document that already overlaps itself must not be blamed for it: the
+# attestation fixture draws its comma on top of the birthplace value, before
+# anything is edited.
+check("a pre-existing overlap is not reported as this edit's doing",
+      api_mod._unshippable_fields(_bad, [(_field, "right")], before=_bad) == {},
+      f"{api_mod._unshippable_fields(_bad, [(_field, 'right')], before=_bad)}")
+
+print()
 print("=== 4h) font identity is per OBJECT, not per display name ===")
 _doc = fitz.open(FIXTURE)
 _by_name = {}
