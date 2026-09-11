@@ -457,6 +457,74 @@ check("the in-place refusal reason is carried through",
       f"{_rep_big['in_place'].get('refusals')}")
 
 print()
+print("=== 4g2) the product never ships boxes or text off the paper ===")
+# Everything above tests the in-place engine. This tests what a user is
+# actually handed, which is the in-place engine PLUS the redraw fallback for
+# whatever it refused — and the fallback was shipping two things nobody can
+# recover from once the file is in their hands.
+#
+# Sweeping 90 edits across four documents through apply_replacements found 13
+# that shipped a defect: 8 ended past the edge of the paper (up to x=615 on a
+# 612pt page), 1 drew notdef boxes over a black banner it had also repainted
+# grey, and the rest lost part of the value off the left edge. All 13 were
+# reported as successful.
+_spans_api = extract_spans(_src_bytes)
+_t = next(s for s in _spans_api if "Sara Idrissi" in s["text"])
+# A value far too long for its line, on a document whose font has no
+# open-source relative: the hardest combination this fixture offers.
+_huge = "Abdurrahamn " * 12
+_out, _rep = apply_replacements(_src_bytes, [(_t, _huge)],
+                                preserve_size=True, try_inplace=True)
+_dd = fitz.open(stream=_out, filetype="pdf")
+try:
+    _pw = _dd[0].rect.width
+    _worst_r, _worst_l, _boxes = 0.0, _pw, 0
+    for _b in _dd[0].get_text("rawdict")["blocks"]:
+        for _l in _b.get("lines", []):
+            for _s2 in _l.get("spans", []):
+                if not any(c["c"].strip() for c in _s2["chars"]):
+                    continue
+                _worst_r = max(_worst_r, _s2["bbox"][2])
+                _worst_l = min(_worst_l, _s2["bbox"][0])
+                for _c in _s2["chars"]:
+                    if _c["c"] == "\ufffd" or (_c["c"] and ord(_c["c"]) < 32
+                                               and _c["c"] not in " \t\n\r"):
+                        _boxes += 1
+    check("no text is drawn past the right edge of the paper",
+          _worst_r <= _pw + 0.5, f"rightmost {_worst_r:.1f} vs page {_pw:.1f}")
+    check("nor past the left edge",
+          _worst_l >= -0.5, f"leftmost {_worst_l:.1f}")
+    check("and not one notdef box is drawn", _boxes == 0, f"{_boxes} boxes")
+finally:
+    _dd.close()
+# Whatever it did, it has to SAY so: either the value is there, or the field
+# was left alone and the response names a reason for it.
+_placed = _huge.strip()[:12] in fitz.open(
+    stream=_out, filetype="pdf")[0].get_text().replace("\xa0", " ")
+_named = bool(_rep.get("resized_to_fit")) or any(
+    r.get("reason") in ("cannot_render", "runs_off_the_page", "cannot_place")
+    for r in _rep["in_place"].get("refusals") or [])
+check("the outcome is either applied or explained", _placed or _named,
+      f"placed={_placed} refusals="
+      f"{[r.get('reason') for r in _rep['in_place'].get('refusals') or []]}")
+# If it refused, the line it refused on must be untouched — a refusal that
+# still altered the page would be the worst of both.
+if not _placed:
+    def _line_of(pdf):
+        _q = fitz.open(stream=pdf, filetype="pdf")
+        try:
+            return sorted(
+                (round(x["bbox"][0], 2), round(x["bbox"][2], 2), x["text"])
+                for b in _q[0].get_text("dict")["blocks"]
+                for l in b.get("lines", []) for x in l.get("spans", [])
+                if abs(x["origin"][1] - _t["origin"][1]) < 1.0 and x["text"].strip())
+        finally:
+            _q.close()
+    check("a refused field leaves its line exactly as it was",
+          _line_of(_out) == _line_of(_src_bytes),
+          f"{_line_of(_src_bytes)} -> {_line_of(_out)}")
+
+print()
 print("=== 4h) font identity is per OBJECT, not per display name ===")
 _doc = fitz.open(FIXTURE)
 _by_name = {}

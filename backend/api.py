@@ -530,6 +530,123 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     return current, in_place_count, still_needed, refusals
 
 
+_UNSHIPPABLE_MSG = {
+    "cannot_render": (
+        "This field's font is only embedded as a subset of the characters the "
+        "document already used, and no complete copy of it could be found, so "
+        "the new text can't be drawn in it — it would appear as empty boxes. "
+        "The field was left as it was."),
+    "cannot_place": (
+        "The new text could not be placed on this line — after drawing, it "
+        "wasn't there to read back, which means part or all of it fell "
+        "outside the page. The field was left as it was; shorten the value, "
+        "or give it a line of its own."),
+    "runs_off_the_page": (
+        "This value is too long for the space it sits in: even shrunk as far "
+        "as is reasonable it would run past the edge of the paper, where the "
+        "text is simply cut off. The field was left as it was — shorten the "
+        "value, or give it a line of its own."),
+}
+
+
+def _unshippable_fields(edited: bytes, items: list) -> dict:
+    """{index: reason} for *items* whose redraw produced something no user
+    should be handed.
+
+    Two things qualify, and neither is recoverable once the file is in their
+    hands:
+
+    NOTDEF BOXES. The redraw engine resolves a font per field, and when the
+    only thing it can find is the document's own embedded SUBSET it will
+    happily draw a character that subset has no outline for. Measured on the
+    IRS W-9, whose banner is set in HelveticaNeueLTStd-Bd: "Part II" ->
+    "Part JJ" came back as 'Part\xa0' followed by '\x00\x00', two boxes, over a
+    grey patch where a black banner had been. The engine warns that this can
+    happen — "missing chars will render as boxes" — and then ships it anyway.
+    A notdef extracts as a NUL or a replacement char, an exact signal needing
+    no rendering: measured across four untouched documents, not one contains
+    a single control-character glyph, so a positive means this edit made it.
+
+    TEXT OFF EITHER EDGE OF THE PAPER. The shrink is bounded to a 30%
+    reduction and then
+    deliberately gives up and lets the text run wider, on the reasoning that
+    a tiny field that still overflows is worse than a same-size one. That is
+    true of overflow INTO the page, and false at the page edge, where the
+    text is simply gone — glyphs outside the media box are not even
+    extracted. Sweeping the product path found 8 of 90 edits ending past the
+    edge, up to x=615 on a 612pt page.
+
+    TEXT THAT DID NOT SURVIVE. Last and most general: the new text has to be
+    readable back off the line it was drawn on. A threshold on the page edge
+    cannot catch everything, because glyphs outside the media box are not
+    extracted at all — measured on the W-9, a long value was drawn starting
+    at x=-0.17 with "7. Grantor tru" already gone past the left edge, so the
+    box looked almost innocent while a quarter of the value had been thrown
+    away. If the replacement cannot be found, it was not made, whatever the
+    geometry says.
+
+    The caller draws again without these fields, so one unshippable field
+    costs that field and nothing else.
+    """
+    if not items:
+        return {}
+    bad: dict = {}
+    try:
+        doc = fitz.open(stream=edited, filetype="pdf")
+    except Exception:  # noqa: BLE001 — unreadable output is a different problem
+        return {}
+    try:
+        for i, (sd, _nt) in enumerate(items):
+            pno = sd.get("page", 0)
+            if pno >= doc.page_count:
+                continue
+            oy = sd["origin"][1]
+            limit = doc[pno].rect.width + 0.5
+            on_line = []
+            for blk in doc[pno].get_text("rawdict")["blocks"]:
+                for line in blk.get("lines", []):
+                    for sp_ in line.get("spans", []):
+                        if abs(sp_["origin"][1] - oy) > 1.0:
+                            continue
+                        for c in sp_["chars"]:
+                            ch = c["c"]
+                            if ch == "\ufffd" or (ch and ord(ch) < 32
+                                                  and ch not in " \t\n\r"):
+                                bad[i] = "cannot_render"
+                                break
+                        if i in bad:
+                            break
+                        # Both edges. The redraw's alignment pass can put a
+                        # right-aligned field at bbox.x1 - text_width, which
+                        # for text far wider than its box is NEGATIVE:
+                        # measured on the W-9, a long value landed at
+                        # x=-0.17 with "7. Grantor tru" cut off past the left
+                        # edge, while the right edge was perfectly innocent.
+                        if any(c["c"].strip() for c in sp_["chars"]) and (
+                                sp_["bbox"][2] > limit or sp_["bbox"][0] < -0.5):
+                            bad[i] = "runs_off_the_page"
+                        on_line.append("".join(c["c"] for c in sp_["chars"]))
+                    if i in bad:
+                        break
+                if i in bad:
+                    break
+            if i in bad:
+                continue
+            # The redrawn text layer reports NBSP for a space and a soft
+            # hyphen for a hyphen, because that is what the substitute font's
+            # codes map to. The page renders correctly, so those are
+            # normalised rather than treated as a failure.
+            def _flat(t):
+                return (t.replace("\xa0", " ").replace("\xad", "-")
+                         .replace("\u2010", "-").replace("\u2011", "-"))
+            probe = _flat(_nt.strip())[:12]
+            if probe and probe not in _flat(" ".join(on_line)):
+                bad[i] = "cannot_place"
+    finally:
+        doc.close()
+    return bad
+
+
 def apply_replacements(pdf_bytes: bytes, replacements: list,
                        preserve_size: bool = True, try_inplace: bool = False) -> tuple:
     """Apply [(span_dict, new_text), …] → (edited_bytes, font_report).
@@ -570,16 +687,22 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                 warnings.simplefilter("always")
                 ed = PDFEditor(in_path)
 
-                # Fields the in-place engine refused specifically because the
-                # value is too long for its line are handled separately. Left
-                # in the normal pass they are drawn at full size and simply
-                # run off the paper — measured, a 78-character name ended at
-                # x=603 on a 595pt page, which is the one outcome nobody can
-                # recover from. They get a bounded resize instead, and the
-                # response says so; the alternative of failing the whole
-                # request would throw away every other valid edit in it.
-                overflow_flags = [r.get("reason") == "would_overflow"
-                                  for r in inplace_refusals]
+                # EVERY field the in-place engine refused gets a bounded
+                # resize, not just the ones it called too long. Left in the
+                # normal pass they are drawn at full size and simply run off
+                # the paper — measured, a 78-character name ended at x=603 on
+                # a 595pt page, which is the one outcome nobody can recover
+                # from. This used to key on would_overflow alone, and the
+                # other reasons went through at full size: sweeping the
+                # product path, 8 of 90 edits put text past the page edge,
+                # every one of them a field refused for some OTHER reason —
+                # spans_multiple_fonts on the attestation, cannot_reflow on
+                # the W-9. A refusal means the engine could not place this
+                # text safely, whatever the reason, so the redraw is
+                # conservative about it. The response says which fields were
+                # resized and why; failing the whole request instead would
+                # throw away every other valid edit in it.
+                overflow_flags = [bool(r.get("reason")) for r in inplace_refusals]
                 if len(overflow_flags) != len(replacements):
                     overflow_flags = [False] * len(replacements)
                 normal = [rp for rp, over in zip(replacements, overflow_flags) if not over]
@@ -628,18 +751,59 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                 report.append({"font": fn.split("+")[-1], "status": status,
                                "source": src})
 
+            def _refusal_for(sd):
+                return next((r for r in inplace_refusals
+                             if r.get("text") == sd["text"][:60]), {})
             resized = [{"text": sd["text"][:60], "new_text": nt[:60],
-                        "reason": "too_long_for_line",
-                        "detail": next((r.get("message") for r in inplace_refusals
-                                        if r.get("text") == sd["text"][:60]), None)}
+                        "reason": _refusal_for(sd).get("reason") or "too_long_for_line",
+                        "detail": _refusal_for(sd).get("message")}
                        for sd, nt in overflowing]
-            extra_warnings = [
-                f"{r['text']!r} was too long for its line and had to be resized to fit; "
-                f"every other field kept its original size."
-                for r in resized]
+            def _resize_warning(r):
+                # Overflow has a plain-words explanation a user can act on;
+                # the other reasons are structural and name themselves.
+                if r["reason"] == "would_overflow":
+                    why = "was too long for its line"
+                else:
+                    why = f"couldn't be edited in place ({r['reason']})"
+                return (f"{r['text']!r} {why}, so it was redrawn and resized to fit; "
+                        f"every other field kept its original size.")
+            extra_warnings = [_resize_warning(r) for r in resized]
 
             with open(out_path, "rb") as f:
                 edited = f.read()
+
+            # Never ship a page with notdef boxes on it, or with text off the
+            # paper. The offending fields are dropped and the rest redrawn
+            # without them, so one unshippable field costs that field and
+            # nothing else. See _unshippable_fields.
+            boxed = _unshippable_fields(edited, replacements)
+            if boxed:
+                keep = [rp for i, rp in enumerate(replacements) if i not in boxed]
+                dropped = [(replacements[i], boxed[i]) for i in sorted(boxed)]
+                refusals = list(inplace_refusals) + [
+                    {"text": sd["text"][:60], "reason": why,
+                     "message": _UNSHIPPABLE_MSG[why]}
+                    for (sd, _), why in dropped]
+                if keep:
+                    edited, sub = apply_replacements(
+                        pdf_bytes, keep, preserve_size=preserve_size,
+                        try_inplace=False)
+                    sub["in_place"] = {"count": in_place_count,
+                                       "total": total,
+                                       "refusals": refusals}
+                    sub["warnings"] = list(sub.get("warnings") or []) + [
+                        f"{sd['text'][:40]!r} was left unchanged: "
+                        f"{_UNSHIPPABLE_MSG[why]}"
+                        for (sd, _), why in dropped]
+                    return edited, sub
+                return pdf_bytes, {
+                    "fonts": report,
+                    "warnings": [str(w.message) for w in caught] + extra_warnings + [
+                        f"{sd['text'][:40]!r} was left unchanged: "
+                        f"{_UNSHIPPABLE_MSG[why]}" for (sd, _), why in dropped],
+                    "resized_to_fit": resized,
+                    "in_place": {"count": in_place_count, "total": total,
+                                 "refusals": refusals}}
             return edited, {"fonts": report,
                             "warnings": [str(w.message) for w in caught] + extra_warnings,
                             "resized_to_fit": resized,
