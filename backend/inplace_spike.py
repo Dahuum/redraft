@@ -910,6 +910,10 @@ _REASON_MSG = {
     "ragged_multirun_boundary": ("This text starts or ends in the middle of a drawing instruction that "
                                 "ALSO contains other, unrelated text — this test only edits runs that are "
                                 "cleanly and entirely covered by the change."),
+    "spans_multiple_fonts": ("This text is drawn with more than one font — a word processor will "
+                            "switch fonts mid-sentence for a character its first font lacks, and this "
+                            "engine edits text within a single font at a time. Editing it would mean "
+                            "coordinating a splice across two font resources at once."),
     "no_content_stream": "This page has no content stream.",
     "not_found": "Couldn't find that text in the document.",
     "unmappable": "Couldn't map every character to a glyph (complex/shaped script?).",
@@ -1478,6 +1482,9 @@ _REFUSAL_RANK = {
     "kerning_split_within_run": 90,
     "ragged_multirun_boundary": 85,
     "spans_multiple_streams": 80,
+    # Names a specific, checked structural fact about THIS span, so it
+    # outranks the generic width verdict.
+    "spans_multiple_fonts": 79,
     "would_overflow": 78,
     "missing_glyph": 75,
     "extend": 70,
@@ -1875,6 +1882,47 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
                            extended_chars, which)
 
 
+def _spans_multiple_fonts(doc, tpage, old_n, old_codes_by_cid) -> bool:
+    """Is this text drawn using MORE THAN ONE font resource?
+
+    Then no single-font search can ever find it, and "couldn't locate the
+    glyph sequence" is a poor description of why. Office does this routinely:
+    when a run needs a character its font's subset lacks, it draws that
+    fragment with a different font object and carries on. On the attestation
+    document, "La Direction de l'école 1337 …" is drawn almost entirely by
+    one TwCenMT-Regular object, with the two fragments containing a right
+    single quote drawn by ANOTHER object of the same display name — so the
+    first font's stream reads "La Direction de  1337, …", with a gap exactly
+    where the other font's text belongs.
+
+    Detected by finding the longest prefix of the target that any single font
+    does contain: a substantial prefix that stops short means the text starts
+    in one font and continues in another.
+    """
+    page = doc[tpage]
+    refmap = _page_font_refmap(page)
+    refsub = _page_font_subtypes(page)
+    runs = _all_runs(_content_streams(doc, page))
+    best = 0
+    for name in dict.fromkeys(refmap.values()):
+        for is_cid in (False, True):
+            codes = old_codes_by_cid.get((name, is_cid))
+            if not codes:
+                continue
+            flat, _ = _flatten(runs, name, refmap, is_cid, refsub=refsub)
+            if not flat:
+                continue
+            lo, hi = 1, len(codes)
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if _find_all(flat, codes[:mid]):
+                    best = max(best, mid)
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+    return 3 <= best < len(old_n)
+
+
 def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof.
@@ -2064,7 +2112,34 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
             break
 
     if prep is None:
+        # Before settling for "couldn't find it", check whether the text is
+        # simply drawn in more than one font — a different situation with a
+        # different answer, and one this engine does not handle.
+        multi = False
+        if (prep_error or prep_error_other or {}).get("reason", "sequence_not_found") \
+                == "sequence_not_found":
+            try:
+                by_cid = {}
+                for cand_nm in name_order:
+                    for cand_cid in (False, True):
+                        if cand_cid:
+                            cmap_ = _lookup_by_name(_cid_code_maps(doc), cand_nm)
+                            if cmap_:
+                                by_cid[(cand_nm, True)] = _encode_simple_text(
+                                    old_n, cmap_["rev"], cmap_["max_len"])
+                        else:
+                            cm_ = _lookup_by_name(_simple_font_code_maps(doc), cand_nm)
+                            enc_ = _lookup_by_name(_simple_font_encodings(doc), cand_nm)
+                            got = (_encode_simple_text(old_n, cm_["rev"], cm_["max_len"])
+                                   if cm_ else None) or _encode_fallback(old_n, enc_)
+                            by_cid[(cand_nm, False)] = got
+                multi = _spans_multiple_fonts(doc, tpage, old_n, by_cid)
+            except Exception:  # noqa: BLE001 — diagnosis must not break the refusal
+                multi = False
         doc.close()
+        if multi:
+            return {"ok": False, "reason": "spans_multiple_fonts",
+                    "message": _REASON_MSG["spans_multiple_fonts"]}
         return prep_error or prep_error_other or {
             "ok": False, "reason": "sequence_not_found",
             "message": _REASON_MSG["sequence_not_found"]}
