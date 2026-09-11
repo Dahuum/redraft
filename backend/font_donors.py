@@ -92,6 +92,82 @@ def harvest_cuts(doc) -> list:
     return cuts
 
 
+def correct_external_donor(subset_bytes: bytes, donor_bytes: bytes,
+                           needed_chars) -> dict:
+    """Glyphs for *needed_chars* from a donor that is NOT in the document,
+    corrected by the same measured, held-out-validated transform step 2 uses
+    — or None when the donor cannot be made to match.
+
+    Step 4 of the order above is "a measured-closest lookalike", and it was
+    the only step that did no measuring. The lookalike was injected scaled by
+    the unitsPerEm ratio alone, which normalises the design grid and nothing
+    else, so every typographic proportion came across unchanged. Measured on
+    the attestation document, Poppins Bold standing in for Tw Cen MT Bold:
+
+        x-height    418.9 -> 558.0 per mille   (33% too tall)
+        cap height  641.1 -> 702.0             (9.5%)
+        stem        125.0 -> 171.0             (37% too heavy)
+
+    The ratios differ per landmark, so no single scale can fix it — which is
+    exactly what glyph_synth's anchored vertical mapping is for. Rendered, an
+    injected lowercase 'z' stood at 1143 units against the font's own
+    x-height of 879 and read as a capital Z in the middle of a word.
+
+    Through the transform the same donor validates at 0.94% height error and
+    4.9% stem error on held-out glyphs, against 33% and 37% raw. The SIZES
+    come right, which is what made the difference between a lowercase 'z'
+    and something that read as a capital Z in the middle of a word.
+
+    The shapes are a weaker match than an in-document cut's and the report
+    says so — mean held-out agreement 0.586 against 0.715 for this document's
+    own Regular cut, worst glyph 0.306 against 0.602 — so the caller gets the
+    numbers and can disclose the substitution. It is deliberately not a
+    refusal: the transformed glyphs were measured and rendered, and they are
+    the right letters at the right size, which is a different thing from the
+    unmeasured injection this replaces.
+
+    None means the transform could not be learned or a glyph's structure did
+    not survive it; the caller then falls back or refuses on its own terms.
+    """
+    needed = [c for c in needed_chars if not c.isspace()]
+    if not needed:
+        return None
+    try:
+        target = TTFont(io.BytesIO(subset_bytes))
+        donor = TTFont(io.BytesIO(donor_bytes))
+    except Exception:  # noqa: BLE001
+        return None
+    if "glyf" not in target or "glyf" not in donor:
+        return None               # CFF outlines: a different injection problem
+    try:
+        cov = fmet.measure(donor)["coverage"]
+        if not all(ord(ch) in cov for ch in needed):
+            return None
+        xf = gs.learn_weight_transform(donor, target)
+    except Exception:  # noqa: BLE001
+        return None
+    if not xf.usable:
+        return None
+    glyphs = {}
+    for ch in needed:
+        try:
+            syn = gs.synthesize_char(donor, ch, xf)
+        except Exception:  # noqa: BLE001
+            return None
+        if not syn:
+            return None           # structure did not survive; see topology_ok
+        glyphs[ch] = syn
+    name = ""
+    try:
+        name = donor["name"].getDebugName(4) or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return {"kind": "external_measured",
+            "provenance": f"{name or 'open-source donor'}, corrected by a "
+                          f"measured transform",
+            "report": xf.report, "glyphs": glyphs}
+
+
 def find_in_document_donor(doc, target_display: str, needed_chars,
                            target_tt=None) -> dict:
     """Best in-document source for *needed_chars* in the cut named

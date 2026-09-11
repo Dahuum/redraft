@@ -1159,9 +1159,28 @@ def _try_extend(doc, font_display_name, missing_chars):
     except Exception:  # noqa: BLE001 — fall through to the network donor
         pass
 
-    donor = font_extend.resolve_donor(font_display_name)
+    donor, donor_kind = font_extend.resolve_donor_detailed(font_display_name)
     if not donor:
         return None, "no_donor"
+    # A SUBSTITUTE — a different typeface standing in for one with no
+    # open-source relative — must be measured before it is allowed on the
+    # page. Injected on the unitsPerEm ratio alone it keeps every one of its
+    # own proportions: a Poppins 'z' standing in for Tw Cen MT Bold came out
+    # 33% too tall and read as a capital Z inside the word. The genuine family
+    # needs no such correction and takes the path below unchanged.
+    if donor_kind == "substitute":
+        try:
+            import font_donors
+            import glyph_synth
+            corrected = font_donors.correct_external_donor(
+                subset_bytes, donor, missing_chars)
+        except Exception:  # noqa: BLE001
+            corrected = None
+        if corrected:
+            result = glyph_synth.inject_into_font(subset_bytes, corrected["glyphs"])
+            return _finish_cid_extend(doc, refs, result, missing_chars)
+        # The transform could not be learned at all. Raw injection is then the
+        # only option left, and it is disclosed rather than silent.
     try:
         result = font_extend.extend_font(subset_bytes, donor, missing_chars)
     except ValueError as e:
@@ -1188,6 +1207,11 @@ _SIMPLE_EXTEND_FAIL_MSG = {
                  "open-source donor could be resolved for it."),
     "bad_widths": "This font's width table has an unexpected structure — skipped rather than risk misaligned text.",
     "inject_failed": "Couldn't merge the glyph into this font.",
+    "donor_too_different": (
+        "This character isn't in the document's own copy of this font, no other "
+        "cut of the family is embedded either, and the substitute available for "
+        "it measures too far from these letterforms to stand in for them — so "
+        "drawing it would visibly change the typeface."),
 }
 
 
@@ -1335,14 +1359,32 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
     except Exception:  # noqa: BLE001 — fall through to the network donor
         result = None
 
-    # 2. An open-source donor, as before.
+    # 2. An open-source donor — through the same measured transform, so its
+    #    own proportions do not come across unchanged.
     if result is None:
         try:
-            raw = font_extend.resolve_donor(font_display_name)
+            raw, raw_kind = font_extend.resolve_donor_detailed(font_display_name)
             if not raw:
                 return None, "no_donor"
-            result = font_extend.extend_font(subset_bytes, raw, missing_chars)
-            provenance = "open-source donor font"
+            if raw_kind == "substitute":
+                # Another typeface entirely: measure it, or say no. See
+                # font_donors.correct_external_donor.
+                corrected = font_donors.correct_external_donor(
+                    subset_bytes, raw, missing_chars)
+                if corrected:
+                    result = glyph_synth.inject_into_font(subset_bytes,
+                                                          corrected["glyphs"])
+                    r = corrected["report"]
+                    provenance = (f"{corrected['provenance']} "
+                                  f"(held-out shape agreement "
+                                  f"{r.get('iou_mean') or 0:.2f})")
+                else:
+                    result = font_extend.extend_font(subset_bytes, raw,
+                                                     missing_chars)
+                    provenance = "substitute typeface, uncorrected"
+            else:
+                result = font_extend.extend_font(subset_bytes, raw, missing_chars)
+                provenance = "the genuine family, from an open-source catalogue"
         except Exception:  # noqa: BLE001
             return None, "inject_failed"
 
@@ -1826,6 +1868,9 @@ _REFUSAL_RANK = {
     "spans_multiple_fonts": 79,
     "cannot_reflow": 79,
     "would_overflow": 78,
+    # More specific than missing_glyph, and actionable: the character could be
+    # drawn, just not in these letterforms.
+    "donor_too_different": 76,
     "missing_glyph": 75,
     "extend": 70,
     "unmappable": 60,

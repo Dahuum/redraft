@@ -11,6 +11,7 @@ donor is needed to test it. One optional comparison against an open-source
 lookalike is guarded and skipped without network.
 """
 import io
+import re
 import os
 import sys
 
@@ -784,6 +785,76 @@ check("and it carries the same scale, so one number moves it",
       abs(_r["x_scale"] - 0.7341) < 0.001, f"{_r['x_scale']}")
 check("a rectangle inside a string literal is not one",
       not list(sp._stream_rects(b"BT /F1 10 Tf 1 0 0 1 1 1 Tm (0 0 9 9 re) Tj ET")))
+
+print()
+print("=== 4l) a substituted letter is the right SIZE, not just the right letter ===")
+# Tw Cen MT has no open-source relative, so a character in neither the
+# document's own cuts nor an installed copy comes from a substitute typeface.
+# That substitute used to be injected scaled by the unitsPerEm ratio alone,
+# which normalises the design grid and nothing else, so Poppins arrived at
+# Poppins' proportions: x-height 558 per mille against Tw Cen MT Bold's 419.
+# Rendered, the lowercase 'z' in "Ouarzazate" stood 1143 units tall against
+# the font's own x-height of 879 and read as a capital Z inside the word.
+_d = fitz.open(FIXTURE)
+_pl = next(x for x in sp._spans(_d[0]) if x["text"].strip() == "Essaouira")
+_d.close()
+_r = sp.edit(_src_bytes, "Essaouira", "Ouarzazate", page=0,
+             bbox=_pl["bbox"], verify=False)
+check("the substituted-glyph edit is accepted", _r.get("ok"), f"{_r.get('reason')}")
+check("and it reports which characters it had to add",
+      sorted(_r.get("extended_chars") or []) == ["O", "z"],
+      f"{_r.get('extended_chars')}")
+if _r.get("ok"):
+    _out = fitz.open(stream=base64.b64decode(_r["pdf_b64"]), filetype="pdf")
+    _prog = None
+    for _f in _out[0].get_fonts(full=True):
+        if _f[2] != "Type0" or "Bold" not in _f[3]:
+            continue
+        _o = _out.xref_object(_f[0], compressed=True)
+        _m = re.search(r"/DescendantFonts\s*\[?\s*(\d+)\s+0\s+R", _o)
+        if not _m:
+            continue
+        _df = _out.xref_object(int(_m.group(1)), compressed=True)
+        if "/FontDescriptor" not in _df:
+            _df = _out.xref_object(
+                int(re.search(r"(\d+)\s+0\s+R", _df).group(1)), compressed=True)
+        _fd = _out.xref_object(
+            int(re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", _df).group(1)),
+            compressed=True)
+        _mm = re.search(r"/FontFile2\s+(\d+)\s+0\s+R", _fd)
+        if _mm:
+            _prog = _out.xref_stream(int(_mm.group(1)))
+            break
+    _out.close()
+    check("the edited font program is readable back", _prog is not None)
+    if _prog:
+        _tt = TTFont(io.BytesIO(_prog))
+        _g = _tt["glyf"]
+
+        def _top(name):
+            return _g[name].yMax if name in _tt.getGlyphOrder() else None
+
+        # The font's OWN landmarks, from its own letters — not from OS/2,
+        # which a subsetter leaves stale.
+        _x_own, _cap_own = _top("o"), _top("Z")
+        check("the font still carries its own reference letters",
+              _x_own and _cap_own, f"o={_x_own} Z={_cap_own}")
+        if _x_own and _cap_own:
+            _z, _O = _top("z"), _top("O")
+            check("an injected lowercase sits at the font's own x-height",
+                  _z is not None and abs(_z - _x_own) / _x_own <= 0.08,
+                  f"z={_z} vs x-height {_x_own} "
+                  f"({(abs(_z - _x_own) / _x_own * 100) if _z else 0:.1f}% off)")
+            check("an injected capital sits at the font's own cap height",
+                  _O is not None and abs(_O - _cap_own) / _cap_own <= 0.08,
+                  f"O={_O} vs cap height {_cap_own} "
+                  f"({(abs(_O - _cap_own) / _cap_own * 100) if _O else 0:.1f}% off)")
+            # The number the bug produced, so this cannot quietly come back:
+            # 1143/879 is 30% over, far outside the 8% allowed above.
+            check("and the defect this replaces would not pass",
+                  abs(1143 - _x_own) / _x_own > 0.08,
+                  f"raw injection put it at 1143 against {_x_own}")
+        _tt.close()
 
 print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
