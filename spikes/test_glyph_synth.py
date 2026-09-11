@@ -410,6 +410,7 @@ check("compression stays inside every published bound",
 
 print()
 print("=== 4g) /edit never puts text off the page, and says when it resized ===")
+import api as api_mod  # noqa: E402
 from api import extract_spans, apply_replacements  # noqa: E402
 
 _spans_api = extract_spans(_src_bytes)
@@ -523,6 +524,50 @@ if not _placed:
     check("a refused field leaves its line exactly as it was",
           _line_of(_out) == _line_of(_src_bytes),
           f"{_line_of(_src_bytes)} -> {_line_of(_out)}")
+
+print()
+print("=== 4g3) a redrawn field RECORDS the characters it was given ===")
+# A page can render perfectly while the file records different characters,
+# and copy, search and screen readers all read the file. Measured: Tinos —
+# the metric-compatible Times the redraw falls back to — maps U+0020 and
+# U+00A0 to the same 'space' glyph, and U+002D and U+00AD to the same
+# 'hyphen'. The subset writer picks the higher codepoint of each pair, so a
+# redrawn line recorded a NON-BREAKING SPACE for every space and a SOFT
+# HYPHEN for every hyphen: searching the output for "semi-supervised" failed
+# on a page that showed exactly that.
+_TINOS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      "..", "backend", ".font_cache", "Tinos-400-normal.ttf")
+check("the fallback font this was measured on is present", os.path.exists(_TINOS))
+if os.path.exists(_TINOS):
+    def _drawn(text):
+        _q = fitz.open()
+        _pg = _q.new_page(width=420, height=120)
+        _pg.insert_font(fontname="T1", fontfile=_TINOS)
+        _pg.insert_text((20, 60), text, fontname="T1", fontsize=12)
+        _raw = _q.tobytes()
+        _q.close()
+        return _raw
+
+    def _recorded(b):
+        _q = fitz.open(stream=b, filetype="pdf")
+        try:
+            return _q[0].get_text().strip()
+        finally:
+            _q.close()
+
+    _plain = "alpha beta gamma-delta"
+    _raw = _drawn(_plain)
+    check("the defect is real and still reproduces in the raw draw",
+          _recorded(_raw) != _plain,
+          f"raw recorded {_recorded(_raw)!r}")
+    check("and the text layer is corrected to what was asked for",
+          _recorded(api_mod._canonicalise_text_layer(_raw, [_plain])) == _plain,
+          f"{_recorded(api_mod._canonicalise_text_layer(_raw, [_plain]))!r}")
+    # ...and a character the caller genuinely asked for is NOT rewritten.
+    _nb = "alpha\u00a0beta"
+    check("a deliberate non-breaking space is left alone",
+          _recorded(api_mod._canonicalise_text_layer(_drawn(_nb), [_nb])) == _nb,
+          f"{_recorded(api_mod._canonicalise_text_layer(_drawn(_nb), [_nb]))!r}")
 
 print()
 print("=== 4h) font identity is per OBJECT, not per display name ===")

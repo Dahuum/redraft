@@ -530,6 +530,80 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     return current, in_place_count, still_needed, refusals
 
 
+# Codepoints a font commonly maps to the SAME glyph as their canonical form,
+# and which therefore come back from a reverse glyph->character lookup in
+# place of it. Measured on Tinos (the metric-compatible Times the redraw
+# falls back to): its cmap maps U+0020 and U+00A0 both to 'space', and
+# U+002D and U+00AD both to 'hyphen'. PyMuPDF's subset writer picks the
+# higher codepoint of the pair, so a redrawn line recorded NBSP for every
+# space and a SOFT HYPHEN for every hyphen. The page renders correctly and
+# the file says something else — searching it for "semi-supervised" fails,
+# and so does copying a sentence out of it.
+_CANONICAL_TEXT_CODE = {"00a0": "0020", "00ad": "002d"}
+
+_BFCHAR_DST = re.compile(rb"(<[0-9A-Fa-f]{4}>\s*)<([0-9A-Fa-f]{4})>")
+
+
+def _canonicalise_text_layer(pdf_bytes: bytes, drawn_texts) -> bytes:
+    """Make the recorded characters agree with the ones we asked to draw.
+
+    Only the DESTINATION of a single-character bfchar mapping is touched — a
+    bfrange maps a run of glyphs and shifting its start would relabel all of
+    them, and the same four hex digits appear as a SOURCE code elsewhere in
+    the same CMap ('<00a0> <00f8>'), which must be left alone.
+
+    Skipped entirely when the text we drew genuinely contains one of these
+    characters: then the mapping is right and rewriting it would be the
+    error.
+    """
+    joined = "".join(drawn_texts or ())
+    wanted = {c for c in joined
+              if f"{ord(c):04x}" in _CANONICAL_TEXT_CODE}
+    fix = {k.encode(): v.encode() for k, v in _CANONICAL_TEXT_CODE.items()
+           if not any(f"{ord(c):04x}" == k for c in wanted)}
+    if not fix:
+        return pdf_bytes
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return pdf_bytes
+    try:
+        changed = False
+        seen = set()
+        for pno in range(doc.page_count):
+            for f in doc[pno].get_fonts(full=True):
+                obj = doc.xref_object(f[0], compressed=True)
+                m = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", obj)
+                if not m:
+                    continue
+                tu = int(m.group(1))
+                if tu in seen:
+                    continue
+                seen.add(tu)
+                data = doc.xref_stream(tu)
+                if not data:
+                    continue
+                out = bytearray()
+                last = 0
+                for part in re.finditer(rb"beginbfchar(.*?)endbfchar", data, re.S):
+                    body = part.group(1)
+                    def _sub(mm):
+                        dst = mm.group(2).lower()
+                        return (mm.group(1) + b"<" + fix[dst] + b">"
+                                if dst in fix else mm.group(0))
+                    fixed = _BFCHAR_DST.sub(_sub, body)
+                    if fixed != body:
+                        out += data[last:part.start(1)] + fixed
+                        last = part.end(1)
+                if last:
+                    out += data[last:]
+                    doc.update_stream(tu, bytes(out))
+                    changed = True
+        return doc.tobytes(garbage=4, deflate=True) if changed else pdf_bytes
+    finally:
+        doc.close()
+
+
 _UNSHIPPABLE_MSG = {
     "cannot_render": (
         "This field's font is only embedded as a subset of the characters the "
@@ -771,6 +845,9 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
 
             with open(out_path, "rb") as f:
                 edited = f.read()
+            # The redraw's own font can record a different character than the
+            # one it drew; see _canonicalise_text_layer.
+            edited = _canonicalise_text_layer(edited, [nt for _, nt in replacements])
 
             # Never ship a page with notdef boxes on it, or with text off the
             # paper. The offending fields are dropped and the rest redrawn
