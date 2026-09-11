@@ -1443,6 +1443,16 @@ async def bulk(template: UploadFile = File(...),
 
     files: list = []       # [(name, pdf_bytes)]
     failed = 0
+    # Why a row can fail on a field rather than on an exception. When a value
+    # cannot be drawn — too long for its space, a glyph its font hasn't got —
+    # that field is left exactly as the TEMPLATE had it, which in a mail merge
+    # means the row goes out carrying the template's own placeholder. Measured
+    # on the attestation template, a 120-character name left "Sara Idrissi"
+    # standing in the output, and this route discarded the report that said
+    # so. A letter addressed to the wrong person is worse than no letter, so
+    # the row is counted as failed and left out, and the response says how
+    # many and why.
+    field_failures: dict = {}
     used_names: set = set()
     attribution = _wants_attribution(user)         # Loop A — free/guest footer
     for row_idx, row in enumerate(rows):
@@ -1450,7 +1460,15 @@ async def bulk(template: UploadFile = File(...),
                 for i, col in mp.items()
                 if 0 <= i < len(spans) and str(row.get(col, ""))]
         try:
-            out, _ = apply_replacements(tmpl_bytes, reps)
+            out, rep = apply_replacements(tmpl_bytes, reps)
+            unfilled = [r for r in (rep.get("in_place", {}).get("refusals") or [])
+                        if r.get("reason") in _UNSHIPPABLE_MSG]
+            if unfilled:
+                # At least one mapped field still holds the template's text.
+                failed += 1
+                for r in unfilled:
+                    field_failures[r["reason"]] = field_failures.get(r["reason"], 0) + 1
+                continue
             if attribution:
                 out = _add_attribution(out)
             name = _row_filename(row, filename_col, headers, row_idx, "row")
@@ -1467,6 +1485,8 @@ async def bulk(template: UploadFile = File(...),
 
     stem = Path(template.filename or "template").stem
     hdrs = {"X-Redraft-Generated": str(len(files)), "X-Redraft-Failed": str(failed)}
+    if field_failures:
+        hdrs["X-Redraft-Failed-Reasons"] = json.dumps(field_failures)
     if output == "merged":
         return Response(
             content=_merge_pdfs([b for _n, b in files]), media_type="application/pdf",

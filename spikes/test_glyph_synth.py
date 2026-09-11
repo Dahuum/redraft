@@ -13,6 +13,7 @@ lookalike is guarded and skipped without network.
 import io
 import re
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
@@ -607,6 +608,68 @@ check("an edit that prints over the run beside it is not",
 check("a pre-existing overlap is not reported as this edit's doing",
       api_mod._unshippable_fields(_bad, [(_field, "right")], before=_bad) == {},
       f"{api_mod._unshippable_fields(_bad, [(_field, 'right')], before=_bad)}")
+
+print()
+print("=== 4g5) a bulk row is never delivered carrying the template's text ===")
+# A field that cannot be drawn is left exactly as the template had it. In a
+# mail merge that means the row goes out with the TEMPLATE's own placeholder
+# in it, and /bulk discarded the report that said so. Measured on this
+# fixture with a 96-character value mapped to three fields: two of the three
+# still read "Benguerir, le 19/11/2025" and "M /Mme" while the third was
+# filled — 500 letters, some addressed to whoever the template names.
+_spans_bulk = extract_spans(_src_bytes)
+_usable = [x for x in _spans_bulk
+           if len(x["text"].strip()) >= 6 and x["size"] > 5]
+_rng = random.Random(31)
+_rng.shuffle(_usable)
+_mapped = _usable[:3]
+check("the fixture offers three mappable fields", len(_mapped) == 3)
+if len(_mapped) == 3:
+    _bulk_rows = ["Ali Ben", "Abdurrahamn Chahrour", "Abdurrahamn " * 8]
+    _delivered = _failed = _stale = 0
+    for _val in _bulk_rows:
+        _o, _r = apply_replacements(_src_bytes, [(sd, _val) for sd in _mapped])
+        _unfilled = [x for x in (_r.get("in_place", {}).get("refusals") or [])
+                     if x.get("reason") in api_mod._UNSHIPPABLE_MSG]
+        if _unfilled:
+            _failed += 1          # the route drops this row and says why
+            continue
+        _delivered += 1
+        _dd = fitz.open(stream=_o, filetype="pdf")
+        try:
+            for sd in _mapped:
+                _here = " ".join(
+                    x["text"] for b in _dd[sd["page"]].get_text("dict")["blocks"]
+                    for l in b.get("lines", []) for x in l.get("spans", [])
+                    if abs(x["origin"][1] - sd["origin"][1]) < 1.0)
+                _here = _here.replace("\xa0", " ")
+                _old = sd["text"].strip()
+                if len(_old) >= 8 and _old in _here and _val[:8] not in _here:
+                    _stale += 1
+        finally:
+            _dd.close()
+    check("some rows are delivered and some are failed, not all one way",
+          _delivered >= 1 and _failed >= 1, f"delivered={_delivered} failed={_failed}")
+    check("no delivered row still shows the template's own text", _stale == 0,
+          f"{_stale} mapped fields left unfilled in a delivered row")
+    # ...and the defect is real: delivering the failed row regardless puts
+    # the template's text in front of the recipient.
+    _o, _r = apply_replacements(_src_bytes,
+                               [(sd, "Abdurrahamn " * 8) for sd in _mapped])
+    _dd = fitz.open(stream=_o, filetype="pdf")
+    try:
+        _left = 0
+        for sd in _mapped:
+            _here = " ".join(
+                x["text"] for b in _dd[sd["page"]].get_text("dict")["blocks"]
+                for l in b.get("lines", []) for x in l.get("spans", [])
+                if abs(x["origin"][1] - sd["origin"][1]) < 1.0).replace("\xa0", " ")
+            if len(sd["text"].strip()) >= 6 and sd["text"].strip() in _here:
+                _left += 1
+    finally:
+        _dd.close()
+    check("delivering it anyway would have shown the template's text",
+          _left >= 1, f"{_left} fields would still read as the template")
 
 print()
 print("=== 4h) font identity is per OBJECT, not per display name ===")
