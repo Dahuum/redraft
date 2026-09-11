@@ -1379,31 +1379,125 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
 # that needed a little tightening to fit was refused as unfittable instead.
 _POSOP_RE = re.compile(
     rb"(?:^|[\s\]>)])(?:"
-    rb"(?P<tm>(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+"
-    rb"(?P<tmx>-?[\d.]+)\s+(?P<tmy>-?[\d.]+)\s+Tm)"
+    rb"(?P<tm>(?P<ma>-?[\d.]+)\s+(?P<mb>-?[\d.]+)\s+(?P<mc>-?[\d.]+)\s+"
+    rb"(?P<md>-?[\d.]+)\s+(?P<tmx>-?[\d.]+)\s+(?P<tmy>-?[\d.]+)\s+Tm)"
+    rb"|(?P<cm>(?P<ca>-?[\d.]+)\s+(?P<cb>-?[\d.]+)\s+(?P<cc>-?[\d.]+)\s+"
+    rb"(?P<cd>-?[\d.]+)\s+(?P<ce>-?[\d.]+)\s+(?P<cf>-?[\d.]+)\s+cm)"
     rb"|(?P<td>(?P<tdx>-?[\d.]+)\s+(?P<tdy>-?[\d.]+)\s+(?P<tdop>Td|TD))"
     rb"|(?P<tl>(?P<tlv>-?[\d.]+)\s+TL)"
     rb"|(?P<nl>T\*|'|\")"
+    rb"|(?P<re>(?P<rx>-?[\d.]+)\s+(?P<ry>-?[\d.]+)\s+"
+    rb"(?P<rw>-?[\d.]+)\s+(?P<rh>-?[\d.]+)\s+re)"
+    rb"|(?P<gs>q|Q)"
+    rb"|(?P<bt>BT|ET)"
     rb")(?=[\s/\[(<]|$)")
 
-_BTET_RE = re.compile(rb"(?:^|[\s\]>)])(BT|ET)(?=[\s/\[(<]|$)")
+_STR_START = re.compile(rb"[(<]")
+
+
+def _mask_strings(data: bytes) -> bytes:
+    """*data* with the inside of every string literal blanked, same length.
+
+    A PDF string can contain any bytes at all, so a run of text that happens
+    to read "1 0 0 1 72 700 Tm" is a perfectly legal thing to draw — and
+    scanning the raw stream for operators finds it and believes it. Blanking
+    string contents while keeping every byte offset means the operator scan
+    cannot be fooled, and offsets taken from the masked copy still splice
+    correctly into the original.
+    """
+    out = bytearray(data)
+    i, n = 0, len(data)
+    while i < n:
+        m = _STR_START.search(data, i)
+        if m is None:
+            break
+        j = m.start()
+        if data[j:j + 1] == b"<":
+            k = data.find(b">", j + 1)
+            if k < 0:
+                break
+            for t in range(j + 1, k):
+                out[t] = 0x20
+            i = k + 1
+            continue
+        depth, t = 1, j + 1
+        while t < n and depth:
+            ch = data[t]
+            if ch == 0x5C:          # backslash: skip the escaped byte
+                out[t] = 0x20
+                if t + 1 < n:
+                    out[t + 1] = 0x20
+                t += 2
+                continue
+            if ch == 0x28:
+                depth += 1
+            elif ch == 0x29:
+                depth -= 1
+                if depth == 0:
+                    break
+            out[t] = 0x20
+            t += 1
+        i = t + 1
+    return bytes(out)
+
+
+def _mat_mul(m, n):
+    """m x n, for the 6-number [a b c d e f] form PDF writes matrices in."""
+    a, b, c, d, e, f = m
+    A, B, C, D, E, F = n
+    return (a * A + b * C, a * B + b * D,
+            c * A + d * C, c * B + d * D,
+            e * A + f * C + E, e * B + f * D + F)
 
 
 def _text_objects(data: bytes):
-    """Every BT..ET text object in *data*, with EVERY baseline it draws on.
+    """Every text object from _stream_items, for callers that want only those."""
+    for kind, item in _stream_items(data):
+        if kind == "text":
+            yield item
 
-    Yields dicts with:
+
+def _stream_rects(data: bytes):
+    """Every `re` rectangle from _stream_items, in page coordinates.
+
+    Reflow moves text; these are what the text is decorated WITH. A link
+    underline is a filled rectangle, and moving the text off it leaves the
+    rule stranded under whatever now occupies that space — on a Wikipedia
+    page, a footnote marker moved 30pt right and its underline stayed put,
+    ruling through the value that had taken its place. Registering text with
+    its own decoration is exactly the kind of trace this engine exists to
+    avoid leaving.
+    """
+    for kind, item in _stream_items(data):
+        if kind == "rect":
+            yield item
+
+
+def _stream_items(data: bytes):
+    """Walk *data* once, yielding ("text", obj) and ("rect", r) in PAGE
+    coordinates, with the graphics state composed.
+
+    One walk for both, because both need the same q/Q/cm bookkeeping and two
+    copies of it would drift apart.
+
+    TEXT OBJECTS carry:
+
       bt, et      byte offsets of the object's BT and ET
       x, y        the origin of its first text, in page space
       x_at        (start, end) byte span of that origin's x operand, so a
                   caller can move the object by rewriting one number
+      x_scale     page units per unit of that operand, so a caller that wants
+                  to move the object by dx in page space writes dx / x_scale
       after_pos   byte offset just past the first positioning operator, where
                   text-state operators may be inserted
-      positions   [(x, y)] for every position the pen is set to, or None when
-                  that cannot be determined from the operators alone
+      positions   [(x, y)] in page space for every position the pen is set
+                  to, or None when that cannot be determined
+      rigid       True when shifting that one operand moves the whole object
+                  and nothing else
 
-    Objects that position nothing, or whose first positioning operator is a
-    rotated/skewed Tm, are skipped: no caller has anything to do with them.
+    RECTANGLES carry x0, y0, x1, y1 (page space, normalised), plus x_at and
+    x_scale so one can be moved the same way, and w_at so one that belongs to
+    the field itself can be RESIZED with it.
 
     WHY IT WALKS THE WHOLE OBJECT
     -----------------------------
@@ -1411,76 +1505,138 @@ def _text_objects(data: bytes):
     set the pen many times — pdfTeX emits one object per paragraph with a Td
     before each line — so an object whose FIRST origin is on some other line
     can still draw on the line being edited. Missing that would let reflow
-    move half of a line and leave the rest behind. Walking the positioning
-    operators in order gives every baseline the object touches, which is both
-    safer than the first origin alone and more capable: an object all of whose
-    positions sit on the edited line, past the field, can be moved rigidly by
-    shifting only its first origin, because every later Td is RELATIVE to it.
+    move half of a line and leave the rest behind. Walking the operators in
+    order gives every baseline the object touches, which is also more
+    capable: PDF's Td is measured from the previous line's matrix rather than
+    from the pen, so an object whose positions all sit on the edited line,
+    past the field, can be moved rigidly by shifting only its first origin.
+
+    WHY IT TRACKS THE CTM
+    ---------------------
+    A content stream need not be written in page coordinates. Headless Chrome
+    wraps the page in "q .24 0 0 -.24 0 841.92 cm" and nests further scales
+    inside it, so every operand in the stream is in a different space — and
+    reading them as page coordinates found NOTHING on any baseline, which
+    left reflow and the fitting levers with nothing to act on. Composing q/Q
+    and cm puts the positions back into the space the caller measures in.
     """
+    ctm = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     stack = []
-    for m in _BTET_RE.finditer(data):
-        if m.group(1) == b"BT":
-            stack.append(m.end())
+    cur = None
+    for m in _POSOP_RE.finditer(_mask_strings(data)):
+        if m.group("gs"):
+            if m.group("gs") == b"q":
+                stack.append(ctm)
+            elif stack:
+                ctm = stack.pop()
             continue
-        if not stack:
-            continue
-        bt, et = stack.pop(), m.start(1)
-        first = None
-        pen = None            # current line-matrix translation
-        leading = None        # TL, needed to resolve T* / ' / "
-        positions = []
-        for pm in _POSOP_RE.finditer(data, bt, et):
-            if pm.group("tl"):
-                try:
-                    leading = float(pm.group("tlv"))
-                except ValueError:
-                    leading = None
+        if m.group("re"):
+            if abs(ctm[1]) > 1e-6 or abs(ctm[2]) > 1e-6 or not ctm[0]:
+                continue                     # rotated/degenerate: leave alone
+            try:
+                rx, ry = float(m.group("rx")), float(m.group("ry"))
+                rw, rh = float(m.group("rw")), float(m.group("rh"))
+            except ValueError:
                 continue
-            if pm.group("tm"):
-                try:
-                    b, c = float(pm.group(3)), float(pm.group(4))
-                    x, y = float(pm.group("tmx")), float(pm.group("tmy"))
-                except ValueError:
-                    positions = None
-                    break
-                if abs(b) > 1e-6 or abs(c) > 1e-6:
-                    positions = None      # rotated/skewed: not our business
-                    break
-                pen = (x, y)
-                if first is None:
-                    first = {"x": x, "y": y, "x_at": pm.span("tmx"),
-                             "after_pos": pm.end("tm")}
-            elif pm.group("td"):
-                try:
-                    tx, ty = float(pm.group("tdx")), float(pm.group("tdy"))
-                except ValueError:
-                    positions = None
-                    break
-                if pm.group("tdop") == b"TD":
-                    leading = -ty
-                if pen is None:
-                    # The text matrix is the identity at BT, so a LEADING
-                    # Td/TD carries the page-space origin itself. Word writes
-                    # every run this way and emits no Tm at all.
-                    pen = (tx, ty)
-                    first = {"x": tx, "y": ty, "x_at": pm.span("tdx"),
-                             "after_pos": pm.end("td")}
-                else:
-                    pen = (pen[0] + tx, pen[1] + ty)
-            else:                          # T* / ' / "
-                if pen is None or leading is None:
-                    positions = None
-                    break
-                pen = (pen[0], pen[1] - leading)
-            if positions is not None:
-                positions.append(pen)
-        if first is None:
+            ax0 = rx * ctm[0] + ctm[4]
+            ax1 = (rx + rw) * ctm[0] + ctm[4]
+            ay0 = ry * ctm[3] + ctm[5]
+            ay1 = (ry + rh) * ctm[3] + ctm[5]
+            yield ("rect", {"x0": min(ax0, ax1), "x1": max(ax0, ax1),
+                            "y0": min(ay0, ay1), "y1": max(ay0, ay1),
+                            "x_at": m.span("rx"), "w_at": m.span("rw"),
+                            "x_scale": ctm[0]})
             continue
-        first.update(bt=bt, et=et, positions=positions)
-        yield first
+        if m.group("cm"):
+            try:
+                mat = tuple(float(m.group(g)) for g in
+                            ("ca", "cb", "cc", "cd", "ce", "cf"))
+            except ValueError:
+                continue
+            ctm = _mat_mul(mat, ctm)
+            continue
+        if m.group("bt"):
+            if m.group("bt") == b"BT":
+                cur = {"bt": m.end(), "ctm": ctm, "lm": None, "leading": None,
+                       "positions": [], "first": None, "rigid": True}
+            elif cur is not None:
+                obj, cur = cur, None
+                if obj["first"] is None:
+                    continue
+                obj["first"].update(bt=obj["bt"], et=m.start("bt"),
+                                    positions=obj["positions"],
+                                    rigid=obj["rigid"])
+                yield ("text", obj["first"])
+            continue
+        if cur is None:
+            continue
+
+        # A rotated or skewed CTM, or text matrix, is not this pass's
+        # business: everything downstream reasons about x and y separately.
+        c = cur["ctm"]
+        if abs(c[1]) > 1e-6 or abs(c[2]) > 1e-6:
+            cur["positions"] = None
+
+        if m.group("tl"):
+            try:
+                cur["leading"] = float(m.group("tlv"))
+            except ValueError:
+                cur["leading"] = None
+            continue
+
+        if m.group("tm"):
+            try:
+                lm = tuple(float(m.group(g)) for g in
+                           ("ma", "mb", "mc", "md", "tmx", "tmy"))
+            except ValueError:
+                cur["positions"] = None
+                continue
+            if abs(lm[1]) > 1e-6 or abs(lm[2]) > 1e-6:
+                cur["positions"] = None
+            if cur["first"] is None:
+                cur["first"] = {"x_at": m.span("tmx"), "after_pos": m.end("tm"),
+                                "x_scale": c[0]}
+            else:
+                # A second absolute origin: shifting the first one would not
+                # move the text this one places, so the object cannot be
+                # moved by rewriting a single number.
+                cur["rigid"] = False
+            cur["lm"] = lm
+        elif m.group("td"):
+            try:
+                tx, ty = float(m.group("tdx")), float(m.group("tdy"))
+            except ValueError:
+                cur["positions"] = None
+                continue
+            if m.group("tdop") == b"TD":
+                cur["leading"] = -ty
+            if cur["lm"] is None:
+                # The text matrix is the identity at BT, so a LEADING Td/TD
+                # carries the origin itself. Word writes every run this way
+                # and emits no Tm at all.
+                cur["lm"] = (1.0, 0.0, 0.0, 1.0, tx, ty)
+                cur["first"] = {"x_at": m.span("tdx"), "after_pos": m.end("td"),
+                                "x_scale": c[0]}
+            else:
+                cur["lm"] = _mat_mul((1.0, 0.0, 0.0, 1.0, tx, ty), cur["lm"])
+        else:                                    # T* / ' / "
+            if cur["lm"] is None or cur["leading"] is None:
+                cur["positions"] = None
+                continue
+            cur["lm"] = _mat_mul((1.0, 0.0, 0.0, 1.0, 0.0, -cur["leading"]),
+                                 cur["lm"])
+
+        lm = cur["lm"]
+        px = lm[4] * c[0] + lm[5] * c[2] + c[4]
+        py = lm[4] * c[1] + lm[5] * c[3] + c[5]
+        if cur["first"] is not None and "x" not in cur["first"]:
+            cur["first"]["x"], cur["first"]["y"] = px, py
+        if cur["positions"] is not None:
+            cur["positions"].append((px, py))
 
 
-def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
+def _reflow_same_line(doc, page, base_ys, from_x: float, dx: float,
+                      slots=(), rule_h: float = 0.0, field=None,
                       tol: float = 0.6):
     """Shift text that follows the edited field on the SAME line by *dx*.
 
@@ -1490,8 +1646,10 @@ def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
     therefore does not move when the text before it grows.
 
     A word processor would push that comma along, and so does this: for every
-    text object on the same baseline whose origin is at or right of the edited
-    field's original end, the x of its origin is increased by *dx*. Nothing
+    text object on the same LINE — every baseline in *base_ys*, since a
+    superscript has a raised baseline of its own — whose origin is at or
+    right of the edited field's original end, the x of its origin is
+    increased by *dx*. Nothing
     else about those objects changes — same font, same size, same string, same
     y — so the gaps between them are preserved exactly.
 
@@ -1503,7 +1661,37 @@ def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
     these operators cannot resolve — measured across four real documents that
     is 1 text object in 819, and the alternative is a silently torn line.
 
-    Returns the number of objects shifted, or None if reflow isn't safe here.
+    The shift is given in PAGE points and converted into the object's own
+    space, which differs whenever a cm is in force.
+
+    Text is not the only thing that has to move. A link underline is a filled
+    rectangle, and moving the text off it leaves the rule stranded under
+    whatever takes that space — measured on a Wikipedia page, a footnote
+    marker moved 30.4pt right and its underline did not, ruling straight
+    through the value that replaced it. But most rectangles must NOT move:
+    that same line crosses a column rule 655pt tall and sits on a row
+    background 16.9pt tall, and shifting either would wreck the table.
+    Thinness separates them with a wide margin — the underlines are 0.73pt —
+    so *rule_h* is the tallest rectangle treated as a decoration, and it must
+    sit in one of the *slots* — under a particular run of this line, between
+    that run's baseline and the bottom of its box. One band for the whole
+    line is not precise enough: a superscript stretches the line's band
+    upward far enough to swallow the underline of the line ABOVE, which then
+    gets moved, or reported for not moving.
+
+    A decoration of the FIELD does not move — it resizes. *field* gives the
+    field's own x0, x1, size and new_x1. A rule matching the field at both
+    ends is its underline and takes the field's new width: shortening
+    "contact@1337.ma" to "contact" without narrowing it left a blue rule
+    trailing 46pt into empty space. A rule covering only PART of the field —
+    a link inside a longer run, which is 4 of 8 sampled fields on a Wikipedia
+    page — cannot be resized faithfully, because which characters it belongs
+    to is not recoverable; it is clamped so that it never extends past the
+    field's text, which is the property real documents have. Measured across
+    129 thin rules in four untouched documents, the worst overhang past the
+    text above was 0.37pt.
+
+    Returns the number of items shifted, or None if reflow isn't safe here.
     """
     if abs(dx) < 0.01:
         return 0
@@ -1515,13 +1703,15 @@ def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
             pos = obj["positions"]
             if pos is None:
                 # Where this object draws cannot be worked out from its
-                # operators (a T* with no leading ever set). Its origin being
-                # on some other line proves nothing — it could still draw on
-                # the edited one — so there is no sound way to leave it out.
-                # Refuse the whole reflow; the caller turns that into an
-                # honest refusal rather than a half-moved line.
+                # operators (a T* with no leading ever set, or a rotated
+                # matrix). Its origin being on some other line proves
+                # nothing — it could still draw on the edited one — so there
+                # is no sound way to leave it out. Refuse the whole reflow;
+                # the caller turns that into an honest refusal rather than a
+                # half-moved line.
                 return None
-            on_line = [q for q in pos if abs(q[1] - base_y) <= tol]
+            on_line = [q for q in pos
+                       if any(abs(q[1] - by) <= tol for by in base_ys)]
             if not on_line:
                 continue                       # nowhere on the edited line
             after = [q for q in on_line if q[0] >= from_x - tol]
@@ -1533,17 +1723,59 @@ def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
                 # its origin, so it can only be moved as a whole — and moving
                 # it as a whole would move text that must not move.
                 return None
+            if not obj["rigid"] or not obj["x_scale"]:
+                # A second absolute origin inside the object, so rewriting
+                # the first one would leave the rest of it behind; or a
+                # degenerate transform there is no way to write through.
+                return None
             hits.append(obj)
-        if not hits:
+        # Every operand to rewrite, as (byte span, how much to add to it).
+        # The operand lives in the object's own space, which is not the
+        # page's when a cm is in force: a Chrome-printed page is scaled by
+        # .24 and then by 3.06, so a 20pt shift on the page is a 27pt change
+        # to the number in the stream.
+        writes = [(o["x_at"], dx / o["x_scale"]) for o in hits]
+        if slots and rule_h > 0.0:
+            fx0, fx1, fsize, fnew = field if field else (0.0, 0.0, 0.0, 0.0)
+            edge = 0.4 * fsize
+            for r in _stream_rects(data):
+                if r["y1"] - r["y0"] > rule_h or not r["x_scale"]:
+                    continue                 # a background or a border
+                if not any(sx0 - 1.0 <= r["x0"] and r["x1"] <= sx1 + 1.0
+                           and r["y1"] <= sy_base + 0.5 and r["y0"] >= sy_low - 1.5
+                           for sx0, sx1, sy_base, sy_low in slots):
+                    continue                 # not a decoration of this line
+                if field and abs(r["x0"] - fx0) <= edge and abs(r["x1"] - fx1) <= edge:
+                    # The field's own underline: it keeps its left edge and
+                    # takes the field's new width. That is the FIELD's growth,
+                    # not the amount the rest of the line is pushed by — the
+                    # two differ whenever slack was absorbed.
+                    grow = (fnew - fx1) / r["x_scale"]
+                    if float(data[slice(*r["w_at"])]) + grow > 0:
+                        writes.append((r["w_at"], grow))
+                    continue
+                if field and fx0 - 1.0 <= r["x0"] and r["x1"] <= fx1 + 1.0:
+                    # Covers only part of the field. Clamp it so it cannot
+                    # end up ruling empty space, and otherwise leave it be.
+                    if r["x1"] > fnew + 0.5:
+                        cut = (fnew - r["x1"]) / r["x_scale"]
+                        w = float(data[slice(*r["w_at"])])
+                        writes.append((r["w_at"], max(cut, -w)))
+                    continue
+                if r["x0"] < from_x - tol:
+                    # Starts before the field but is not its underline, so it
+                    # spans across; moving it would drag its left end too.
+                    continue
+                writes.append((r["x_at"], dx / r["x_scale"]))
+        if not writes:
             continue
         out = bytearray()
         last = 0
-        for obj in sorted(hits, key=lambda o: o["x_at"][0]):
-            x0, x1 = obj["x_at"]
-            out += data[last:x0] + f"{obj['x'] + dx:.4f}".encode("latin-1")
-            last = x1
-            shifted += 1
+        for (a, b), delta in sorted(writes):
+            out += data[last:a] + f"{float(data[a:b]) + delta:.4f}".encode("latin-1")
+            last = b
         out += data[last:]
+        shifted += len(writes)
         edits.append((st["xref"], bytes(out)))
     for xref, payload in edits:
         doc.update_stream(xref, payload)
@@ -1654,22 +1886,58 @@ def _text_right_limit(page, exclude_bbox=None) -> float:
     return max(right, page_limit)
 
 
-def _line_extent(page, base_y_topdown: float, tol: float = 0.6):
-    """(leftmost x0, rightmost x1) of the text sharing this baseline."""
-    lo, hi = None, None
+def _line_spans(page, target_bbox):
+    """Every text span on the same visual LINE as the field.
+
+    Sharing a baseline is too narrow a test. A superscript sits on a raised
+    baseline of its own yet plainly belongs to the line: on a Wikipedia page
+    the footnote marker after "the Netherlands." is 0.40 em above it, and
+    leaving it out of the line meant reflow moved the sentence after it and
+    left the marker behind — the lengthened value was then drawn straight
+    through it. Widening the baseline tolerance instead is guesswork, because
+    the next line down is only 1.33 em away.
+
+    What separates them is how MUCH of a run's height overlaps the field's,
+    not whether any of it does. Measured as a fraction of the shorter of the
+    two boxes:
+
+        the rest of the sentence, same baseline        1.00
+        a second column, 0.04 em below                 1.00
+        a superscript marker, 0.40 em above            0.75
+        the next line down, 1.06 em away               0.00  (0.03pt)
+
+    A bare overlap test put that last one on the line and reflow moved it,
+    breaking the rule that no other line may move. Half is comfortably
+    between 0.75 and 0.00.
+
+    PyMuPDF's own line grouping is not usable for this. On the attestation
+    fixture it puts ' à ', ', ' and 'Essaouira' in DIFFERENT lines from the
+    date they sit beside, so trusting it would leave the whole line behind.
+    """
+    box = fitz.Rect(target_bbox)
+    out = []
     for blk in page.get_text("dict")["blocks"]:
         for line in blk.get("lines", []):
             for span in line.get("spans", []):
-                if abs(span["origin"][1] - base_y_topdown) > tol:
-                    continue
                 if not span.get("text", "").strip():
                     continue
-                lo = span["bbox"][0] if lo is None else min(lo, span["bbox"][0])
-                hi = span["bbox"][2] if hi is None else max(hi, span["bbox"][2])
-    return lo, hi
+                sb = span["bbox"]
+                ov = min(sb[3], box.y1) - max(sb[1], box.y0)
+                ref = min(sb[3] - sb[1], box.y1 - box.y0)
+                if ref <= 0 or ov < 0.5 * ref:
+                    continue
+                out.append(span)
+    return out
 
 
-def _next_text_x0(page, base_y_topdown: float, target_bbox, tol: float = 0.6):
+def _line_baselines(page, target_bbox, page_h: float):
+    """The distinct baselines, in page coordinates, that this line draws on."""
+    ys = {round(page_h - sp_["origin"][1], 2)
+          for sp_ in _line_spans(page, target_bbox)}
+    return sorted(ys)
+
+
+def _next_text_x0(page, target_bbox):
     """Leftmost x0 of the text that FOLLOWS the field on its own line, or None.
 
     "Follows" is judged from where each run starts, not from where the field
@@ -1688,21 +1956,18 @@ def _next_text_x0(page, base_y_topdown: float, target_bbox, tol: float = 0.6):
     """
     x0 = fitz.Rect(target_bbox).x0
     best = None
-    for blk in page.get_text("dict")["blocks"]:
-        for line in blk.get("lines", []):
-            for span in line.get("spans", []):
-                if abs(span["origin"][1] - base_y_topdown) > tol:
-                    continue
-                if not span.get("text", "").strip():
-                    continue
-                if span["bbox"][0] <= x0 + 0.5:
-                    continue      # the field itself, or text before it
-                best = span["bbox"][0] if best is None else min(best, span["bbox"][0])
+    for span in _line_spans(page, target_bbox):
+        if span["bbox"][0] <= x0 + 0.5:
+            continue              # the field itself, or text before it
+        best = span["bbox"][0] if best is None else min(best, span["bbox"][0])
     return best
 
 
-def _pinned_at(doc, page, base_y: float, x: float, tol: float = 1.5) -> bool:
-    """Is the text at (x, base_y) held there by a positioning operator?
+def _pinned_at(positions, x: float, tol: float = 1.5) -> bool:
+    """Is the text at *x* held there by one of these positioning operators?
+
+    Takes the list from _positions_on_baseline so the engine and its tests
+    judge this the same way, off one scan.
 
     This is the difference between text that must be moved out of the way and
     text that moves itself. Two runs can sit side by side on a line for two
@@ -1721,13 +1986,19 @@ def _pinned_at(doc, page, base_y: float, x: float, tol: float = 1.5) -> bool:
     Assuming the second case for every neighbour refused 11 good edits on a
     LaTeX paper whose following sentence was in the same TJ array and simply
     flowed. Assuming the first case buried the comma after a Word field.
+
+    An EMPTY list is a third case and not this function's to judge: it means
+    the line's geometry could not be read at all, and the caller has to be
+    conservative rather than conclude that nothing is pinned.
     """
-    return any(abs(px - x) <= tol
-               for px in _positions_on_baseline(doc, page, base_y))
+    return any(abs(px - x) <= tol for px in positions)
 
 
-def _positions_on_baseline(doc, page, base_y: float, tol: float = 0.6):
-    """Every x at which a positioning operator places text on this baseline.
+def _positions_on_baseline(doc, page, base_ys, tol: float = 0.6):
+    """Every x at which a positioning operator places text on this LINE.
+
+    *base_ys* is every baseline the line draws on, in page coordinates — a
+    line with a superscript in it has more than one.
 
     Empty means the engine cannot see this line's geometry at all, which is
     not the same as the line having no independently-placed runs on it. A
@@ -1741,7 +2012,7 @@ def _positions_on_baseline(doc, page, base_y: float, tol: float = 0.6):
     for st in _content_streams(doc, page):
         for obj in _text_objects(st["data"]):
             for px, py in (obj["positions"] or ()):
-                if abs(py - base_y) <= tol:
+                if any(abs(py - by) <= tol for by in base_ys):
                     out.append(px)
     return out
 
@@ -2399,8 +2670,25 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     odoc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         right_limit = _text_right_limit(odoc[tpage], target["bbox"])
-        _, line_end_old = _line_extent(odoc[tpage], target["origin"][1])
-        next_x0 = _next_text_x0(odoc[tpage], target["origin"][1], target["bbox"])
+        next_x0 = _next_text_x0(odoc[tpage], target["bbox"])
+        line_ys = _line_baselines(odoc[tpage], target["bbox"], page_h)
+        _lspans = _line_spans(odoc[tpage], target["bbox"])
+        # The width reserved for what follows has to be measured over the
+        # SAME line that reflow will move. Taking it from the exact baseline
+        # while reflow moved every run of the line reserved too little, and a
+        # 237pt replacement pushed two neighbouring runs to x=618 and x=783
+        # on a 595.92pt page — off the paper, and invisible to a check that
+        # reads text back, because glyphs outside the media box are not
+        # extracted at all.
+        line_end_old = max((sp_["bbox"][2] for sp_ in _lspans), default=None)
+        # One slot per run: where a decoration OF THAT RUN may sit, which is
+        # under it — between its baseline and the bottom of its box.
+        line_slots = tuple((sp_["bbox"][0], sp_["bbox"][2],
+                            page_h - sp_["origin"][1], page_h - sp_["bbox"][3])
+                           for sp_ in _lspans)
+        line_rule_h = (max(2.0, 0.12 * (max(x["bbox"][3] for x in _lspans)
+                                        - min(x["bbox"][1] for x in _lspans)))
+                       if _lspans else 0.0)
         # Is the neighbour PINNED where it is, or does it flow with the
         # field? Only a pinned neighbour has to be moved out of the way.
         #
@@ -2420,11 +2708,34 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         # the field's own x — in a LaTeX paper a field is usually a substring
         # of a longer run and has no operator of its own, and demanding one
         # refused 6 sound edits.
-        seen = _positions_on_baseline(odoc, odoc[tpage], base_y_pdf)
+        seen = _positions_on_baseline(odoc, odoc[tpage], line_ys)
         next_pinned = next_x0 is not None and (
-            not seen or any(abs(px - next_x0) <= 1.5 for px in seen))
+            not seen or _pinned_at(seen, next_x0))
     finally:
         odoc.close()
+    # How much the value may grow before anything has to move, and how much
+    # room there is once it does.
+    #
+    # Reserving the full width of everything to the right of the field was
+    # far too pessimistic. On the W-9 the heading "What's New" shares a
+    # visual line with an unrelated paragraph 212pt to its right, and
+    # reserving that paragraph's whole extent left the heading 6pt of room
+    # and refused a 20pt edit that had 212pt of empty space in front of it.
+    #
+    # So a gap is PRESERVED up to two ems and is FREE beyond that. Two ems is
+    # wider than any inter-word or inter-token space a typesetter would
+    # leave, and far narrower than a tab stop or a column gutter, which is
+    # exactly the distinction being drawn. Measured: the space before the
+    # comma after a value on the attestation fixture is 8.08pt at 14.04pt
+    # type — 0.58 em, entirely preserved, as the gap-preservation guarantee
+    # requires; the gutter before that W-9 paragraph is 212.58pt at 12pt type
+    # — 17.7 em, almost all of it free. Where the neighbour is not pinned at
+    # all it flows with the field's own glyph advances, so there is no slack
+    # to spend and every point of growth pushes the line along.
+    _gap_keep = 2.0 * target["size"]
+    slack = 0.0
+    if next_pinned and next_x0 is not None:
+        slack = max(0.0, (next_x0 - old_x1) - _gap_keep)
     trailing = max(0.0, (line_end_old or old_x1) - old_x1)
 
     # When the extent can't be established at all, the overflow check and the
@@ -2438,7 +2749,11 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                             "that the text is cut off entirely, so it can't be fitted on "
                             "this line.")}
     if new_x1 is not None:
-        avail = right_limit - old_x0 - trailing
+        # The value has to end by the margin, and whatever it pushes has to
+        # end there too — after absorbing the slack.
+        avail = min(right_limit,
+                    old_x1 + slack + max(0.0, right_limit - old_x1 - trailing)
+                    ) - old_x0
         base_w = new_x1 - old_x0
         if base_w - avail > 0.05:
             # Spend the elastic levers a typesetter would, in order of how
@@ -2504,10 +2819,15 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
 
     rdoc = fitz.open(stream=edited, filetype="pdf")
     try:
-        if new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
+        # Only the growth that the slack could not absorb has to be pushed.
+        _dx = new_x1 - old_x1 if new_x1 is not None else 0.0
+        _push = _dx - slack if _dx > 0 else _dx
+        if new_x1 is not None and abs(_push) > 0.05:
             reflow_from = min(old_x1, next_x0) if next_x0 is not None else old_x1
-            n = _reflow_same_line(rdoc, rdoc[tpage], base_y_pdf,
-                                  reflow_from, new_x1 - old_x1)
+            n = _reflow_same_line(rdoc, rdoc[tpage], line_ys,
+                                  reflow_from, _push,
+                                  slots=line_slots, rule_h=line_rule_h,
+                                  field=(old_x0, old_x1, target["size"], new_x1))
             if n:
                 reflowed = n
                 edited = rdoc.tobytes(garbage=4, deflate=True)

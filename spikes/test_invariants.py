@@ -39,6 +39,24 @@ INVARIANTS
   I5  a refusal always names a reason
   I6  every visible character of the replacement actually has INK
   I7  an accepted edit never drives a gap on the edited line negative
+  I8  a decoration stays registered with the text it decorates
+  I9  no text that was on the page before the edit disappears from it
+
+  7. Reflow pushed two neighbouring runs off the right edge of the paper, to
+     x=618 and x=783 on a 595.92pt page. I1 could not see it: glyphs outside
+     the media box are not extracted, so the runs simply vanished from the
+     text and the rightmost x it measures went DOWN. I9 catches the class —
+     an edit may move text and may replace text, but text never just
+     disappears.
+
+  6. Reflow moved the text and left its underline behind. A link underline is
+     a filled rectangle, not text, so nothing carried it along: on a
+     Wikipedia page a footnote marker moved 30.4pt right and its rule stayed,
+     ruling straight through the value that took its place. I1-I7 are all
+     blind to it — every one of them looks only at text — and only a
+     rendering showed it. I8 pins text to its own decoration. It must stay
+     narrow: the same line crosses a column rule 655pt tall and a row
+     background 16.9pt tall, and neither of those may move.
 
   5. A longer replacement drew straight over the text beside it. Nothing
      moves it: every run is positioned by its own operator, and PDF's Td is
@@ -99,6 +117,105 @@ def snapshot(pdf, page_no):
                         lines.setdefault(round(s["origin"][1], 1), []).append(
                             (round(s["bbox"][0], 2), round(s["bbox"][2], 2), s["text"]))
         return lines, d[page_no].rect.width
+    finally:
+        d.close()
+
+
+def _decorations(pdf, target_bbox):
+    """{(y0, y1, width): distance from the run it decorates} for every thin
+    rule on the target's line.
+
+    Only thin rules inside the line's own vertical band count as decoration.
+    A taller rectangle is a cell background or a table border and is supposed
+    to stay exactly where it is.
+    """
+    d = fitz.open(stream=pdf, filetype="pdf")
+    try:
+        # Half the shorter box's height, the same measured threshold the
+        # engine uses. A bare overlap test pulled in a run from the NEXT line
+        # (21% of its height), which stretched the band far enough to include
+        # that line's underline — and then reported the engine for leaving
+        # another line's decoration alone, which is exactly what it should do.
+        spans = []
+        for b in d[0].get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                for sp_ in l.get("spans", []):
+                    if not sp_["text"].strip():
+                        continue
+                    ov = (min(sp_["bbox"][3], target_bbox[3])
+                          - max(sp_["bbox"][1], target_bbox[1]))
+                    ref = min(sp_["bbox"][3] - sp_["bbox"][1],
+                              target_bbox[3] - target_bbox[1])
+                    if ref > 0 and ov >= 0.5 * ref:
+                        spans.append(sp_)
+        if not spans:
+            return {}
+        top = min(sp_["bbox"][1] for sp_ in spans)
+        bot = max(sp_["bbox"][3] for sp_ in spans)
+        tall = max(2.0, 0.12 * (bot - top))
+        out = {}
+        for dr in d[0].get_drawings():
+            r = dr["rect"]
+            if not 0 < r.y1 - r.y0 <= tall:
+                continue
+            # A decoration sits under ONE run of the line, between that run's
+            # baseline and the bottom of its box — not merely somewhere in the
+            # line's overall vertical band. The band is stretched by any
+            # superscript far enough to take in the previous line's
+            # underlines, and those then get judged as this line's.
+            if not any(sp_["bbox"][0] - 1.0 <= r.x0 and r.x1 <= sp_["bbox"][2] + 1.0
+                       and r.y0 >= sp_["origin"][1] - 0.5
+                       and r.y1 <= sp_["bbox"][3] + 1.5
+                       for sp_ in spans):
+                continue
+            # Anchor the rule to the run that HORIZONTALLY COVERS it, not to
+            # the nearest run start on its left. A decoration lies under its
+            # own text, and covering is stable across the edit; "nearest to
+            # the left" is not — a run that moved left past a stationary rule
+            # becomes its new nearest neighbour, and the rule gets reported
+            # for moving when it never did. Measured on this page, every real
+            # decoration of a line is covered by a run of that line and every
+            # rule belonging to the line above is covered by none.
+            cover = [sp_["bbox"][0] for sp_ in spans
+                     if sp_["bbox"][0] - 1.0 <= r.x0 and r.x1 <= sp_["bbox"][2] + 1.0
+                     and r.y0 >= sp_["origin"][1] - 0.5
+                     and r.y1 <= sp_["bbox"][3] + 1.5]
+            if not cover:
+                continue
+            out[(round(r.y0, 2), round(r.y1, 2), round(r.x1 - r.x0, 2))] = \
+                round(r.x0 - max(cover), 2)
+        return out
+    finally:
+        d.close()
+
+
+def _overhang(pdf):
+    """(worst overhang, the run it belongs to) for any thin rule that reaches
+    past the right edge of the text sitting directly above it, or None.
+
+    This is the property a well-formed document has and a botched edit breaks:
+    an underline ends where its word ends. It catches what registration
+    cannot — a rule whose text was shortened out from under it — and needed no
+    threshold guessing, because the untouched documents establish the floor.
+    """
+    d = fitz.open(stream=pdf, filetype="pdf")
+    try:
+        runs = [x for b in d[0].get_text("dict")["blocks"] for l in b.get("lines", [])
+                for x in l.get("spans", []) if x["text"].strip()]
+        worst = None
+        for dr in d[0].get_drawings():
+            r = dr["rect"]
+            if not 0 < r.y1 - r.y0 <= 2.0:
+                continue
+            above = [x for x in runs
+                     if x["bbox"][0] - 1 <= r.x1 and r.x0 <= x["bbox"][2] + 1
+                     and r.y0 >= x["origin"][1] - 0.5 and r.y1 <= x["bbox"][3] + 2.5]
+            if not above:
+                continue
+            over = r.x1 - max(x["bbox"][2] for x in above)
+            if worst is None or over > worst[0]:
+                worst = (over, max(above, key=lambda x: x["bbox"][2])["text"][:20])
+        return worst
     finally:
         d.close()
 
@@ -250,9 +367,70 @@ def stress(doc_name, data, n_spans=8, seed=7):
                             f"{_after:.2f}pt — the edit drew over its neighbour")
                         break
 
+            # I8 — decorations. A rule keeps its y and its width across an
+            # edit, so (y0, y1, width) identifies the same rule afterwards,
+            # and what must not change is its offset from the run it sits
+            # under.
+            _r_before = _decorations(data, s["bbox"])
+            _r_after = _decorations(out, s["bbox"])
+            # ...and no rule may end up ruling empty space. Calibrated on
+            # the untouched documents: across 129 thin rules the worst
+            # overhang past the text above one is 0.37pt, so anything past
+            # 1.5pt is something this edit did.
+            _over = _overhang(out)
+            if _over and _over[0] > 1.5:
+                VIOLATIONS.append(
+                    f"[{doc_name}] {label} {old[:20]!r}: I8 a rule now extends "
+                    f"{_over[0]:.2f}pt past the text above it ({_over[1]!r})")
+            for _key, _off in _r_before.items():
+                if _key not in _r_after:
+                    continue
+                if abs(_r_after[_key] - _off) > 0.5:
+                    VIOLATIONS.append(
+                        f"[{doc_name}] {label} {old[:20]!r}: I8 a rule at "
+                        f"y={_key[0]} sat {_off:.2f}pt from the run it "
+                        f"decorates and now sits {_r_after[_key]:.2f}pt away "
+                        f"— text and decoration are out of register")
+                    break
+
+            # I9 — nothing vanishes. Checked before I4 because a run pushed
+            # off the paper looks to every other check like a line that
+            # merely changed.
+            _before_texts = [t for items in base_lines.values() for _, _, t in items
+                             if len(t.strip()) >= 3]
+            _after_all = sp._norm(" ".join(
+                t for items in new_lines.values() for _, _, t in items))
+            for _t in _before_texts:
+                if _t.strip() == old.strip():
+                    continue                  # the field itself was replaced
+                if sp._norm(_t) and sp._norm(_t) not in _after_all:
+                    VIOLATIONS.append(
+                        f"[{doc_name}] {label} {old[:20]!r}: I9 {_t.strip()[:24]!r} "
+                        f"was on the page and is not any more")
+                    break
+
+            # I4 — no UNRELATED line moves. A superscript has a raised
+            # baseline of its own and belongs to the edited line, so the
+            # baselines of that whole line are excluded, judged the same way
+            # the engine judges it: a box overlapping the field's by at
+            # least half its height is part of the line.
+            _tb = s["bbox"]
+            _own = set()
+            _dd = fitz.open(stream=data, filetype="pdf")
+            for _b in _dd[0].get_text("dict")["blocks"]:
+                for _l in _b.get("lines", []):
+                    for _sp in _l.get("spans", []):
+                        if not _sp["text"].strip():
+                            continue
+                        _ov = min(_sp["bbox"][3], _tb[3]) - max(_sp["bbox"][1], _tb[1])
+                        _ref = min(_sp["bbox"][3] - _sp["bbox"][1], _tb[3] - _tb[1])
+                        if _ref > 0 and _ov >= 0.5 * _ref:
+                            _own.add(round(_sp["origin"][1], 1))
+            _dd.close()
+
             edited_line = round(s["origin"][1], 1)
             for ln, items in base_lines.items():                           # I4
-                if abs(ln - edited_line) < 0.6:
+                if abs(ln - edited_line) < 0.6 or ln in _own:
                     continue
                 if new_lines.get(ln) != items:
                     VIOLATIONS.append(f"[{doc_name}] {label} {old[:20]!r}: I4 line "
@@ -287,7 +465,7 @@ print()
 check("no invariant was violated on any document",
       not VIOLATIONS,
       "\n        " + "\n        ".join(VIOLATIONS[:12]))
-print(f"       {n_local + n_remote} edit attempts checked against I1-I7")
+print(f"       {n_local + n_remote} edit attempts checked against I1-I9")
 
 print()
 print("=" * 70)

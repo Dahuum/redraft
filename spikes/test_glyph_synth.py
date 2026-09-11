@@ -605,9 +605,12 @@ check("T* is resolved through the leading TD sets implicitly",
       [q[1] for q in next(sp._text_objects(
           b"BT /F1 10 Tf 72 700 Td 0 -14 TD [(a)] TJ T* [(b)] TJ ET"
       ))["positions"]] == [700.0, 686.0, 672.0])
-check("a rotated Tm is skipped rather than guessed at",
-      not list(sp._text_objects(
-          b"BT /F1 10 Tf 0 1 -1 0 72 700 Tm [(x)] TJ ET")))
+# Rotated text is reported as indeterminate rather than dropped. Dropping it
+# would make it invisible to the very guards that exist to be conservative
+# about what cannot be reasoned over; None makes every caller refuse.
+check("a rotated Tm is reported as indeterminate, not silently dropped",
+      next(sp._text_objects(
+          b"BT /F1 10 Tf 0 1 -1 0 72 700 Tm [(x)] TJ ET"))["positions"] is None)
 check("an unresolvable T* makes the positions unknown, not wrong",
       next(sp._text_objects(
           b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ T* [(b)] TJ ET"
@@ -665,7 +668,7 @@ check("and that refusal outranks the generic width verdict",
 # document's own 13.98pt overlap became 57.12pt once the value grew.
 _d = fitz.open(FIXTURE)
 _bp = next(x for x in sp._spans(_d[0]) if x["text"].strip() == "Essaouira")
-_nx = sp._next_text_x0(_d[0], _bp["origin"][1], _bp["bbox"])
+_nx = sp._next_text_x0(_d[0], _bp["bbox"])
 _d.close()
 check("following text is found even when it starts before the field ends",
       _nx is not None and _nx < _bp["bbox"][2],
@@ -718,12 +721,69 @@ check("a shorter value in an already-overlapping field is still accepted",
 # buried the comma after this document's own fields.
 _d = fitz.open(FIXTURE)
 _ph = _d[0].rect.height
+_seen = sp._positions_on_baseline(
+    _d, _d[0], sp._line_baselines(_d[0], _bp["bbox"], _ph))
 check("the comma after a Word field is pinned by its own operator",
-      sp._pinned_at(_d, _d[0], _ph - _bp["origin"][1], _nx),
-      f"next_x0={_nx}")
+      sp._pinned_at(_seen, _nx), f"next_x0={_nx} positions={_seen}")
 check("and a position nothing is drawn at is not reported as pinned",
-      not sp._pinned_at(_d, _d[0], _ph - _bp["origin"][1], _nx + 40.0))
+      not sp._pinned_at(_seen, _nx + 40.0))
 _d.close()
+# A content stream need not be written in page coordinates. Headless Chrome
+# wraps the page in "q .24 0 0 -.24 0 841.92 cm" and nests further scales
+# inside it, so reading operands as page coordinates found NOTHING on any
+# baseline and left reflow and the fitting levers with nothing to act on.
+_o = next(sp._text_objects(
+    b"q .24 0 0 -.24 0 841.92 cm q 3.0588134 0 0 3.0588134 150 150 cm "
+    b"BT /F1 10 Tf 1 0 0 1 10 792 Tm [(x)] TJ ET Q Q"))
+# Composed: a = .24*3.0588134 = .734115, e = 150*.24 = 36,
+#           d = -.24*3.0588134,           f = -150*.24 + 841.92 = 805.92
+# so x = 10*.734115 + 36 = 43.34 and y = 805.92 - 792*.734115 = 224.50.
+check("a nested CTM is composed into page coordinates",
+      abs(_o["x"] - 43.34) < 0.02 and abs(_o["y"] - 224.50) < 0.02,
+      f"x={_o['x']:.2f} y={_o['y']:.2f}")
+check("and it reports how much of the page one operand unit buys",
+      abs(_o["x_scale"] - 0.7341) < 0.001, f"{_o['x_scale']}")
+check("q/Q restores the transform it saved",
+      abs(next(sp._text_objects(
+          b"q 4 0 0 4 0 0 cm Q BT /F1 10 Tf 1 0 0 1 7 9 Tm [(x)] TJ ET"
+      ))["x"] - 7.0) < 1e-6)
+# A PDF string may contain any bytes at all, so text that happens to read
+# like an operator is a legal thing to draw — and a scan of the raw stream
+# finds it and believes it.
+_o = next(sp._text_objects(
+    b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(1 0 0 1 500 500 Tm)] TJ ET"))
+check("an operator inside a string literal is not mistaken for one",
+      _o["positions"] == [(72.0, 700.0)] and _o["rigid"], f"{_o['positions']}")
+check("nor is one inside a hex string",
+      next(sp._text_objects(b"BT /F1 10 Tf 1 0 0 1 72 700 Tm <0051> Tj ET"
+                            ))["positions"] == [(72.0, 700.0)])
+check("an escaped paren does not end the string early",
+      next(sp._text_objects(
+          rb"BT /F1 10 Tf 1 0 0 1 72 700 Tm (a\) 9 9 Td b) Tj ET"
+      ))["positions"] == [(72.0, 700.0)])
+# An object with a SECOND absolute origin cannot be moved by rewriting one
+# number: the later Tm would hold its own text exactly where it is.
+check("one absolute origin means the object moves as a whole",
+      next(sp._text_objects(
+          b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ 0 -12 Td [(b)] TJ ET"
+      ))["rigid"])
+check("a second Tm means it does not",
+      not next(sp._text_objects(
+          b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ 1 0 0 1 72 688 Tm [(b)] TJ ET"
+      ))["rigid"])
+# Reflow has to move a link underline with the text it underlines, so
+# rectangles come out of the same walk, in the same page coordinates.
+_r = next(sp._stream_rects(
+    b"q .24 0 0 -.24 0 841.92 cm q 3.0588134 0 0 3.0588134 150 150 cm "
+    b"83 843 21 1 re f Q Q"))
+# x0 = 83*.734115 + 36 = 96.93, width = 21*.734115 = 15.42
+check("a rectangle is transformed into page coordinates too",
+      abs(_r["x0"] - 96.93) < 0.02 and abs(_r["x1"] - _r["x0"] - 15.42) < 0.02,
+      f"x0={_r['x0']:.2f} w={_r['x1']-_r['x0']:.2f}")
+check("and it carries the same scale, so one number moves it",
+      abs(_r["x_scale"] - 0.7341) < 0.001, f"{_r['x_scale']}")
+check("a rectangle inside a string literal is not one",
+      not list(sp._stream_rects(b"BT /F1 10 Tf 1 0 0 1 1 1 Tm (0 0 9 9 re) Tj ET")))
 
 print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
