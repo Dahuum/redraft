@@ -914,6 +914,9 @@ _REASON_MSG = {
                             "switch fonts mid-sentence for a character its first font lacks, and this "
                             "engine edits text within a single font at a time. Editing it would mean "
                             "coordinating a splice across two font resources at once."),
+    "cannot_reflow": ("This value is longer than the one it replaces, and the text after it "
+                      "on the same line is positioned in a way that can't be moved to make "
+                      "room — so it can't be lengthened here without drawing over that text."),
     "no_content_stream": "This page has no content stream.",
     "not_found": "Couldn't find that text in the document.",
     "unmappable": "Couldn't map every character to a glyph (complex/shaped script?).",
@@ -1356,12 +1359,125 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
     return result["gid"], None
 
 
-_TM_RE = re.compile(
-    rb"(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+Tm")
-# Operators that move the pen WITHIN a text object. A block containing one of
-# these draws at more than one position, so shifting its Tm would drag every
-# one of them — including lines on other baselines.
-_MULTIPOS_RE = re.compile(rb"(?:^|[\s\]>)])(?:Td|TD|T\*|'|\")(?=[\s/\[(<]|$)")
+# Every operator that can position text inside a BT..ET object. Matching ALL
+# of them matters: the origin of a text object is set by whichever comes
+# first, and it is NOT always Tm.
+#
+# This was originally written to understand Tm only, on the reasoning that an
+# absolute text matrix is how a generator pins a run to the page. That is true
+# of LaTeX and of the synthetic fixture this engine was first built against —
+# and false of Microsoft Word, which emits one text object per run in the form
+#
+#     BT /F4 14.04 Tf 123.62 547.39 TD [(Sara Idrissi)] TJ ET
+#
+# with no Tm anywhere on the page. Since the text matrix is the identity at
+# BT, that leading `tx ty TD` is just as absolute as a Tm would be. Reading
+# only Tm therefore found NOTHING to work with on an Office document, and
+# both same-line reflow and the three elastic fitting levers degraded to
+# silent no-ops: a longer replacement drew straight over the comma that
+# followed it (65.8pt of overrun on the attestation fixture), and a value
+# that needed a little tightening to fit was refused as unfittable instead.
+_POSOP_RE = re.compile(
+    rb"(?:^|[\s\]>)])(?:"
+    rb"(?P<tm>(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+"
+    rb"(?P<tmx>-?[\d.]+)\s+(?P<tmy>-?[\d.]+)\s+Tm)"
+    rb"|(?P<td>(?P<tdx>-?[\d.]+)\s+(?P<tdy>-?[\d.]+)\s+(?P<tdop>Td|TD))"
+    rb"|(?P<tl>(?P<tlv>-?[\d.]+)\s+TL)"
+    rb"|(?P<nl>T\*|'|\")"
+    rb")(?=[\s/\[(<]|$)")
+
+_BTET_RE = re.compile(rb"(?:^|[\s\]>)])(BT|ET)(?=[\s/\[(<]|$)")
+
+
+def _text_objects(data: bytes):
+    """Every BT..ET text object in *data*, with EVERY baseline it draws on.
+
+    Yields dicts with:
+      bt, et      byte offsets of the object's BT and ET
+      x, y        the origin of its first text, in page space
+      x_at        (start, end) byte span of that origin's x operand, so a
+                  caller can move the object by rewriting one number
+      after_pos   byte offset just past the first positioning operator, where
+                  text-state operators may be inserted
+      positions   [(x, y)] for every position the pen is set to, or None when
+                  that cannot be determined from the operators alone
+
+    Objects that position nothing, or whose first positioning operator is a
+    rotated/skewed Tm, are skipped: no caller has anything to do with them.
+
+    WHY IT WALKS THE WHOLE OBJECT
+    -----------------------------
+    Reading only the object's first origin is not enough. A text object may
+    set the pen many times — pdfTeX emits one object per paragraph with a Td
+    before each line — so an object whose FIRST origin is on some other line
+    can still draw on the line being edited. Missing that would let reflow
+    move half of a line and leave the rest behind. Walking the positioning
+    operators in order gives every baseline the object touches, which is both
+    safer than the first origin alone and more capable: an object all of whose
+    positions sit on the edited line, past the field, can be moved rigidly by
+    shifting only its first origin, because every later Td is RELATIVE to it.
+    """
+    stack = []
+    for m in _BTET_RE.finditer(data):
+        if m.group(1) == b"BT":
+            stack.append(m.end())
+            continue
+        if not stack:
+            continue
+        bt, et = stack.pop(), m.start(1)
+        first = None
+        pen = None            # current line-matrix translation
+        leading = None        # TL, needed to resolve T* / ' / "
+        positions = []
+        for pm in _POSOP_RE.finditer(data, bt, et):
+            if pm.group("tl"):
+                try:
+                    leading = float(pm.group("tlv"))
+                except ValueError:
+                    leading = None
+                continue
+            if pm.group("tm"):
+                try:
+                    b, c = float(pm.group(3)), float(pm.group(4))
+                    x, y = float(pm.group("tmx")), float(pm.group("tmy"))
+                except ValueError:
+                    positions = None
+                    break
+                if abs(b) > 1e-6 or abs(c) > 1e-6:
+                    positions = None      # rotated/skewed: not our business
+                    break
+                pen = (x, y)
+                if first is None:
+                    first = {"x": x, "y": y, "x_at": pm.span("tmx"),
+                             "after_pos": pm.end("tm")}
+            elif pm.group("td"):
+                try:
+                    tx, ty = float(pm.group("tdx")), float(pm.group("tdy"))
+                except ValueError:
+                    positions = None
+                    break
+                if pm.group("tdop") == b"TD":
+                    leading = -ty
+                if pen is None:
+                    # The text matrix is the identity at BT, so a LEADING
+                    # Td/TD carries the page-space origin itself. Word writes
+                    # every run this way and emits no Tm at all.
+                    pen = (tx, ty)
+                    first = {"x": tx, "y": ty, "x_at": pm.span("tdx"),
+                             "after_pos": pm.end("td")}
+                else:
+                    pen = (pen[0] + tx, pen[1] + ty)
+            else:                          # T* / ' / "
+                if pen is None or leading is None:
+                    positions = None
+                    break
+                pen = (pen[0], pen[1] - leading)
+            if positions is not None:
+                positions.append(pen)
+        if first is None:
+            continue
+        first.update(bt=bt, et=et, positions=positions)
+        yield first
 
 
 def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
@@ -1370,77 +1486,68 @@ def _reflow_same_line(doc, page, base_y: float, from_x: float, dx: float,
 
     Replacing a field with longer text makes it run into whatever came after
     it — on the attestation fixture the name overran the comma that follows
-    it by 66pt, because each span is positioned by its own ABSOLUTE text
-    matrix and therefore does not move when the text before it grows.
+    it by 66pt, because each run is positioned by its own ABSOLUTE origin and
+    therefore does not move when the text before it grows.
 
     A word processor would push that comma along, and so does this: for every
     text object on the same baseline whose origin is at or right of the edited
-    field's original end, the x translation of its Tm is increased by *dx*.
-    Nothing else about those objects changes — same font, same size, same
-    string, same y — so the gaps between them are preserved exactly.
+    field's original end, the x of its origin is increased by *dx*. Nothing
+    else about those objects changes — same font, same size, same string, same
+    y — so the gaps between them are preserved exactly.
 
-    Refuses (returns None) rather than guessing when any affected block
-    positions text more than once (a Td/TD/T*/quote inside the block), since
-    shifting that block's matrix would move text on other lines too.
+    Refuses (returns None) rather than guessing whenever moving an object
+    would move text that must not move: an object that draws both on this
+    line and on another, or both before and after the field, can only be
+    moved as a whole, because its later Td offsets are relative to its
+    origin. It also refuses if ANY object on the page positions text in a way
+    these operators cannot resolve — measured across four real documents that
+    is 1 text object in 819, and the alternative is a silently torn line.
 
-    Returns the number of runs shifted, or None if reflow isn't safe here.
+    Returns the number of objects shifted, or None if reflow isn't safe here.
     """
     if abs(dx) < 0.01:
         return 0
     edits, shifted = [], 0
     for st in _content_streams(doc, page):
         data = st["data"]
+        hits = []
+        for obj in _text_objects(data):
+            pos = obj["positions"]
+            if pos is None:
+                # Where this object draws cannot be worked out from its
+                # operators (a T* with no leading ever set). Its origin being
+                # on some other line proves nothing — it could still draw on
+                # the edited one — so there is no sound way to leave it out.
+                # Refuse the whole reflow; the caller turns that into an
+                # honest refusal rather than a half-moved line.
+                return None
+            on_line = [q for q in pos if abs(q[1] - base_y) <= tol]
+            if not on_line:
+                continue                       # nowhere on the edited line
+            after = [q for q in on_line if q[0] >= from_x - tol]
+            if not after:
+                continue                       # entirely left of the field
+            if len(after) != len(pos):
+                # Either the object also draws left of the field, or it also
+                # draws on another line. Its later Td offsets are RELATIVE to
+                # its origin, so it can only be moved as a whole — and moving
+                # it as a whole would move text that must not move.
+                return None
+            hits.append(obj)
+        if not hits:
+            continue
         out = bytearray()
         last = 0
-        changed = False
-        for m in _TM_RE.finditer(data):
-            try:
-                a, b, c, d, e, f = (float(m.group(i)) for i in range(1, 7))
-            except ValueError:
-                continue
-            if abs(b) > 1e-6 or abs(c) > 1e-6:
-                continue          # rotated/skewed text: not this pass's business
-            if abs(f - base_y) > tol or e < from_x - tol:
-                continue
-            bt = data.rfind(b"BT", 0, m.start())
-            et = data.find(b"ET", m.end())
-            if bt == -1 or et == -1:
-                return None
-            if _MULTIPOS_RE.search(data[bt:et]):
-                return None       # block draws at several positions — refuse
-            new_tm = (f"{a:g} {b:g} {c:g} {d:g} {e + dx:.4f} {f:g} Tm").encode("latin-1")
-            out += data[last:m.start()] + new_tm
-            last = m.end()
-            changed = True
+        for obj in sorted(hits, key=lambda o: o["x_at"][0]):
+            x0, x1 = obj["x_at"]
+            out += data[last:x0] + f"{obj['x'] + dx:.4f}".encode("latin-1")
+            last = x1
             shifted += 1
-        if changed:
-            out += data[last:]
-            edits.append((st["xref"], bytes(out)))
+        out += data[last:]
+        edits.append((st["xref"], bytes(out)))
     for xref, payload in edits:
         doc.update_stream(xref, payload)
     return shifted
-
-
-def _tm_origin_before(doc, page, needle: bytes):
-    """(x, y) of the absolute Tm that positions the run containing *needle*,
-    or None. Used to learn the edited field's own baseline so reflow can tell
-    which following runs are on the same line."""
-    for st in _content_streams(doc, page):
-        data = st["data"]
-        idx = data.find(needle)
-        if idx < 0:
-            continue
-        best = None
-        for m in _TM_RE.finditer(data, 0, idx):
-            best = m
-        if best is None:
-            continue
-        try:
-            e, f = float(best.group(5)), float(best.group(6))
-        except ValueError:
-            return None
-        return (e, f)
-    return None
 
 
 # How much width may be reclaimed before an edit is refused as not fitting,
@@ -1482,9 +1589,10 @@ _REFUSAL_RANK = {
     "kerning_split_within_run": 90,
     "ragged_multirun_boundary": 85,
     "spans_multiple_streams": 80,
-    # Names a specific, checked structural fact about THIS span, so it
-    # outranks the generic width verdict.
+    # Both of these name a specific, checked structural fact about THIS span,
+    # so they outrank the generic width verdict.
     "spans_multiple_fonts": 79,
+    "cannot_reflow": 79,
     "would_overflow": 78,
     "missing_glyph": 75,
     "extend": 70,
@@ -1561,6 +1669,83 @@ def _line_extent(page, base_y_topdown: float, tol: float = 0.6):
     return lo, hi
 
 
+def _next_text_x0(page, base_y_topdown: float, target_bbox, tol: float = 0.6):
+    """Leftmost x0 of the text that FOLLOWS the field on its own line, or None.
+
+    "Follows" is judged from where each run starts, not from where the field
+    ends, because those are not the same thing. On the attestation fixture the
+    comma after the birthplace is positioned at x=247.97 while the birthplace
+    value itself extends to x=262.0 — the comma is drawn over the tail of the
+    value, in the original document, before any edit. Measuring from the
+    field's END therefore concluded that nothing followed it and left the
+    comma behind, and lengthening the value buried it: 13.98pt of pre-existing
+    overlap became 57.12pt.
+
+    Conversely the line's right EXTENT is not the answer either. Using it
+    treated any line with text somewhere to the right as an obstruction, and
+    refused 18 otherwise-good edits on a LaTeX paper whose following text was
+    far enough away that the longer value never reached it.
+    """
+    x0 = fitz.Rect(target_bbox).x0
+    best = None
+    for blk in page.get_text("dict")["blocks"]:
+        for line in blk.get("lines", []):
+            for span in line.get("spans", []):
+                if abs(span["origin"][1] - base_y_topdown) > tol:
+                    continue
+                if not span.get("text", "").strip():
+                    continue
+                if span["bbox"][0] <= x0 + 0.5:
+                    continue      # the field itself, or text before it
+                best = span["bbox"][0] if best is None else min(best, span["bbox"][0])
+    return best
+
+
+def _pinned_at(doc, page, base_y: float, x: float, tol: float = 1.5) -> bool:
+    """Is the text at (x, base_y) held there by a positioning operator?
+
+    This is the difference between text that must be moved out of the way and
+    text that moves itself. Two runs can sit side by side on a line for two
+    quite different reasons:
+
+      * one text object shows them in the same string, or in one TJ array
+        with a small kern between them — the second run's place comes from
+        the glyph advances of the first, so lengthening the first CARRIES the
+        second along, and there is nothing to move;
+      * or the second run has its own Tm/Td — an absolute place on the page,
+        or an offset from the object's origin, and PDF's Td is measured from
+        the previous LINE's matrix rather than from the pen, so glyph
+        advances never affect it. That run stays exactly where it is however
+        much the text before it grows, and it has to be shifted explicitly.
+
+    Assuming the second case for every neighbour refused 11 good edits on a
+    LaTeX paper whose following sentence was in the same TJ array and simply
+    flowed. Assuming the first case buried the comma after a Word field.
+    """
+    return any(abs(px - x) <= tol
+               for px in _positions_on_baseline(doc, page, base_y))
+
+
+def _positions_on_baseline(doc, page, base_y: float, tol: float = 0.6):
+    """Every x at which a positioning operator places text on this baseline.
+
+    Empty means the engine cannot see this line's geometry at all, which is
+    not the same as the line having no independently-placed runs on it. A
+    page's content stream need not be written in page coordinates: headless
+    Chrome wraps the whole page in ".24 0 0 -.24 0 841.92 cm" and nests
+    further scales inside it, so nothing in the stream matches a coordinate
+    read back from the page. Callers must treat "nothing here" as "cannot
+    tell", and be conservative.
+    """
+    out = []
+    for st in _content_streams(doc, page):
+        for obj in _text_objects(st["data"]):
+            for px, py in (obj["positions"] or ()):
+                if abs(py - base_y) <= tol:
+                    out.append(px)
+    return out
+
+
 def _apply_text_state(doc, page, base_y_pdf: float, at_x: float,
                       tc: float = 0.0, tw: float = 0.0, tz: float = 100.0,
                       tol: float = 0.6) -> bool:
@@ -1576,18 +1761,17 @@ def _apply_text_state(doc, page, base_y_pdf: float, at_x: float,
         return True
     for st in _content_streams(doc, page):
         data = st["data"]
-        for m in _TM_RE.finditer(data):
-            try:
-                b, c, e, f = (float(m.group(i)) for i in (2, 3, 5, 6))
-            except ValueError:
+        for obj in _text_objects(data):
+            if abs(obj["y"] - base_y_pdf) > tol or abs(obj["x"] - at_x) > tol:
                 continue
-            if abs(b) > 1e-6 or abs(c) > 1e-6:
+            pos = obj["positions"]
+            if pos is None or any(abs(q[1] - base_y_pdf) > tol for q in pos):
+                # Tc/Tw/Tz stay in force to the end of the text object, so
+                # setting them on an object that goes on to draw other lines
+                # would re-space those lines too. Decline; the caller turns
+                # that into an honest refusal rather than a silent overrun.
                 continue
-            if abs(f - base_y_pdf) > tol or abs(e - at_x) > tol:
-                continue
-            et = data.find(b"ET", m.end())
-            if et == -1:
-                return False
+            at, et = obj["after_pos"], obj["et"]
             setup, reset = [], []
             if abs(tc) > 1e-9:
                 setup.append(f"{tc:.4f} Tc")
@@ -1598,8 +1782,8 @@ def _apply_text_state(doc, page, base_y_pdf: float, at_x: float,
             if abs(tz - 100.0) > 1e-9:
                 setup.append(f"{tz:.3f} Tz")
                 reset.append("100 Tz")
-            payload = (data[:m.end()] + (" " + " ".join(setup)).encode("latin-1")
-                       + data[m.end():et] + (" " + " ".join(reset) + " ").encode("latin-1")
+            payload = (data[:at] + (" " + " ".join(setup)).encode("latin-1")
+                       + data[at:et] + (" " + " ".join(reset) + " ").encode("latin-1")
                        + data[et:])
             doc.update_stream(st["xref"], payload)
             return True
@@ -2216,6 +2400,29 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     try:
         right_limit = _text_right_limit(odoc[tpage], target["bbox"])
         _, line_end_old = _line_extent(odoc[tpage], target["origin"][1])
+        next_x0 = _next_text_x0(odoc[tpage], target["origin"][1], target["bbox"])
+        # Is the neighbour PINNED where it is, or does it flow with the
+        # field? Only a pinned neighbour has to be moved out of the way.
+        #
+        # Finding no operator at the neighbour's x has two quite different
+        # causes, and conflating them is wrong in both directions. It can
+        # mean the neighbour is shown in the same string or TJ array as the
+        # field, so the field's own glyph advances carry it along and there
+        # is nothing to move. Or it can mean this page's coordinates cannot
+        # be read at all — headless Chrome wraps the page in
+        # ".24 0 0 -.24 0 841.92 cm" with further scales nested inside, so
+        # nothing in its stream matches a coordinate read off the page.
+        #
+        # Whether ANY operator places text on this baseline separates them.
+        # None at all means "cannot tell", and then the neighbour is assumed
+        # pinned: accepting instead drew 14.8pt over the sentence after a
+        # field on a Chrome-printed page. It deliberately does not ask about
+        # the field's own x — in a LaTeX paper a field is usually a substring
+        # of a longer run and has no operator of its own, and demanding one
+        # refused 6 sound edits.
+        seen = _positions_on_baseline(odoc, odoc[tpage], base_y_pdf)
+        next_pinned = next_x0 is not None and (
+            not seen or any(abs(px - next_x0) <= 1.5 for px in seen))
     finally:
         odoc.close()
     trailing = max(0.0, (line_end_old or old_x1) - old_x1)
@@ -2266,8 +2473,9 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                             f"here without changing the text or its size.")}
             tdoc = fitz.open(stream=edited, filetype="pdf")
             try:
-                if _apply_text_state(tdoc, tdoc[tpage], base_y_pdf, old_x0,
-                                     plan["tc"], plan["tw"], plan["tz"]):
+                applied = _apply_text_state(tdoc, tdoc[tpage], base_y_pdf, old_x0,
+                                            plan["tc"], plan["tw"], plan["tz"])
+                if applied:
                     edited = tdoc.tobytes(garbage=4, deflate=True)
                     tracking = plan["tc"]
                     wordspace = plan["tw"]
@@ -2277,12 +2485,29 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                                             + plan["tw"] * n_sp)
             finally:
                 tdoc.close()
+            if not applied:
+                # The plan says this only fits once tightened, and the
+                # tightening could not be written — so it does NOT fit.
+                # Carrying on regardless is the worse answer of the two: it
+                # accepts the edit and draws the over-wide run straight over
+                # whatever follows it. Refuse with the same arithmetic, and
+                # say that the width is all that is missing.
+                return {"ok": False, "reason": "would_overflow",
+                        "needed_pt": round(plan["need"], 2),
+                        "recoverable_pt": 0.0,
+                        "short_by_pt": round(plan["need"], 2),
+                        "message": (
+                            f"The replacement is {plan['need']:.0f}pt too wide for this "
+                            f"line, and this text object's layout can't be tightened to "
+                            f"absorb it — it can't be fitted here without changing the "
+                            f"text or its size.")}
 
     rdoc = fitz.open(stream=edited, filetype="pdf")
     try:
         if new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
+            reflow_from = min(old_x1, next_x0) if next_x0 is not None else old_x1
             n = _reflow_same_line(rdoc, rdoc[tpage], base_y_pdf,
-                                  old_x1, new_x1 - old_x1)
+                                  reflow_from, new_x1 - old_x1)
             if n:
                 reflowed = n
                 edited = rdoc.tobytes(garbage=4, deflate=True)
@@ -2290,6 +2515,24 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         reflowed = 0   # reason to lose an otherwise-good edit
     finally:
         rdoc.close()
+
+    if (next_pinned and new_x1 is not None
+            and new_x1 > next_x0 + 0.05 and new_x1 > old_x1 + 0.05
+            and not reflowed):
+        # The value now reaches into text that is PINNED where it is by its
+        # own positioning operator, and none of it could be moved. Fitting
+        # reserved WIDTH for that text but cannot reserve its POSITION, so
+        # carrying on would draw the new value straight through it — the
+        # silent overrun this engine exists to prevent. Refuse instead.
+        #
+        # Every clause of the condition earns its place. `next_pinned` keeps
+        # text that merely flows with the field out of it. `> old_x1` keeps a
+        # pre-existing overlap out of it: this document already draws the
+        # birthplace field over the comma after it, and a replacement no
+        # wider than the original cannot make that worse.
+        return {"ok": False, "reason": "cannot_reflow",
+                "needed_pt": round(new_x1 - next_x0, 2),
+                "message": _REASON_MSG["cannot_reflow"]}
 
     diff = {"outside": None, "inside": None}
     if verify:

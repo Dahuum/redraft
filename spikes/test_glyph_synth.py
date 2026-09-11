@@ -563,6 +563,169 @@ check("and order doesn't matter",
                          )["reason"] == "kerning_split_within_run")
 
 print()
+print("=== 4k) a text object's origin is read whichever operator sets it ===")
+# Reflow and the three elastic fitting levers both need to find the operator
+# that pins a run to the page. Both once looked for Tm only, which is how
+# LaTeX and the original synthetic fixture write it — and is NOT how Microsoft
+# Word writes it. Word emits one text object per run positioned by a leading
+# TD and no Tm anywhere on the page, so on a real Office document BOTH
+# features silently found nothing to act on: a longer replacement drew
+# straight over the comma after it, and a value needing a little tightening
+# was refused as unfittable.
+_objs = list(sp._text_objects(
+    b"BT /F4 14.04 Tf 123.62 547.39 TD [(Sara Idrissi)] TJ ET"))
+check("a leading TD is read as the object's absolute origin",
+      len(_objs) == 1 and abs(_objs[0]["x"] - 123.62) < 1e-6
+      and abs(_objs[0]["y"] - 547.39) < 1e-6, f"{_objs}")
+check("and it is reported as drawing at exactly one position",
+      len(_objs) == 1 and _objs[0]["positions"] == [(123.62, 547.39)], f"{_objs}")
+_objs = list(sp._text_objects(
+    b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(hello)] TJ ET"))
+check("an axis-aligned Tm is still read as the origin",
+      len(_objs) == 1 and abs(_objs[0]["x"] - 72.0) < 1e-6
+      and abs(_objs[0]["y"] - 700.0) < 1e-6, f"{_objs}")
+# A later Td is RELATIVE, so every position the object draws at has to be
+# accumulated: an object whose FIRST origin is on one line can still draw on
+# the line being edited, and shifting only what it happens to start with
+# would move half a line and leave the rest behind.
+_objs = list(sp._text_objects(
+    b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ 0 -12 Td [(b)] TJ 8 0 Td [(c)] TJ ET"))
+check("relative moves accumulate into every position drawn",
+      len(_objs) == 1
+      and _objs[0]["positions"] == [(72.0, 700.0), (72.0, 688.0), (80.0, 688.0)],
+      f"{_objs[0]['positions'] if _objs else _objs}")
+# T* means "down by the current leading", so it is only resolvable once the
+# leading is known — set either explicitly by TL or implicitly by TD, whose
+# second operand IS the negated leading.
+check("T* is resolved through an explicit TL",
+      [q[1] for q in next(sp._text_objects(
+          b"BT /F1 10 Tf 14 TL 1 0 0 1 72 700 Tm [(a)] TJ T* [(b)] TJ ET"
+      ))["positions"]] == [700.0, 686.0])
+check("T* is resolved through the leading TD sets implicitly",
+      [q[1] for q in next(sp._text_objects(
+          b"BT /F1 10 Tf 72 700 Td 0 -14 TD [(a)] TJ T* [(b)] TJ ET"
+      ))["positions"]] == [700.0, 686.0, 672.0])
+check("a rotated Tm is skipped rather than guessed at",
+      not list(sp._text_objects(
+          b"BT /F1 10 Tf 0 1 -1 0 72 700 Tm [(x)] TJ ET")))
+check("an unresolvable T* makes the positions unknown, not wrong",
+      next(sp._text_objects(
+          b"BT /F1 10 Tf 1 0 0 1 72 700 Tm [(a)] TJ T* [(b)] TJ ET"
+      ))["positions"] is None)
+# The whole point: on the real Word fixture, reflow must actually fire and
+# the levers must actually engage. Measured before this was fixed, the name
+# overran the following comma by 65.8pt with reflowed=0, and every case in
+# the compression ladder reported tw=tc=0 while being accepted anyway.
+_r = sp.edit(_src_bytes, "Sara Idrissi", "Abdurrahamn Chahrour", page=0)
+check("reflow fires on a TD-positioned Word document",
+      _r.get("ok") and _r.get("reflowed", 0) >= 2, f"reflowed={_r.get('reflowed')}")
+_r = sp.edit(_src_bytes, "Sara Idrissi",
+             "Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun El Amrani Tazi B",
+             page=0, verify=False)
+check("and the elastic levers engage on it too",
+      _r.get("ok") and _r.get("wordspace", 0) < 0 and _r.get("tracking", 0) < 0,
+      f"tw={_r.get('wordspace')} tc={_r.get('tracking')}")
+# Tc/Tw/Tz stay in force to the end of the text object, so they must never be
+# set on an object that goes on to draw other lines. When they can't be
+# applied the edit has to be REFUSED, not accepted uncompressed: accepting it
+# is what drew over the following text in the first place.
+_saved = sp._apply_text_state
+sp._apply_text_state = lambda *a, **k: False
+try:
+    _r = sp.edit(_src_bytes, "Sara Idrissi",
+                 "Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun El Amrani Tazi",
+                 page=0, verify=False)
+finally:
+    sp._apply_text_state = _saved
+check("an edit that needs tightening is refused if it can't be tightened",
+      (not _r.get("ok")) and _r.get("reason") == "would_overflow",
+      f"ok={_r.get('ok')} reason={_r.get('reason')}")
+# Fitting reserves the WIDTH of the text after the field, but that text is
+# pinned by its own origin and only reflow can move it. So if the field grew
+# and reflow could move nothing, the value would be drawn straight through
+# it — refuse instead of shipping the overrun.
+_saved = sp._reflow_same_line
+sp._reflow_same_line = lambda *a, **k: None
+try:
+    _r = sp.edit(_src_bytes, "Sara Idrissi", "Abdurrahamn Chahrour",
+                 page=0, verify=False)
+finally:
+    sp._reflow_same_line = _saved
+check("a longer value is refused when the text after it cannot be moved",
+      (not _r.get("ok")) and _r.get("reason") == "cannot_reflow",
+      f"ok={_r.get('ok')} reason={_r.get('reason')}")
+check("and that refusal outranks the generic width verdict",
+      sp._better_refusal({"reason": "would_overflow"},
+                         {"reason": "cannot_reflow"})["reason"] == "cannot_reflow")
+# WHERE the following text is, is not where the field ENDS. On this document
+# the comma after the birthplace is positioned at x=247.97 while the
+# birthplace value itself reaches x=262.0 — the comma is drawn over the tail
+# of the value in the ORIGINAL file. Measuring from the field's end therefore
+# concluded nothing followed it, left the comma behind, and buried it: the
+# document's own 13.98pt overlap became 57.12pt once the value grew.
+_d = fitz.open(FIXTURE)
+_bp = next(x for x in sp._spans(_d[0]) if x["text"].strip() == "Essaouira")
+_nx = sp._next_text_x0(_d[0], _bp["origin"][1], _bp["bbox"])
+_d.close()
+check("following text is found even when it starts before the field ends",
+      _nx is not None and _nx < _bp["bbox"][2],
+      f"next_x0={_nx} field ends at {_bp['bbox'][2]:.2f}")
+
+
+def _worst_overlap(pdf, origin_y):
+    """Largest amount by which one run on this line reaches into the next."""
+    _dd = fitz.open(stream=pdf, filetype="pdf") if isinstance(pdf, bytes) else fitz.open(pdf)
+    try:
+        _items = sorted((x["bbox"][0], x["bbox"][2])
+                        for _b in _dd[0].get_text("dict")["blocks"]
+                        for _l in _b.get("lines", []) for x in _l.get("spans", [])
+                        if abs(x["origin"][1] - origin_y) < 0.6 and x["text"].strip())
+        return max((_items[i][1] - _items[i + 1][0] for i in range(len(_items) - 1)),
+                   default=0.0)
+    finally:
+        _dd.close()
+
+
+# The measurement has to be RELATIVE to the untouched document, because this
+# line already overlaps by 13.98pt before anything is edited. Read as an
+# absolute number it condemns edits that changed nothing and excuses the one
+# that made it four times worse.
+_base_ov = _worst_overlap(FIXTURE, _bp["origin"][1])
+check("this line really does already overlap itself", _base_ov > 10.0,
+      f"{_base_ov:.2f}pt")
+_grew = 0
+for _new in ("Essaouira Wxqz", "074185296", "Essaouira" [::-1], "Ess"):
+    _r = sp.edit(_src_bytes, "Essaouira", _new, page=0, bbox=_bp["bbox"], verify=False)
+    if not _r.get("ok"):
+        continue
+    _ov = _worst_overlap(base64.b64decode(_r["pdf_b64"]), _bp["origin"][1])
+    if _ov > _base_ov + 0.05:
+        _grew += 1
+check("no accepted edit of that field makes the overlap worse", _grew == 0,
+      f"{_grew} of 4 grew it beyond {_base_ov:.2f}pt")
+# ...and a replacement no wider than the original must NOT be refused merely
+# for sitting in that pre-existing overlap.
+_r = sp.edit(_src_bytes, "Essaouira", "Ess", page=0, bbox=_bp["bbox"], verify=False)
+check("a shorter value in an already-overlapping field is still accepted",
+      _r.get("ok"), f"{_r.get('reason')}")
+# Being next to the field is not the same as being PINNED next to it. Text
+# shown in the same string or TJ array as the field takes its place from the
+# field's glyph advances, so lengthening the field carries it along and there
+# is nothing to move. Text with its own Tm/Td does not move at all — PDF's Td
+# is measured from the previous line's matrix, never from the pen — so it has
+# to be shifted explicitly or the edit refused. Treating every neighbour as
+# pinned refused 11 good edits on a LaTeX paper; treating none as pinned
+# buried the comma after this document's own fields.
+_d = fitz.open(FIXTURE)
+_ph = _d[0].rect.height
+check("the comma after a Word field is pinned by its own operator",
+      sp._pinned_at(_d, _d[0], _ph - _bp["origin"][1], _nx),
+      f"next_x0={_nx}")
+check("and a position nothing is drawn at is not reported as pinned",
+      not sp._pinned_at(_d, _d[0], _ph - _bp["origin"][1], _nx + 40.0))
+_d.close()
+
+print()
 print("=== 5) synthesis beats the open-source lookalike (needs network) ===")
 try:
     import font_extend  # noqa: E402

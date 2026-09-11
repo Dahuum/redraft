@@ -38,6 +38,21 @@ INVARIANTS
   I4  no line other than the edited one moves
   I5  a refusal always names a reason
   I6  every visible character of the replacement actually has INK
+  I7  an accepted edit never drives a gap on the edited line negative
+
+  5. A longer replacement drew straight over the text beside it. Nothing
+     moves it: every run is positioned by its own operator, and PDF's Td is
+     measured from the previous line's matrix rather than from the pen, so
+     glyph advances never push the next run along. Reflow has to move it
+     explicitly, and where reflow cannot — a run that also draws on another
+     line, or a page whose content stream is under a transform, as headless
+     Chrome's is — the edit has to be REFUSED instead. Measured before that
+     was true, 7 accepted edits across these four documents drew over their
+     neighbours, the worst by 209pt. I7 is the invariant that catches it, and
+     it has to be measured in VISUAL space: neither document order nor span
+     identity survives an edit, because the local fixture draws every label
+     before every value and extraction merges two spans as soon as they
+     become contiguous.
 
 The local fixture runs always; the three downloaded documents are skipped
 cleanly without network, matching test_real_world_pdfs.py's convention.
@@ -212,6 +227,29 @@ def stress(doc_name, data, n_spans=8, seed=7):
                 finally:
                     dd.close()
 
+            # I7 — gaps on the edited line. Measured in VISUAL space (spans
+            # sorted by x), because neither document order nor span identity
+            # survives an edit: this fixture draws every label before every
+            # value, and extraction MERGES two spans as soon as they become
+            # contiguous. Only a gap that this edit drove negative counts; a
+            # gap that merely got smaller was free space the longer value was
+            # entitled to use.
+            def _gaps(lines_by_y, y):
+                items = sorted((a, b) for a, b, _ in lines_by_y.get(y, []))
+                return [round(items[i + 1][0] - items[i][1], 2)
+                        for i in range(len(items) - 1)]
+
+            _ey = round(s["origin"][1], 1)
+            _gb, _ga = _gaps(base_lines, _ey), _gaps(new_lines, _ey)
+            if len(_gb) == len(_ga):
+                for _before, _after in zip(_gb, _ga):
+                    if _after < -0.5 and _after < _before - 0.5:
+                        VIOLATIONS.append(
+                            f"[{doc_name}] {label} {old[:20]!r}: I7 a gap on the "
+                            f"edited line went from {_before:.2f}pt to "
+                            f"{_after:.2f}pt — the edit drew over its neighbour")
+                        break
+
             edited_line = round(s["origin"][1], 1)
             for ln, items in base_lines.items():                           # I4
                 if abs(ln - edited_line) < 0.6:
@@ -249,7 +287,7 @@ print()
 check("no invariant was violated on any document",
       not VIOLATIONS,
       "\n        " + "\n        ".join(VIOLATIONS[:12]))
-print(f"       {n_local + n_remote} edit attempts checked against I1-I6")
+print(f"       {n_local + n_remote} edit attempts checked against I1-I7")
 
 print()
 print("=" * 70)
