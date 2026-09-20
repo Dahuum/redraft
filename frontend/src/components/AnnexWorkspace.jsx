@@ -857,7 +857,10 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                   })}
               </div>
 
-              <div className="flex items-center gap-2">
+              {/* Wraps on a phone: the three buttons are ~340px of content and
+                  the panel offers ~326px at 390, so "Apply & re-scan" ran off
+                  the right edge. The spacer only exists where they fit a row. */}
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={redetectFresh}
                   disabled={scanning}
@@ -866,7 +869,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                 >
                   Re-detect
                 </button>
-                <span className="flex-1" />
+                <span className="hidden flex-1 sm:block" />
                 <button
                   onClick={closeAdjust}
                   disabled={scanning}
