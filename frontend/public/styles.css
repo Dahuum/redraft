@@ -222,6 +222,8 @@ body {
   transition: color .15s ease;
 }
 .nav__links a:hover { color: var(--text); }
+/* Drawer-only duplicates of the bar's two actions — see index.html. */
+.nav__links-cta { display: none; }
 
 .nav__cta {
   display: flex;
@@ -272,10 +274,13 @@ body {
     overflow: hidden;
     transition: max-height .25s ease;
   }
-  .nav__links--open { max-height: 320px; }
+  .nav__links--open { max-height: 460px; } /* 4 links + Sign In + the CTA button */
   .nav__links a { padding: 10px 8px; font-size: 16px; display: block; }
   .nav__burger { display: flex; }
   .nav__cta .nav__signin { display: none; }
+  .nav__links-cta--signin { display: block; margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+  .nav__links-cta .nav__signin { display: block; width: 100%; text-align: left; padding: 10px 8px; font-size: 16px; }
+  .nav__links-cta .btn--pill { margin: 4px 4px 2px; font-size: 15px; }
 }
 @media (max-width: 560px) {
   /* The island is a single flex row that WRAPS below 980px. At phone width
@@ -293,6 +298,7 @@ body {
      the least valuable thing on it: the hero repeats it as "Start Editing
      Free" one screen down. */
   .nav__cta .btn--pill { display: none; }
+  .nav__links-cta--start { display: block; } /* it moves into the drawer, not away */
 }
 
 /* ─────────── HERO ─────────── */

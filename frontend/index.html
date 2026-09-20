@@ -52,6 +52,11 @@
       <li><a href="#mission">Info</a></li>
       <li><a href="#features">Tools</a></li>
       <li><a href="#pricing">Pricing</a></li>
+      <!-- Sign In has no home in the collapsed bar, and below 380px the bar
+           drops Get Started too. The drawer carries whichever the bar cannot
+           show; above the burger breakpoint it carries neither. -->
+      <li class="nav__links-cta nav__links-cta--signin"><button class="nav__signin" data-modal="signin">Sign In</button></li>
+      <li class="nav__links-cta nav__links-cta--start"><button class="btn btn--primary btn--pill btn--block" data-modal="signup">Get Started</button></li>
     </ul>
     <div class="nav__cta">
       <div id="nav-signin-root" data-heroui-scope><button class="nav__signin" data-modal="signin">Sign In</button></div>
