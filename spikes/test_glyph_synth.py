@@ -21,6 +21,7 @@ import fitz  # noqa: E402
 from fontTools.ttLib import TTFont  # noqa: E402
 
 import font_extend as fe  # noqa: E402
+import font_donors as fdn  # noqa: E402
 import font_metrics as fmet  # noqa: E402
 import glyph_synth as gs  # noqa: E402
 
@@ -670,6 +671,84 @@ if len(_mapped) == 3:
         _dd.close()
     check("delivering it anyway would have shown the template's text",
           _left >= 1, f"{_left} fields would still read as the template")
+
+print()
+print("=== 4n) letters the font ALREADY has are never re-synthesized ===")
+# Which characters count as "missing" was answered by what the page had been
+# seen DRAWING, not by what the embedded program can draw — and a subset
+# routinely carries letters the page never uses. This fixture's Bold subset
+# contains 'g' and 'y', but no Bold text on the page happens to use them, so
+# an edit needing them appended a SECOND 'g' and 'y' and pointed the text at
+# those: two letters the document already had in the real typeface, replaced
+# by approximations. The genuine 'g' descends to -360, its replacement to
+# -429.
+_d = fitz.open(FIXTURE)
+_pl = next(x for x in sp._spans(_d[0]) if x["text"].strip() == "Essaouira")
+_prog_map = sp._cid_program_gid_map(_d, "Tw Cen MT Bold")
+_d.close()
+check("the program's own cmap is readable", bool(_prog_map), f"{len(_prog_map)}")
+check("and it knows about letters the page never draws in this cut",
+      "g" in _prog_map and "y" in _prog_map,
+      f"g={'g' in _prog_map} y={'y' in _prog_map}")
+_r = sp.edit(_src_bytes, "Essaouira", "gjpqy", page=0, bbox=_pl["bbox"], verify=False)
+check("an edit only synthesizes what is genuinely absent",
+      sorted(_r.get("extended_chars") or []) == ["j", "p", "q"],
+      f"{_r.get('extended_chars')}")
+
+print()
+print("=== 4o) an offset outline does not cross itself ===")
+# Offsetting moves every edge along its own normal, which is right until two
+# edges either side of a CONCAVE junction are pushed past each other. They
+# cross, and the contour keeps a loop hanging off the crossing. On an 'm'
+# grown Regular -> Bold that happened in the valley between the two arches
+# and again where the left stem meets the first shoulder, and the letter read
+# as malformed beside the font's own 'n'.
+_sq = [(0, 0), (100, 0), (100, 100), (0, 100)]
+check("a clean contour is left exactly alone",
+      gs._remove_self_intersections(_sq) == _sq)
+_loop = [(0, 0), (100, 0), (100, 100), (40, 20), (60, 20), (0, 100)]
+_fixed = gs._remove_self_intersections(_loop)
+check("a contour that crosses itself loses the loop",
+      len(_fixed) < len(_loop) and gs._remove_self_intersections(_fixed) == _fixed,
+      f"{len(_loop)} -> {len(_fixed)} vertices")
+
+def _crossings(poly):
+    n, hits = len(poly), 0
+    for i in range(n):
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            if gs._seg_cross(poly[i], poly[(i + 1) % n],
+                             poly[j], poly[(j + 1) % n]):
+                hits += 1
+    return hits
+
+_d = fitz.open(FIXTURE)
+_cuts = fdn.harvest_cuts(_d)
+_d.close()
+_reg2 = next((c["tt"] for c in _cuts if c["display"] == "TwCenMT-Regular"), None)
+_bold2 = next((c["tt"] for c in _cuts if c["display"] == "Tw Cen MT Bold"), None)
+check("both cuts are available for the weight transform", _reg2 and _bold2)
+if _reg2 and _bold2:
+    _xf2 = gs.learn_weight_transform(_reg2, _bold2)
+    _bad = []
+    for _ch in "mnhuoesa0234":
+        _src2 = gs._polys(_reg2, _ch)
+        if not _src2:
+            continue
+        _pre2, _dil2, _ = _xf2._stages(_src2)
+        for _p_pre, _p_dil in zip(_pre2, _dil2):
+            if gs._ink_side(_pre2, _p_pre, gs._signed_area(_p_pre) > 0) <= 0:
+                continue                      # a counter, shrunk: see dilate_xy
+            if _crossings(_p_dil):
+                _bad.append(_ch)
+    check("no thickened outer boundary crosses itself", not _bad, f"{_bad}")
+    # ...and the counters that must survive still do.
+    for _ch in "o04":
+        _src2 = gs._polys(_reg2, _ch)
+        if _src2:
+            _, _ok2 = _xf2.apply_checked(_src2)
+            check(f"{_ch!r} keeps its counter", _ok2)
 
 print()
 print("=== 4h) font identity is per OBJECT, not per display name ===")

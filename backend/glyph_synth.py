@@ -380,8 +380,77 @@ def dilate_xy(polys: list, dx: float, dy: float, diag_k: float = 4.0,
                 vx = (a[0] + b[0]) / 2.0               # cusp: bevel instead
                 vy = (a[1] + b[1]) / 2.0
             moved.append((px + vx, py + vy))
-        out.append(moved)
+        # Only an OUTER boundary. A counter is being SHRUNK, and a small one
+        # shrunk past itself inverts rather than loops: the '4' of this family
+        # has a four-point triangular counter that ends up crossing its own
+        # edges, and under nonzero winding the inverted contour still paints
+        # an open counter. De-looping it instead collapses it to a sliver and
+        # welds the counter shut. The artifacts this removes — the crossed
+        # valley between an 'm' arches, the notch where a stem meets a
+        # shoulder — are all on outer boundaries.
+        out.append(_remove_self_intersections(moved) if sign > 0 else moved)
     return out
+
+
+def _seg_cross(a1, a2, b1, b2):
+    """Where two segments cross strictly between their endpoints, or None."""
+    (x1, y1), (x2, y2) = a1, a2
+    (x3, y3), (x4, y4) = b1, b2
+    rx, ry = x2 - x1, y2 - y1
+    sx, sy = x4 - x3, y4 - y3
+    den = rx * sy - ry * sx
+    if abs(den) < 1e-12:
+        return None                      # parallel or degenerate
+    t = ((x3 - x1) * sy - (y3 - y1) * sx) / den
+    u = ((x3 - x1) * ry - (y3 - y1) * rx) / den
+    if 1e-9 < t < 1 - 1e-9 and 1e-9 < u < 1 - 1e-9:
+        return (x1 + t * rx, y1 + t * ry)
+    return None
+
+
+def _remove_self_intersections(poly: list, max_passes: int = 6) -> list:
+    """Cut the loops an offset leaves behind where a contour turns inward.
+
+    Offsetting moves every edge along its own normal, which is right until
+    two edges on either side of a CONCAVE junction are pushed past each
+    other. They then cross, and the contour keeps a small loop hanging off
+    the crossing. On the arches of an 'm' grown from Regular to Bold that is
+    exactly what happened: the outline crossed itself in the valley between
+    the two arches and again where the left stem meets the first arch, which
+    renders as a pinched valley and a notch in the shoulder — the letter
+    reads as subtly malformed beside the font's own 'n'.
+
+    Miter clamping does not help: that bounds how far a single vertex may
+    travel at a cusp, and this is two separate edges meeting. The loop is
+    removed instead — the crossing becomes a vertex, and whichever side of it
+    is SHORTER is dropped, because the artifact is the small side and the
+    letter is the large one.
+    """
+    if len(poly) < 4:
+        return poly
+    for _ in range(max_passes):
+        n = len(poly)
+        cut = None
+        for i in range(n):
+            a1, a2 = poly[i], poly[(i + 1) % n]
+            for j in range(i + 2, n):
+                if i == 0 and j == n - 1:
+                    continue             # these two share a vertex
+                p = _seg_cross(a1, a2, poly[j], poly[(j + 1) % n])
+                if p is not None:
+                    cut = (i, j, p)
+                    break
+            if cut:
+                break
+        if not cut:
+            break
+        i, j, p = cut
+        inner = poly[i + 1:j + 1]        # the side between the two crossings
+        outer = poly[j + 1:] + poly[:i + 1]
+        poly = (outer + [p]) if len(inner) <= len(outer) else ([p] + inner)
+        if len(poly) < 4:
+            break
+    return poly
 
 
 def scale_polys(polys: list, sx: float, sy: float) -> list:

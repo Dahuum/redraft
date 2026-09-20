@@ -1107,6 +1107,73 @@ def _finish_cid_extend(doc, refs, result, missing_chars):
     return result["gid"], None
 
 
+_CID_PROGRAM_GIDS: dict = {}
+
+
+def _cid_program_gid_map(doc, font_display_name: str) -> dict:
+    """{char: GID} for everything a Type0 font's embedded PROGRAM can draw.
+
+    _gid_maps answers a different question — what this page has been OBSERVED
+    drawing — and a subset routinely carries letters the page never uses. On
+    the attestation fixture the Bold subset contains 'g' and 'y', but no Bold
+    text on the page happens to use them, so they counted as missing and were
+    SYNTHESIZED: the edit appended a second 'g' and a second 'y' and pointed
+    the text at those, replacing two letters the document already had in the
+    real typeface with approximations. Measured, the genuine 'g' descends to
+    -360 and its replacement to -429.
+
+    Read from the program's own cmap, so it answers "can this font draw it",
+    which is the question `missing` is actually asking. CID equals GID only
+    when CIDToGIDMap is Identity or absent — what _add_tounicode_entries
+    already relies on — and anything else returns nothing rather than a wrong
+    answer.
+    """
+    key = (id(doc), font_display_name)
+    if key in _CID_PROGRAM_GIDS:
+        return _CID_PROGRAM_GIDS[key]
+    out: dict = {}
+    try:
+        from fontTools.ttLib import TTFont
+        for pno in range(doc.page_count):
+            for f in doc[pno].get_fonts(full=True):
+                if f[3].split("+")[-1] != font_display_name:
+                    continue
+                if "/Subtype/Type0" not in doc.xref_object(
+                        f[0], compressed=True).replace(" ", ""):
+                    continue
+                refs = _font_stream_refs(doc, f[0])
+                if not isinstance(refs, dict):
+                    continue
+                cid_obj = doc.xref_object(refs["cid_xref"], compressed=True) or ""
+                m = re.search(r"/CIDToGIDMap\s*(/\w+|\d+\s+0\s+R)", cid_obj)
+                if m and "Identity" not in m.group(1):
+                    continue            # CID != GID: not this map's business
+                raw = doc.xref_stream(refs["ff_xref"])
+                if not raw:
+                    continue
+                tt = TTFont(io.BytesIO(raw))
+                try:
+                    gid_of = {n: i for i, n in enumerate(tt.getGlyphOrder())}
+                    glyf = tt["glyf"] if "glyf" in tt else None
+                    for cp, gname in (tt.getBestCmap() or {}).items():
+                        gid = gid_of.get(gname)
+                        if gid is None:
+                            continue
+                        if glyf is not None and not glyf[gname].numberOfContours:
+                            continue     # present in the table, draws nothing
+                        out.setdefault(_norm(chr(cp)), gid)
+                finally:
+                    tt.close()
+                if out:
+                    break
+            if out:
+                break
+    except Exception:  # noqa: BLE001 — an unreadable program means no map
+        out = {}
+    _CID_PROGRAM_GIDS[key] = out
+    return out
+
+
 def _try_extend(doc, font_display_name, missing_chars):
     """Attempt to inject `missing_chars` into font_display_name's embedded
     subset. On success, mutates `doc` (new FontFile2 + extended /W array) and
@@ -2313,7 +2380,11 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             if _old is not None and _new is not None and \
                     _cid_glyph_coverage(doc, nm, _new) is not False:
                 return _finish_prepare(doc, tpage, nm, is_cid, _old, _new, [], which)
-        fm = _lookup_by_name(_gid_maps(doc), nm) or {}
+        # What the page has been seen drawing, PLUS everything the embedded
+        # program can draw. Observed entries win: they are ground truth for
+        # the code that actually renders.
+        fm = {**_cid_program_gid_map(doc, nm),
+              **(_lookup_by_name(_gid_maps(doc), nm) or {})}
         missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
         if missing:
             new_gids, fail_reason = _try_extend(doc, nm, missing)
