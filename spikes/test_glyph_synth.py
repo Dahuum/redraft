@@ -13,6 +13,7 @@ lookalike is guarded and skipped without network.
 import io
 import re
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend"))
@@ -20,6 +21,7 @@ import fitz  # noqa: E402
 from fontTools.ttLib import TTFont  # noqa: E402
 
 import font_extend as fe  # noqa: E402
+import font_donors as fdn  # noqa: E402
 import font_metrics as fmet  # noqa: E402
 import glyph_synth as gs  # noqa: E402
 
@@ -568,6 +570,185 @@ if os.path.exists(_TINOS):
     check("a deliberate non-breaking space is left alone",
           _recorded(api_mod._canonicalise_text_layer(_drawn(_nb), [_nb])) == _nb,
           f"{_recorded(api_mod._canonicalise_text_layer(_drawn(_nb), [_nb]))!r}")
+
+print()
+print("=== 4g4) a redrawn field is never printed over its neighbour ===")
+# The in-place engine guarantees no gap on the edited line goes negative
+# (invariant I7). The redraw did not: its alignment pass places a field at
+# bbox.x1 - text_width when it reads the column as right-aligned, which for a
+# longer value moves the field LEFT into whatever precedes it. Measured on an
+# arXiv page, a field slid 21pt left and the gap to the run before it went
+# from +2.81pt to -18.36pt — eighteen points of text over text, reported as a
+# success. Single-field testing never saw it; it took editing several fields
+# at once to surface.
+def _two_runs(x_second):
+    """A page with 'left' fixed and 'right' placed at x_second."""
+    _q = fitz.open()
+    _pg = _q.new_page(width=300, height=100)
+    _pg.insert_text((40, 50), "left", fontname="helv", fontsize=12)
+    _pg.insert_text((x_second, 50), "right", fontname="helv", fontsize=12)
+    _raw = _q.tobytes()
+    _q.close()
+    return _raw
+
+_field = {"page": 0, "origin": (120.0, 50.0), "text": "right",
+          "bbox": (120.0, 40.0, 150.0, 52.0)}
+_before = _two_runs(120)          # a clear gap after 'left'
+_ok = _two_runs(118)              # moved 2pt: gap +61.99pt, still clear
+_bad = _two_runs(45)              # moved onto 'left': gap -11.01pt
+check("an edit that keeps the gap is shippable",
+      api_mod._unshippable_fields(_ok, [(_field, "right")], before=_before) == {},
+      f"{api_mod._unshippable_fields(_ok, [(_field, 'right')], before=_before)}")
+check("an edit that prints over the run beside it is not",
+      api_mod._unshippable_fields(_bad, [(_field, "right")],
+                                  before=_before).get(0) == "overlaps_neighbour",
+      f"{api_mod._unshippable_fields(_bad, [(_field, 'right')], before=_before)}")
+# A document that already overlaps itself must not be blamed for it: the
+# attestation fixture draws its comma on top of the birthplace value, before
+# anything is edited.
+check("a pre-existing overlap is not reported as this edit's doing",
+      api_mod._unshippable_fields(_bad, [(_field, "right")], before=_bad) == {},
+      f"{api_mod._unshippable_fields(_bad, [(_field, 'right')], before=_bad)}")
+
+print()
+print("=== 4g5) a bulk row is never delivered carrying the template's text ===")
+# A field that cannot be drawn is left exactly as the template had it. In a
+# mail merge that means the row goes out with the TEMPLATE's own placeholder
+# in it, and /bulk discarded the report that said so. Measured on this
+# fixture with a 96-character value mapped to three fields: two of the three
+# still read "Benguerir, le 19/11/2025" and "M /Mme" while the third was
+# filled — 500 letters, some addressed to whoever the template names.
+_spans_bulk = extract_spans(_src_bytes)
+_usable = [x for x in _spans_bulk
+           if len(x["text"].strip()) >= 6 and x["size"] > 5]
+_rng = random.Random(31)
+_rng.shuffle(_usable)
+_mapped = _usable[:3]
+check("the fixture offers three mappable fields", len(_mapped) == 3)
+if len(_mapped) == 3:
+    _bulk_rows = ["Ali Ben", "Abdurrahamn Chahrour", "Abdurrahamn " * 8]
+    _delivered = _failed = _stale = 0
+    for _val in _bulk_rows:
+        _o, _r = apply_replacements(_src_bytes, [(sd, _val) for sd in _mapped])
+        _unfilled = [x for x in (_r.get("in_place", {}).get("refusals") or [])
+                     if x.get("reason") in api_mod._UNSHIPPABLE_MSG]
+        if _unfilled:
+            _failed += 1          # the route drops this row and says why
+            continue
+        _delivered += 1
+        _dd = fitz.open(stream=_o, filetype="pdf")
+        try:
+            for sd in _mapped:
+                _here = " ".join(
+                    x["text"] for b in _dd[sd["page"]].get_text("dict")["blocks"]
+                    for l in b.get("lines", []) for x in l.get("spans", [])
+                    if abs(x["origin"][1] - sd["origin"][1]) < 1.0)
+                _here = _here.replace("\xa0", " ")
+                _old = sd["text"].strip()
+                if len(_old) >= 8 and _old in _here and _val[:8] not in _here:
+                    _stale += 1
+        finally:
+            _dd.close()
+    check("some rows are delivered and some are failed, not all one way",
+          _delivered >= 1 and _failed >= 1, f"delivered={_delivered} failed={_failed}")
+    check("no delivered row still shows the template's own text", _stale == 0,
+          f"{_stale} mapped fields left unfilled in a delivered row")
+    # ...and the defect is real: delivering the failed row regardless puts
+    # the template's text in front of the recipient.
+    _o, _r = apply_replacements(_src_bytes,
+                               [(sd, "Abdurrahamn " * 8) for sd in _mapped])
+    _dd = fitz.open(stream=_o, filetype="pdf")
+    try:
+        _left = 0
+        for sd in _mapped:
+            _here = " ".join(
+                x["text"] for b in _dd[sd["page"]].get_text("dict")["blocks"]
+                for l in b.get("lines", []) for x in l.get("spans", [])
+                if abs(x["origin"][1] - sd["origin"][1]) < 1.0).replace("\xa0", " ")
+            if len(sd["text"].strip()) >= 6 and sd["text"].strip() in _here:
+                _left += 1
+    finally:
+        _dd.close()
+    check("delivering it anyway would have shown the template's text",
+          _left >= 1, f"{_left} fields would still read as the template")
+
+print()
+print("=== 4n) letters the font ALREADY has are never re-synthesized ===")
+# Which characters count as "missing" was answered by what the page had been
+# seen DRAWING, not by what the embedded program can draw — and a subset
+# routinely carries letters the page never uses. This fixture's Bold subset
+# contains 'g' and 'y', but no Bold text on the page happens to use them, so
+# an edit needing them appended a SECOND 'g' and 'y' and pointed the text at
+# those: two letters the document already had in the real typeface, replaced
+# by approximations. The genuine 'g' descends to -360, its replacement to
+# -429.
+_d = fitz.open(FIXTURE)
+_pl = next(x for x in sp._spans(_d[0]) if x["text"].strip() == "Essaouira")
+_prog_map = sp._cid_program_gid_map(_d, "Tw Cen MT Bold")
+_d.close()
+check("the program's own cmap is readable", bool(_prog_map), f"{len(_prog_map)}")
+check("and it knows about letters the page never draws in this cut",
+      "g" in _prog_map and "y" in _prog_map,
+      f"g={'g' in _prog_map} y={'y' in _prog_map}")
+_r = sp.edit(_src_bytes, "Essaouira", "gjpqy", page=0, bbox=_pl["bbox"], verify=False)
+check("an edit only synthesizes what is genuinely absent",
+      sorted(_r.get("extended_chars") or []) == ["j", "p", "q"],
+      f"{_r.get('extended_chars')}")
+
+print()
+print("=== 4o) an offset outline does not cross itself ===")
+# Offsetting moves every edge along its own normal, which is right until two
+# edges either side of a CONCAVE junction are pushed past each other. They
+# cross, and the contour keeps a loop hanging off the crossing. On an 'm'
+# grown Regular -> Bold that happened in the valley between the two arches
+# and again where the left stem meets the first shoulder, and the letter read
+# as malformed beside the font's own 'n'.
+_sq = [(0, 0), (100, 0), (100, 100), (0, 100)]
+check("a clean contour is left exactly alone",
+      gs._remove_self_intersections(_sq) == _sq)
+_loop = [(0, 0), (100, 0), (100, 100), (40, 20), (60, 20), (0, 100)]
+_fixed = gs._remove_self_intersections(_loop)
+check("a contour that crosses itself loses the loop",
+      len(_fixed) < len(_loop) and gs._remove_self_intersections(_fixed) == _fixed,
+      f"{len(_loop)} -> {len(_fixed)} vertices")
+
+def _crossings(poly):
+    n, hits = len(poly), 0
+    for i in range(n):
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            if gs._seg_cross(poly[i], poly[(i + 1) % n],
+                             poly[j], poly[(j + 1) % n]):
+                hits += 1
+    return hits
+
+_d = fitz.open(FIXTURE)
+_cuts = fdn.harvest_cuts(_d)
+_d.close()
+_reg2 = next((c["tt"] for c in _cuts if c["display"] == "TwCenMT-Regular"), None)
+_bold2 = next((c["tt"] for c in _cuts if c["display"] == "Tw Cen MT Bold"), None)
+check("both cuts are available for the weight transform", _reg2 and _bold2)
+if _reg2 and _bold2:
+    _xf2 = gs.learn_weight_transform(_reg2, _bold2)
+    _bad = []
+    for _ch in "mnhuoesa0234":
+        _src2 = gs._polys(_reg2, _ch)
+        if not _src2:
+            continue
+        _pre2, _dil2, _ = _xf2._stages(_src2)
+        for _p_pre, _p_dil in zip(_pre2, _dil2):
+            if gs._ink_side(_pre2, _p_pre, gs._signed_area(_p_pre) > 0) <= 0:
+                continue                      # a counter, shrunk: see dilate_xy
+            if _crossings(_p_dil):
+                _bad.append(_ch)
+    check("no thickened outer boundary crosses itself", not _bad, f"{_bad}")
+    # ...and the counters that must survive still do.
+    for _ch in "o04":
+        _src2 = gs._polys(_reg2, _ch)
+        if _src2:
+            _, _ok2 = _xf2.apply_checked(_src2)
+            check(f"{_ch!r} keeps its counter", _ok2)
 
 print()
 print("=== 4h) font identity is per OBJECT, not per display name ===")
