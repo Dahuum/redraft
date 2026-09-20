@@ -270,8 +270,22 @@ body {
   .nav__burger { display: flex; }
   .nav__cta .nav__signin { display: none; }
 }
-@media (max-width: 480px) {
-  .nav__cta .btn--pill { padding: 8px 14px; font-size: 14px; }
+@media (max-width: 560px) {
+  /* The island is a single flex row that WRAPS below 980px. At phone width
+     brand + theme toggle + "Get Started" + burger no longer fits the ~330px
+     of inner width, so the burger dropped onto a second line and the island
+     grew to ~150px tall with an empty band in it. Tightening the row's gap
+     and the button puts all four back on one line. */
+  .nav { gap: 10px; padding: 8px 8px 8px 14px; }
+  .nav__cta { gap: 8px; }
+  .nav__cta .btn--pill { padding: 8px 12px; font-size: 13px; white-space: nowrap; }
+  .brand__name { font-size: 18px; }
+}
+@media (max-width: 380px) {
+  /* Below this even the tightened row runs out of room, and the nav CTA is
+     the least valuable thing on it: the hero repeats it as "Start Editing
+     Free" one screen down. */
+  .nav__cta .btn--pill { display: none; }
 }
 
 /* ─────────── HERO ─────────── */

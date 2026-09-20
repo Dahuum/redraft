@@ -515,9 +515,10 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   const dataLoaded = impRows.length > 0;
 
   return (
-    <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
+    // Stacks below lg — see EditorWorkspace for why the scroll moves here.
+    <div className="flex-1 flex flex-col lg:flex-row gap-4 p-3 sm:p-4 overflow-y-auto lg:overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
       {/* Left: the annex with detected lines highlighted */}
-      <div className="flex-[0.58] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative">
+      <div className="flex-none h-[55vh] min-h-[300px] lg:flex-[0.58] lg:h-auto lg:min-h-0 bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative">
         <CanvasToolbar
           pageIndex={pageIndex}
           pageCount={pageCount}
@@ -563,7 +564,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
       </div>
 
       {/* Right: the lines + data linking */}
-      <div className="flex-[0.42] bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden">
+      <div className="flex-none lg:flex-[0.42] min-h-[45vh] lg:min-h-0 bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden">
         <div className="px-4 pt-4 pb-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
