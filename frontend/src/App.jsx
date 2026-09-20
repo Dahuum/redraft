@@ -383,36 +383,39 @@ export default function App() {
           <div className="bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
             <button
               onClick={() => navigate(`/editor/${docId}`)}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
                 mode === "editor"
                   ? "bg-secondary-container text-white shadow-lg"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">edit</span>
-              PDF Editor
+              <span className="sm:hidden">Editor</span>
+              <span className="hidden sm:inline">PDF Editor</span>
             </button>
             <button
               onClick={() => navigate(`/bulk/${docId}`)}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
                 mode === "bulk"
                   ? "bg-secondary-container text-white shadow-lg"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">layers</span>
-              Bulk Generator
+              <span className="sm:hidden">Bulk</span>
+              <span className="hidden sm:inline">Bulk Generator</span>
             </button>
             <button
               onClick={() => navigate(`/annex/${docId}`)}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
                 mode === "annex"
                   ? "bg-secondary-container text-white shadow-lg"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">rule</span>
-              Annex Automation
+              <span className="sm:hidden">Annex</span>
+              <span className="hidden sm:inline">Annex Automation</span>
             </button>
           </div>
         </div>
