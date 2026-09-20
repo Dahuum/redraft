@@ -364,13 +364,15 @@ export default function App() {
 
       {/* Mode toggle — guests get the editor only; Bulk/Annex need sign-in */}
       {guestMode ? (
-        <div className="w-full flex justify-center py-2.5 bg-background border-b border-outline-variant/30">
-          <div className="flex items-center gap-1.5 text-caption text-on-surface-variant bg-surface-container-high/60 border border-outline-variant/20 rounded-full px-4 py-1.5">
-            <span className="material-symbols-outlined text-[15px] text-accent-cyan">lock_open</span>
-            Bulk generation &amp; annex automation unlock when you
+        <div className="w-full flex justify-center px-3 py-2.5 bg-background border-b border-outline-variant/30">
+          {/* One flowing sentence, not a flex row: as a row the link was its own
+              column and got squeezed until "sign in" broke across two lines. */}
+          <div className="max-w-full text-center text-caption text-on-surface-variant bg-surface-container-high/60 border border-outline-variant/20 rounded-2xl sm:rounded-full px-4 py-1.5">
+            <span className="material-symbols-outlined text-[15px] text-accent-cyan align-[-3px] mr-1">lock_open</span>
+            Bulk generation &amp; annex automation unlock when you{" "}
             <button
               onClick={() => { window.location.href = "/"; }}
-              className="text-secondary font-medium hover:underline"
+              className="text-secondary font-medium hover:underline whitespace-nowrap"
             >
               sign in
             </button>

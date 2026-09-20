@@ -287,6 +287,14 @@ html.theme-switching * {
   background: rgb(var(--c-outline));
   background-clip: padding-box;
 }
+/* Firefox ignores ::-webkit-scrollbar entirely. Without these it falls back
+   to the platform scrollbar, which on a dark panel is a bright white stripe
+   down every scrolling pane in the editor. color-scheme alone does not darken
+   it — the thumb colour has to be named. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--c-outline-variant)) transparent;
+}
 
 /* Theme-aware shadows — natural directional drop shadows (not flat glows). */
 :root {

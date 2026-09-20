@@ -20,6 +20,13 @@
 
   --page-x: clamp(20px, 5vw, 80px);
   --radius: 16px;
+
+  /* The page is dark by default, so form controls and — on Firefox, which has
+     no ::-webkit-scrollbar — the window scrollbar must be told so, or they are
+     painted light against it. */
+  color-scheme: dark;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.22) transparent;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
