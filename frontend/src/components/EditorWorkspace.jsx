@@ -415,9 +415,16 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
             {placement?.kind === "text" ? "Click on the document…" : "Add text"}
           </button>
           {file && !guest && <FontPanel file={file} onChanged={() => nEdits > 0 && preview()} />}
+          {/* "Upload a PDF" is wrong once one IS open — and a scanned page
+              reaches exactly that state with no fields at all, so the user was
+              told to do the thing they had just done. */}
           {pageSpans.length === 0 && (
             <p className="text-caption text-on-surface-variant">
-              Upload a PDF to see its editable text fields here.
+              {!file
+                ? "Upload a PDF to see its editable text fields here."
+                : spans.length === 0
+                ? "There's no editable text on this document — it looks like a scan or an image. You can still add text and a signature on top of it with the buttons above."
+                : "No editable text on this page. Use the page arrows above to look at the others."}
             </p>
           )}
           {pageSpans.map((s) => (
