@@ -8,15 +8,23 @@ try { window.rdTrack && window.rdTrack("landing_view"); } catch (e) {}
 // ────── Theme toggle (light / dark) ──────
 (function initTheme() {
   const root   = document.documentElement;
-  const btn    = document.getElementById('theme-toggle');
+  // There is more than one of these: the bar carries it on a desktop, the
+  // burger drawer carries it on a phone. Bind them all, keep their labels
+  // in step. Icons follow [data-theme] in CSS, so they need no wiring.
+  const btns   = document.querySelectorAll('.theme-toggle');
   const STORE  = 'redraft-theme';
 
   const saved = localStorage.getItem(STORE);
   if (saved === 'light') root.setAttribute('data-theme', 'light');
 
-  btn?.addEventListener('click', () => {
+  const label = () => {
     const isLight = root.getAttribute('data-theme') === 'light';
-    const next    = isLight ? 'dark' : 'light';
+    btns.forEach((b) => b.setAttribute('aria-label',
+      isLight ? 'Switch to dark mode' : 'Switch to light mode'));
+  };
+
+  btns.forEach((btn) => btn.addEventListener('click', () => {
+    const next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
 
     root.classList.add('theme-transitioning');
     if (next === 'light') {
@@ -25,18 +33,12 @@ try { window.rdTrack && window.rdTrack("landing_view"); } catch (e) {}
       root.removeAttribute('data-theme');
     }
     localStorage.setItem(STORE, next);
-
-    btn.setAttribute('aria-label',
-      next === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
+    label();
 
     setTimeout(() => root.classList.remove('theme-transitioning'), 320);
-  });
+  }));
 
-  if (btn) {
-    const current = root.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-    btn.setAttribute('aria-label',
-      current === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
-  }
+  label();
 })();
 
 // ────── Pricing billing toggle ──────

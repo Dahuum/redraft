@@ -277,10 +277,14 @@ body {
   .nav__links--open { max-height: 460px; } /* 4 links + Sign In + the CTA button */
   .nav__links a { padding: 10px 8px; font-size: 16px; display: block; }
   .nav__burger { display: flex; }
+  /* Once the links wrap to their own line, line 1 holds three items and
+     space-between strands the actions in the middle of the bar — 400px of
+     nothing on either side at 900px. An auto margin eats the free space to
+     their left instead, so the bar reads brand-left / actions-right. */
+  .nav__cta { margin-left: auto; }
   .nav__cta .nav__signin { display: none; }
   .nav__links-cta--signin { display: block; margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
   .nav__links-cta .nav__signin { display: block; width: 100%; text-align: left; padding: 10px 8px; font-size: 16px; }
-  .nav__links-cta .btn--pill { margin: 4px 4px 2px; font-size: 15px; }
 }
 @media (max-width: 560px) {
   /* The island is a single flex row that WRAPS below 980px. At phone width
@@ -293,12 +297,19 @@ body {
   .nav__cta .btn--pill { padding: 8px 12px; font-size: 13px; white-space: nowrap; }
   .brand__name { font-size: 18px; }
 }
-@media (max-width: 380px) {
-  /* Below this even the tightened row runs out of room, and the nav CTA is
-     the least valuable thing on it: the hero repeats it as "Start Editing
-     Free" one screen down. */
-  .nav__cta .btn--pill { display: none; }
-  .nav__links-cta--start { display: block; } /* it moves into the drawer, not away */
+@media (max-width: 560px) {
+  /* The bar can carry the brand, Get Started and the burger at 320px, but not
+     a fourth control. The theme toggle is the one to move: it is a preference,
+     not the thing anyone came here to do. */
+  .nav__cta .theme-toggle { display: none; }
+  .nav__links-cta--theme {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 8px 2px;
+    color: var(--muted);
+    font-size: 15px;
+  }
 }
 
 /* ─────────── HERO ─────────── */
