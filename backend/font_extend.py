@@ -84,6 +84,41 @@ _DONOR_ONLY_SUBSTITUTES = {
                            # proportions are the closest visual match.
 }
 
+# The same idea, keyed by a NORMALIZED family instead of an exact spelling.
+# Real documents name one typeface a dozen ways — the IRS 1040 embeds
+# "HelveticaNeueLTStd-Roman" — and enumerating every foundry tag and style
+# word per family does not scale.
+_DONOR_SUBSTITUTE_KEYS = {
+    "helvetica": "Arimo",      # Arimo is metrically compatible with
+    "helveticaneue": "Arimo",  # Arial/Helvetica and already proven here.
+}
+
+# Tags stripped, one at a time from the end, while looking for a key above.
+# "roman"/"book" are weight words, the rest are foundry and optical-size tags.
+_DONOR_TAGS = ("roman", "regular", "normal", "book", "std", "pro", "lt", "mt", "ps")
+
+
+def _donor_alias_key(family: str) -> str:
+    """Normalized family key for the substitute table, or the bare key.
+
+    Strips a trailing tag at a time and stops the moment the remainder is a
+    curated key. Because nothing is returned unless it LANDS on a curated
+    entry, over-stripping cannot invent a match: "Cobalt" would have to
+    shrink to "coba" to lose its "lt", which the length floor forbids, and
+    "cobalt" is not in the table anyway.
+    """
+    k = _family_key(family)
+    for _ in range(len(_DONOR_TAGS) + 1):
+        if k in _DONOR_SUBSTITUTE_KEYS:
+            return k
+        for tag in _DONOR_TAGS:
+            if k.endswith(tag) and len(k) - len(tag) >= 5:
+                k = k[: -len(tag)]
+                break
+        else:
+            break
+    return k
+
 # Google-side renames that break simple normalization (the repo folder no
 # longer matches the family's common/PDF-embedded name). Keep this SMALL —
 # it's a last-resort override, not the primary resolution mechanism.
@@ -303,6 +338,9 @@ def resolve_donor_detailed(fontname: str):
         tried.append((_FONT_SUBSTITUTES[family][0], "substitute"))
     if family in _DONOR_ONLY_SUBSTITUTES:
         tried.append((_DONOR_ONLY_SUBSTITUTES[family], "substitute"))
+    _alias = _donor_alias_key(family)
+    if _alias in _DONOR_SUBSTITUTE_KEYS:
+        tried.append((_DONOR_SUBSTITUTE_KEYS[_alias], "substitute"))
 
     data, kind = None, None
     for candidate, cand_kind in tried:
