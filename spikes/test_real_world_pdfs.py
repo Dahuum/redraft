@@ -66,6 +66,12 @@ except Exception as e:  # noqa: BLE001
     irs_form = None
     print(f"[IRS form unavailable, skipping that part: {e}]")
 
+try:
+    irs_1040 = fetch("https://www.irs.gov/pub/irs-pdf/f1040.pdf")
+except Exception as e:  # noqa: BLE001
+    irs_1040 = None
+    print(f"[IRS 1040 unavailable, skipping that part: {e}]")
+
 print("=== arXiv paper (LaTeX/pdfTeX, dvips-style word spacing + ligatures) ===")
 r = sp.analyze(arxiv)
 editable = sum(1 for f in r["fields"] if f["editable"])
@@ -115,6 +121,50 @@ if irs_form is not None:
     print("  [smart-quote edit]", {k: v for k, v in ri_edit.items() if k != "pdf_b64"})
     check("IRS form: smart-quote edit ok", ri_edit.get("ok") is True)
     check("IRS form: smart-quote edit guarantee", ri_edit.get("guarantee") is True)
+
+if irs_1040 is not None:
+    print("\n=== IRS 1040 (a line reflow cannot move) ===")
+    # Line 32 reads: "Add lines 27a, 28, 29, 30, and 31. These are your total
+    # other payments and refundable credits" then leader dots at x=468 and the
+    # box number "32" at x=488.8. The label and the sentence after it share one
+    # text object — so the sentence rides the label's glyph advances and moves
+    # on its own — while the dots and the box number are placed absolutely and
+    # cannot move. Reflow declines here, correctly.
+    #
+    # This edit used to be ACCEPTED anyway, and printed the sentence straight
+    # through the box number, because the only guard asked whether the
+    # IMMEDIATE neighbour was pinned and on this form it is not. Lengthening
+    # the label must either move everything or refuse.
+    long_new = "Add lines 27a, 28, 29, 30, and 31. These are your additional"
+    r1040 = sp.edit(irs_1040, "Add lines 27a, 28, 29, 30, and 31. These are your", long_new)
+    print("  [unmovable-line edit]", {k: v for k, v in r1040.items() if k != "pdf_b64"})
+    if r1040.get("ok"):
+        # Accepting is only allowed if the line really did move out of the way.
+        import base64
+        ed = base64.b64decode(r1040["pdf_b64"])
+        d = fitz.open(stream=ed, filetype="pdf")
+        pg = d[r1040["page"]]
+        runs = []
+        for b in pg.get_text("rawdict")["blocks"]:
+            for l in b.get("lines", []):
+                for sp_ in l.get("spans", []):
+                    if any(c["c"].strip() for c in sp_["chars"]):
+                        runs.append(sp_["bbox"])
+        d.close()
+        by_line = {}
+        for bb in runs:
+            by_line.setdefault(round(bb[3] / 2.0), []).append(bb)
+        worst = 0.0
+        for _k, bs in by_line.items():
+            bs.sort(key=lambda r: r[0])
+            for i in range(1, len(bs)):
+                worst = min(worst, bs[i][0] - bs[i - 1][2])
+        check("IRS 1040: accepted edit left no run overdrawn", worst > -1.0,
+              f"worst gap {worst:.1f}pt")
+    else:
+        check("IRS 1040: unmovable line refused by name",
+              r1040.get("reason") in ("cannot_reflow", "would_overflow"),
+              repr(r1040.get("reason")))
 
 print(f"\n{'='*70}")
 if FAIL:

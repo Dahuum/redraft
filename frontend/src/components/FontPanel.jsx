@@ -85,7 +85,7 @@ export default function FontPanel({ file, onChanged }) {
             <span className="text-caption text-on-surface-variant">checking…</span>
           ) : fonts ? (
             <span className="text-caption text-on-surface-variant">
-              {okCount} matched
+              {okCount === 0 && attention.length === 0 ? "none found" : `${okCount} matched`}
               {attention.length ? ` · ${attention.length} need the real file` : ""}
             </span>
           ) : null}
@@ -99,7 +99,17 @@ export default function FontPanel({ file, onChanged }) {
 
       {err && <p className="mt-2 text-caption text-error">{err}</p>}
 
-      {!loading && fonts && attention.length === 0 && (
+      {/* A scan has no fonts at all. Reporting "0 matched · All fonts matched"
+          with a green tick told the user everything was fine about a document
+          they cannot edit a word of. Nothing matched because there was nothing
+          to match. */}
+      {!loading && fonts && okCount === 0 && attention.length === 0 && (
+        <p className="mt-1 text-caption text-on-surface-variant">
+          This document has no text fonts — it's most likely a scan.
+        </p>
+      )}
+
+      {!loading && fonts && okCount > 0 && attention.length === 0 && (
         <p className="mt-1 text-caption text-emerald-400/90 flex items-center gap-1">
           <span className="material-symbols-outlined text-[14px]">check_circle</span>
           All fonts matched.

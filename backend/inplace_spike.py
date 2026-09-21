@@ -2106,6 +2106,36 @@ def _pinned_at(positions, x: float, tol: float = 1.5) -> bool:
     return any(abs(px - x) <= tol for px in positions)
 
 
+def _would_tear_line(seen, lspans, old_x1, push, gap_keep, tol: float = 0.6):
+    """Would growing the field by *push* collide with something that can't move?
+
+    Only meaningful when reflow has already declined. Text that shares the
+    field's text object rides its glyph advances and moves by *push*; text
+    placed by its own operator does not move at all. The first such operator
+    to the right of the field is therefore a wall, and everything between the
+    field and that wall is what gets pushed into it.
+
+    Returns False when there is no wall, when the line's geometry can't be
+    read (`seen` empty — then there is nothing to reason about and the caller
+    keeps its older behaviour), or when the growth fits in the gutter. The
+    gutter is spent by the same rule as everywhere else in this engine: up to
+    two ems of it is a real space and is preserved, anything beyond that is a
+    tab stop or a column gutter and is free.
+    """
+    if not seen or push <= 0:
+        return False
+    walls = [x for x in seen if x > old_x1 + tol]
+    if not walls:
+        return False                      # nothing placed to the right
+    wall = min(walls)
+    flowing = [sp_["bbox"][2] for sp_ in lspans if sp_["bbox"][0] < wall - tol]
+    if not flowing:
+        return False                      # nothing between field and wall
+    flow_end = max(flowing)
+    gutter = wall - flow_end
+    return flow_end + push > wall - min(gutter, gap_keep) + 0.05
+
+
 def _positions_on_baseline(doc, page, base_ys, tol: float = 0.6):
     """Every x at which a positioning operator places text on this LINE.
 
@@ -2951,6 +2981,27 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         reflowed = 0   # reason to lose an otherwise-good edit
     finally:
         rdoc.close()
+
+    # Reflow was needed and could not be done. What happens then is not
+    # "nothing moves": text drawn by the field's OWN text object keeps
+    # flowing on the field's glyph advances and shifts by the full growth,
+    # while anything placed by its own operator stays exactly where it is.
+    # So the line silently tears at the first absolutely-placed run.
+    #
+    # Measured on the IRS 1040, line 32: the field grows 41.6pt, "total other
+    # payments and refundable credits" flows with it and moves to x=501.5,
+    # and the leader dots at 468.0 and the "32" box at 488.8 do not move at
+    # all — the sentence printed straight through the box number. It was
+    # accepted because the only guard here asks whether the IMMEDIATE
+    # neighbour is pinned, and on this form it is not: it shares the field's
+    # text object and has no operator of its own.
+    #
+    # The reservation above had already granted room for the whole line to
+    # slide right. That room is only real if reflow actually runs.
+    if (new_x1 is not None and abs(_push) > 0.05 and not reflowed
+            and _would_tear_line(seen, _lspans, old_x1, _push, _gap_keep)):
+        return {"ok": False, "reason": "cannot_reflow",
+                "message": _REASON_MSG["cannot_reflow"]}
 
     if (next_pinned and new_x1 is not None
             and new_x1 > next_x0 + 0.05 and new_x1 > old_x1 + 0.05
