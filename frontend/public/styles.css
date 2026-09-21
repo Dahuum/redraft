@@ -333,6 +333,64 @@ body {
   }
 }
 
+/* ─────────── CLOSING CTA BAND ─────────── */
+.cta-band {
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  padding: clamp(72px, 9vw, 112px) var(--page-x);
+  text-align: center;
+}
+.cta-band__inner { max-width: 640px; margin: 0 auto; }
+.cta-band__title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(28px, 6vw, 44px);
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+  margin: 14px 0 0;
+}
+.cta-band__sub {
+  color: var(--muted);
+  font-size: clamp(15px, 2.4vw, 17px);
+  margin: 16px auto 0;
+  max-width: 30em;
+}
+.cta-band__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 28px;
+}
+.cta-band__note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 18px 0 0;
+}
+/* Two halves, not a <br>: hiding a <br> butts "is" against "about" with no
+   space between them. As inline spans the space is real text. */
+.cta-band__title span { display: block; }
+@media (max-width: 560px) {
+  /* Full-width stacked buttons read as one decision per row on a phone. */
+  .cta-band__actions { flex-direction: column; align-items: stretch; }
+  .cta-band__title span { display: inline; }
+}
+
+/* Footer links that open a modal are buttons, not anchors. */
+.footer__link-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  /* matches .footer__col a — these sit in the same list */
+  font-family: inherit;
+  color: var(--muted);
+  font-size: 14px;
+  transition: color .15s ease;
+}
+.footer__link-btn:hover { color: #fff; }
+
 /* ─────────── HERO ─────────── */
 .hero {
   position: relative;
