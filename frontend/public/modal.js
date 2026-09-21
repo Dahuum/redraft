@@ -159,13 +159,9 @@
       });
     }
 
-    var modalToggle = document.getElementById('modal-theme-toggle');
-    if (modalToggle) {
-      modalToggle.addEventListener('click', function () {
-        var t = document.getElementById('theme-toggle');
-        if (t) t.click();
-      });
-    }
+    // The modal's theme button used to forward its click to the one in the
+    // nav. app.js now binds every .theme-toggle directly, so forwarding would
+    // toggle twice and cancel itself out.
 
     // Delegated (not per-element) so this keeps working for elements added
     // to the DOM after DOMContentLoaded — module-script-mounted React
