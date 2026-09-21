@@ -26,13 +26,20 @@ export default function ToastHost() {
   const items = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   if (!items.length) return null;
   return (
-    <div className="fixed bottom-4 right-4 z-[120] flex flex-col items-end gap-2">
+    // Bounded on BOTH sides so the card keeps a gutter on a phone, where 384px
+    // is wider than the screen. The cap below is an arbitrary value rather than
+    // max-w-sm: this theme's named spacing keys shadow the built-in max-width
+    // scale, so max-w-sm resolved to --spacing-sm (8px) and the toast rendered
+    // as a 34px sliver off the right edge, one word per line, with its buttons
+    // off-screen. See the note above @theme in index.css. The strip is
+    // click-through except on the cards themselves.
+    <div className="pointer-events-none fixed bottom-4 left-4 right-4 z-[120] flex flex-col items-end gap-2">
       {items.map((t) => (
         <div
           key={t.id}
-          className="animate-drop flex max-w-sm items-center gap-3 rounded-xl border border-outline-variant/50 bg-surface-container-high px-4 py-2.5 shadow-panel"
+          className="animate-drop pointer-events-auto flex max-w-[384px] items-center gap-3 rounded-xl border border-outline-variant/50 bg-surface-container-high px-4 py-2.5 shadow-panel"
         >
-          <span className="text-caption text-on-surface">{t.message}</span>
+          <span className="min-w-0 text-caption text-on-surface">{t.message}</span>
           {t.actionLabel && (
             <button
               onClick={() => {

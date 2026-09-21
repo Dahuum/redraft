@@ -11,12 +11,14 @@ export default function SplitPicker({ text, split, title, onSet, onWhole, onClos
   const mark = hover != null ? hover : split ?? chars.length;
   return (
     <div className="px-3 py-2.5 bg-surface-container-high border-b border-outline-variant/30 shrink-0 animate-drop">
-      <div className="flex items-center justify-between text-caption mb-1.5 gap-2">
-        <span className="text-on-surface-variant flex items-center gap-1 min-w-0">
-          <span className="material-symbols-outlined text-[14px] text-accent-cyan">content_cut</span>
-          <span className="truncate">Split “{title}” — click where the value begins</span>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between text-caption mb-1.5 gap-1 sm:gap-2">
+        <span className="text-on-surface-variant flex items-start sm:items-center gap-1 min-w-0">
+          <span className="material-symbols-outlined text-[14px] text-accent-cyan shrink-0">content_cut</span>
+          {/* This sentence is the only instruction in the panel, so on a phone
+              it wraps instead of truncating; from sm up it truncates as before. */}
+          <span className="sm:truncate">Split “{title}” — click where the value begins</span>
         </span>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-3 shrink-0 self-end sm:self-auto">
           <button onClick={onWhole} className="text-on-surface-variant hover:text-on-surface transition-colors">
             Whole field
           </button>

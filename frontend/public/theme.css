@@ -20,6 +20,9 @@
   --success-fg:  #15803d;
   --shadow-sm:   0 4px 6px -4px rgba(37,99,235,.10), 0 10px 15px -3px rgba(37,99,235,.06);
   --shadow-card: 0 25px 50px -12px rgba(0,0,0,.10);
+
+  color-scheme: light;
+  scrollbar-color: rgba(0,0,0,0.25) transparent;
 }
 
 /* ── Navigation ── */

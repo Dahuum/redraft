@@ -304,7 +304,7 @@ export default function App() {
       <GlobalOverlays />
       <div className="h-screen w-full flex flex-col overflow-hidden animate-fade bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-surface-container-high via-background to-background">
       {/* TopNavBar */}
-      <header className="bg-surface/80 backdrop-blur-xl text-primary font-label-md text-label-md h-14 w-full border-b border-outline-variant flex justify-between items-center sticky top-0 z-30 px-6">
+      <header className="bg-surface/80 backdrop-blur-xl text-primary font-label-md text-label-md h-14 w-full border-b border-outline-variant flex justify-between items-center sticky top-0 z-30 px-3 sm:px-6">
         <button
           onClick={() => confirmLeaveEditor() && navigate("/")}
           title="Back to your documents"
@@ -313,7 +313,9 @@ export default function App() {
           <span className="material-symbols-outlined text-[20px]">arrow_back</span>
           <span className="font-display-md text-[17px] font-bold tracking-tight">Redraft</span>
         </button>
-        <div className="flex items-center gap-3">
+        {/* Labels collapse to their icons on phones: the brand plus three
+            labelled buttons needs ~378px and a 390px screen offers 342. */}
+        <div className="flex items-center gap-2 sm:gap-3">
           <ThemeToggle />
           <button
             onClick={handleDownload}
@@ -321,12 +323,12 @@ export default function App() {
             className="h-8 px-3 rounded-md font-label-md text-[13px] bg-primary text-on-primary hover:bg-primary/90 transition-colors shadow-[0_0_15px_rgba(195,198,210,0.1)] opacity-80 active:opacity-100 inline-flex items-center gap-2 disabled:opacity-40"
           >
             <span className="material-symbols-outlined text-[18px]">download</span>
-            Export PDF
+            <span className="hidden sm:inline">Export PDF</span>
           </button>
           {plan?.auth && plan.limit != null && (
             <span
               title="Documents generated this month"
-              className={`h-8 px-2.5 inline-flex items-center rounded-md font-label-md text-[12px] border ${
+              className={`h-8 px-2.5 hidden md:inline-flex items-center rounded-md font-label-md text-[12px] border ${
                 plan.used >= plan.limit
                   ? "border-error/40 text-error bg-error/10"
                   : "border-outline-variant text-on-surface-variant"
@@ -339,10 +341,10 @@ export default function App() {
             <button
               onClick={auth.signOut}
               title="Sign out"
-              className="ml-1 h-8 px-3 rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100 inline-flex items-center gap-1.5"
+              className="sm:ml-1 h-8 px-2.5 sm:px-3 rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100 inline-flex items-center gap-1.5"
             >
               <span className="material-symbols-outlined text-[18px]">logout</span>
-              Sign out
+              <span className="hidden sm:inline">Sign out</span>
             </button>
           )}
           {auth.enabled && !auth.user && (
@@ -351,10 +353,10 @@ export default function App() {
                 if (confirmLeaveEditor()) window.location.href = "/";
               }}
               title="Sign in to save your work and get more documents"
-              className="ml-1 h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-secondary-container-hover transition-colors inline-flex items-center gap-1.5"
+              className="sm:ml-1 h-8 px-2.5 sm:px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-secondary-container-hover transition-colors inline-flex items-center gap-1.5"
             >
               <span className="material-symbols-outlined text-[18px]">login</span>
-              Sign in
+              <span className="hidden sm:inline">Sign in</span>
             </button>
           )}
         </div>
@@ -362,13 +364,15 @@ export default function App() {
 
       {/* Mode toggle — guests get the editor only; Bulk/Annex need sign-in */}
       {guestMode ? (
-        <div className="w-full flex justify-center py-2.5 bg-background border-b border-outline-variant/30">
-          <div className="flex items-center gap-1.5 text-caption text-on-surface-variant bg-surface-container-high/60 border border-outline-variant/20 rounded-full px-4 py-1.5">
-            <span className="material-symbols-outlined text-[15px] text-accent-cyan">lock_open</span>
-            Bulk generation &amp; annex automation unlock when you
+        <div className="w-full flex justify-center px-3 py-2.5 bg-background border-b border-outline-variant/30">
+          {/* One flowing sentence, not a flex row: as a row the link was its own
+              column and got squeezed until "sign in" broke across two lines. */}
+          <div className="max-w-full text-center text-caption text-on-surface-variant bg-surface-container-high/60 border border-outline-variant/20 rounded-2xl sm:rounded-full px-4 py-1.5">
+            <span className="material-symbols-outlined text-[15px] text-accent-cyan align-[-3px] mr-1">lock_open</span>
+            Bulk generation &amp; annex automation unlock when you{" "}
             <button
               onClick={() => { window.location.href = "/"; }}
-              className="text-secondary font-medium hover:underline"
+              className="text-secondary font-medium hover:underline whitespace-nowrap"
             >
               sign in
             </button>
@@ -379,36 +383,39 @@ export default function App() {
           <div className="bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
             <button
               onClick={() => navigate(`/editor/${docId}`)}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
                 mode === "editor"
                   ? "bg-secondary-container text-white shadow-lg"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">edit</span>
-              PDF Editor
+              <span className="sm:hidden">Editor</span>
+              <span className="hidden sm:inline">PDF Editor</span>
             </button>
             <button
               onClick={() => navigate(`/bulk/${docId}`)}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
                 mode === "bulk"
                   ? "bg-secondary-container text-white shadow-lg"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">layers</span>
-              Bulk Generator
+              <span className="sm:hidden">Bulk</span>
+              <span className="hidden sm:inline">Bulk Generator</span>
             </button>
             <button
               onClick={() => navigate(`/annex/${docId}`)}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
+              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
                 mode === "annex"
                   ? "bg-secondary-container text-white shadow-lg"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">rule</span>
-              Annex Automation
+              <span className="sm:hidden">Annex</span>
+              <span className="hidden sm:inline">Annex Automation</span>
             </button>
           </div>
         </div>

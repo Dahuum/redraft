@@ -31,7 +31,7 @@ export default function GlobalOverlays() {
     <>
       <ToastHost />
       {down && (
-        <div className="fixed bottom-4 left-4 z-[110] max-w-sm flex items-start gap-2 rounded-xl border border-error/40 bg-surface-container-high/95 px-4 py-2.5 shadow-panel backdrop-blur-md">
+        <div className="fixed bottom-4 left-4 right-4 sm:right-auto z-[110] max-w-[384px] flex items-start gap-2 rounded-xl border border-error/40 bg-surface-container-high/95 px-4 py-2.5 shadow-panel backdrop-blur-md">
           <span className="material-symbols-outlined text-[18px] text-error">
             cloud_off
           </span>
@@ -44,7 +44,7 @@ export default function GlobalOverlays() {
         </div>
       )}
       {!down && slow && (
-        <div className="fixed bottom-4 left-4 z-[110] flex items-center gap-2 rounded-full border border-outline-variant/50 bg-surface-container-high/95 px-4 py-2 shadow-panel backdrop-blur-md">
+        <div className="fixed bottom-4 left-4 right-4 sm:right-auto z-[110] flex items-center gap-2 rounded-full border border-outline-variant/50 bg-surface-container-high/95 px-4 py-2 shadow-panel backdrop-blur-md">
           <span className="material-symbols-outlined animate-spin text-[18px] text-accent-cyan">
             progress_activity
           </span>

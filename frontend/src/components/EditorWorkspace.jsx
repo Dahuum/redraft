@@ -154,7 +154,11 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
   const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
 
   return (
-    <div className="flex-1 flex gap-4 p-4 overflow-hidden max-w-[1400px] w-full mx-auto animate-rise">
+    // Stacks below lg. The app shell is a fixed-height, non-scrolling column
+    // (h-screen + overflow-hidden), so when these panes stack THIS is the
+    // element that has to scroll — side by side it must not, or the panes
+    // lose their own internal scrolling.
+    <div className="flex-1 flex flex-col lg:flex-row gap-4 p-3 sm:p-4 overflow-y-auto lg:overflow-hidden max-w-[1400px] w-full mx-auto animate-rise">
       <input
         ref={inputRef}
         type="file"
@@ -164,7 +168,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
       />
 
       {/* Left Pane: Document Preview (65%) */}
-      <div className="flex-[0.65] bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
+      <div className="flex-none h-[58vh] min-h-[320px] lg:flex-[0.65] lg:h-auto lg:min-h-0 bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
         {/* Toolbar overlay */}
         <CanvasToolbar
           pageIndex={pageIndex}
@@ -248,7 +252,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
       </div>
 
       {/* Right Pane: Text Fields Sidebar (35%) */}
-      <div className="flex-[0.35] bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden relative">
+      <div className="flex-none lg:flex-[0.35] min-h-[45vh] lg:min-h-0 bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden relative">
         {/* Header: Text / Sign toggle + Find & Replace */}
         <div className="p-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md sticky top-0 z-10">
           <div className="flex items-center gap-2">
