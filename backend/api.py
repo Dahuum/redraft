@@ -495,6 +495,36 @@ class _TmpPDF:
             except OSError: pass
 
 
+_RTL_RANGES = (
+    (0x0590, 0x05FF),   # Hebrew
+    (0x0600, 0x06FF),   # Arabic
+    (0x0700, 0x074F),   # Syriac
+    (0x0750, 0x077F),   # Arabic Supplement
+    (0x08A0, 0x08FF),   # Arabic Extended-A
+    (0xFB1D, 0xFDFF),   # Hebrew/Arabic presentation forms
+    (0xFE70, 0xFEFF),   # Arabic presentation forms-B
+)
+
+
+def _is_rtl_text(text: str) -> bool:
+    """Is this span predominantly right-to-left script?
+
+    It matters twice over. PyMuPDF returns characters in the order they are
+    DRAWN, which for a right-to-left run is the reverse of reading order — so
+    "شهادة عمل" comes back as "لمع ةداهش" and the editor would show the user
+    their own document backwards. And the engine cannot edit such a run
+    anyway: placing it needs shaping (contextual forms and ligatures) that
+    nothing here does. Marking it lets the interface say so instead of
+    presenting reversed text as if it were editable.
+    """
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    rtl = sum(1 for c in letters
+              if any(lo <= ord(c) <= hi for lo, hi in _RTL_RANGES))
+    return rtl * 2 > len(letters)
+
+
 def extract_spans(pdf_bytes: bytes) -> list:
     """All spans across all pages as plain serialisable dicts (index == order)."""
     result = []
@@ -511,6 +541,7 @@ def extract_spans(pdf_bytes: bytes) -> list:
                     "flags":  span["flags"],
                     "bbox":   list(span["bbox"]),     # [x0,y0,x1,y1] in PDF pts
                     "origin": list(span["origin"]),
+                    **({"rtl": True} if _is_rtl_text(span["text"]) else {}),
                 })
         doc.close()
     return result
