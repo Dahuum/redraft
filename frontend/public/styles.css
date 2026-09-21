@@ -87,9 +87,11 @@ body {
 }
 .eyebrow--sm { font-size: 13px; letter-spacing: 0.12em; }
 .eyebrow--badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  /* inline-block, not inline-flex: as a flex row the icon was its own column,
+     so the moment the label wrapped it sat stranded and vertically centred
+     against a two-line block. Inline, it just leads the first line. */
+  display: inline-block;
+  text-align: center;
   font-size: 14px;
   font-weight: 500;
   letter-spacing: 0;
@@ -108,6 +110,8 @@ body {
 .eyebrow__icon {
   width: 14px; height: 14px;
   display: inline-block;
+  vertical-align: -2px;
+  margin-right: 8px;
   background: var(--accent);
   -webkit-mask: url("assets/icon-sparkle.svg") center / contain no-repeat;
           mask: url("assets/icon-sparkle.svg") center / contain no-repeat;
@@ -264,17 +268,24 @@ body {
 @media (max-width: 980px) {
   .nav-wrap { inset: 16px 16px auto 16px; }
   .nav { padding: 10px 10px 10px 18px; border-radius: 18px; flex-wrap: wrap; }
+  /* `gap` applies to both axes, and the wrapped links line counts even when
+     collapsed — together with the padding below they added 22px of dead
+     height to a closed island, which is why it looked chunky and empty. */
+  .nav { row-gap: 0; }
   .nav__links {
     order: 3;
     flex-basis: 100%;
     flex-direction: column;
     gap: 4px;
-    padding: 8px 4px 4px;
+    padding: 0;
     max-height: 0;
     overflow: hidden;
     transition: max-height .25s ease;
   }
-  .nav__links--open { max-height: 460px; } /* 4 links + Sign In + the CTA button */
+  .nav__links--open {
+    max-height: 460px; /* 4 links + Sign In + the theme row */
+    padding: 8px 4px 4px;
+  }
   .nav__links a { padding: 10px 8px; font-size: 16px; display: block; }
   .nav__burger { display: flex; }
   /* Once the links wrap to their own line, line 1 holds three items and
@@ -292,10 +303,20 @@ body {
      of inner width, so the burger dropped onto a second line and the island
      grew to ~150px tall with an empty band in it. Tightening the row's gap
      and the button puts all four back on one line. */
-  .nav { gap: 10px; padding: 8px 8px 8px 14px; }
+  .nav { column-gap: 10px; padding: 8px 8px 8px 14px; } /* column- only: `gap` would undo the row-gap:0 above */
   .nav__cta { gap: 8px; }
   .nav__cta .btn--pill { padding: 8px 12px; font-size: 13px; white-space: nowrap; }
   .brand__name { font-size: 18px; }
+  .eyebrow--badge { font-size: 12px; padding: 5px 12px; }
+  .eyebrow__icon { margin-right: 6px; }
+}
+.eyebrow__short { display: none; }
+@media (max-width: 370px) {
+  /* The full label needs ~320px and there is only ~280px here, so it wrapped
+     into a two-line stadium. Below this the clause goes; the hero subtitle
+     one screen-third down still carries it. */
+  .eyebrow__long { display: none; }
+  .eyebrow__short { display: inline; }
 }
 @media (max-width: 560px) {
   /* The bar can carry the brand, Get Started and the burger at 320px, but not
@@ -319,6 +340,12 @@ body {
   background: var(--bg);
   overflow: hidden;
   isolation: isolate;
+}
+/* Must sit after .hero, not up with the other phone rules: same specificity,
+   and the shorthand there would win on source order. 21vh of lead-in is a
+   fifth of a phone screen spent on nothing, and the island above it is 72px. */
+@media (max-width: 560px) {
+  .hero { padding-top: clamp(112px, 16vh, 160px); }
 }
 .hero__glow {
   position: absolute;
