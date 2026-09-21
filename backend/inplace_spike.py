@@ -397,6 +397,47 @@ def _encode_fallback(text, encoding_name):
 _SIMPLE_GLYPH_MEMO: dict = {}  # font display name -> set of covered chars, or None
 
 
+def _cff_glyph_coverage(raw):
+    """Characters a BARE CFF (Type1C) program can draw, or None.
+
+    Without this the coverage check was skipped entirely on every
+    Adobe-produced document. fontTools' SFNT reader rejects a /FontFile3 —
+    it has no sfnt wrapper — so the parse raised, coverage came back None,
+    and None means "cannot tell, do not block". The caller then wrote
+    character codes the subset has no outline for and the viewer painted
+    notdef boxes, while extraction still reported the right characters
+    because /ToUnicode had been updated. Silent, and invisible to any check
+    that reads the text back.
+
+    A CFF stores glyphs by NAME, so coverage is its charset mapped through
+    the Adobe glyph list.
+    """
+    if not raw:
+        return None
+    try:
+        import io as _io
+        from fontTools.cffLib import CFFFontSet
+        from fontTools import agl
+        cff = CFFFontSet()
+        cff.decompile(_io.BytesIO(raw), font_extend._cff_stub())
+        if not cff.fontNames:
+            return None
+        names = cff[cff.fontNames[0]].CharStrings.keys()
+        out = set()
+        for n in names:
+            uv = agl.AGL2UV.get(n)
+            if uv is not None:
+                out.add(chr(uv))
+            elif n.startswith("uni") and len(n) == 7:
+                try:
+                    out.add(chr(int(n[3:], 16)))
+                except ValueError:
+                    pass
+        return out or None
+    except Exception:  # noqa: BLE001 — truly unparseable -> skip, don't block
+        return None
+
+
 def _simple_font_glyph_coverage(doc, font_display_name: str):
     """Characters the embedded subset actually has a drawable glyph for, per
     the font program's own cmap table — distinct from _encode_fallback's
@@ -415,6 +456,7 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
         for f in doc[pno].get_fonts(full=True):
             if f[3].split("+")[-1] != font_display_name:
                 continue
+            raw = None
             try:
                 raw = doc.extract_font(f[0])[3]
                 if raw:
@@ -423,8 +465,8 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
                     tt = TTFont(_io.BytesIO(raw), fontNumber=0, lazy=True)
                     cmap = tt.getBestCmap() or {}
                     coverage = {chr(cp) for cp in cmap}
-            except Exception:  # noqa: BLE001 — unparseable font -> skip, don't block
-                coverage = None
+            except Exception:  # noqa: BLE001 — not SFNT; may still be a bare CFF
+                coverage = _cff_glyph_coverage(raw)
             break
         if coverage is not None:
             break
@@ -1269,6 +1311,17 @@ def _try_extend(doc, font_display_name, missing_chars):
 
 _SIMPLE_EXTEND_FAIL_MSG = {
     "no_font_ref": "Couldn't locate this font's own reference on the page.",
+    "cff_encoding_unsupported": ("This font's outlines are a CFF program and its encoding "
+                                 "isn't one whose character codes can be mapped safely, so "
+                                 "the glyph can't be added without changing how the existing "
+                                 "text is read."),
+    "cff_code_unmapped": ("This font's encoding doesn't assign the character to the code "
+                          "the text uses, so adding the glyph wouldn't make it draw."),
+    "cff_donor_too_different": ("The only donor available for this font has letters a "
+                                "noticeably different size from it, so adding them would "
+                                "be visible."),
+    "cff_no_glyph_name": "This character has no standard name a CFF font can store it under.",
+    "cff_extend_failed": "Couldn't add the glyph to this font's CFF program.",
     "no_fontfile": "This font's outlines aren't embedded as a TrueType program.",
     "no_donor": ("No other cut of this family is embedded in the document, and no "
                  "open-source donor could be resolved for it."),
@@ -1377,6 +1430,122 @@ def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
     return True
 
 
+def _simple_cff_refs(doc, font_display_name: str):
+    """Locate a simple /Type1 font whose outlines are a bare CFF (/FontFile3).
+
+    Separate from _simple_font_refs, which requires /Subtype /TrueType and
+    /FontFile2. Adobe's producers emit neither: the IRS forms are /Type1 with
+    /FontFile3, /Encoding /WinAnsiEncoding and /Widths declared 0..255.
+    """
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[3].split("+")[-1] != font_display_name:
+                continue
+            xref = f[0]
+            obj = doc.xref_object(xref, compressed=True)
+            flat = obj.replace(" ", "")
+            if "/Subtype/Type0" in flat:
+                continue
+            if "/Subtype/Type1" not in flat and "/Subtype/MMType1" not in flat:
+                continue
+            m = re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", obj)
+            if not m:
+                continue
+            fd_xref = int(m.group(1))
+            fd = doc.xref_object(fd_xref, compressed=True)
+            m2 = re.search(r"/FontFile3\s+(\d+)\s+0\s+R", fd)
+            if not m2:
+                continue
+            enc = re.search(r"/Encoding\s*/(\w+)", obj)
+            fc = re.search(r"/FirstChar\s+(\d+)", obj)
+            lc = re.search(r"/LastChar\s+(\d+)", obj)
+            tu = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", obj)
+            kind, val = doc.xref_get_key(xref, "Widths")
+            return {"font_xref": xref, "fd_xref": fd_xref,
+                    "ff_xref": int(m2.group(1)),
+                    "encoding": enc.group(1) if enc else None,
+                    "first_char": int(fc.group(1)) if fc else None,
+                    "last_char": int(lc.group(1)) if lc else None,
+                    "widths_kind": kind, "widths_val": val,
+                    "tu_xref": int(tu.group(1)) if tu else None}
+    return None
+
+
+def _winansi_maps(code: int, ch: str) -> bool:
+    """Does /WinAnsiEncoding assign *ch* to *code*?
+
+    WinAnsiEncoding is Windows-1252, so the question is decodable rather than
+    a table to carry. It matters because a simple font renders by CODE: the
+    injected glyph is stored under its standard Adobe name, and only an
+    encoding that already points this code at that name will draw it. Where it
+    does not, this tier refuses instead of writing a /Differences entry — that
+    is a change to how EXISTING text is interpreted, not just an addition.
+    """
+    try:
+        return bytes([code]).decode("cp1252") == ch
+    except Exception:  # noqa: BLE001 — undefined in 1252
+        return False
+
+
+def _try_extend_simple_cff(doc, font_display_name, missing_chars, code_for=None):
+    """Give a CFF-outline simple font the glyphs it lacks, in place.
+
+    The TrueType tier cannot touch these files at all — a /FontFile3 is a bare
+    CFF program and fontTools' SFNT reader rejects it — so every edit on an
+    Adobe-produced document that needed a character outside the subset used to
+    refuse and fall through to the redraw engine, which repaints the page and
+    embeds a font the producer never wrote.
+
+    Returns ({char: glyph name}, None) or (None, reason).
+    """
+    if code_for is None:
+        code_for = {}
+    refs = _simple_cff_refs(doc, font_display_name)
+    if not refs:
+        return None, "no_font_ref"
+    if refs.get("encoding") not in ("WinAnsiEncoding", "StandardEncoding"):
+        return None, "cff_encoding_unsupported"
+    for ch in missing_chars:
+        if not _winansi_maps(code_for.get(ch, ord(ch)), ch):
+            return None, "cff_code_unmapped"
+    try:
+        subset_bytes = doc.xref_stream(refs["ff_xref"])
+    except Exception:  # noqa: BLE001
+        return None, "no_fontfile"
+    if not subset_bytes:
+        return None, "no_fontfile"
+
+    donor, _kind = font_extend.resolve_donor_detailed(font_display_name)
+    if not donor:
+        return None, "no_donor"
+    try:
+        # extend_cff_font measures the donor against landmarks read off this
+        # subset's own glyphs and raises rather than inject something the
+        # wrong size. Its refusal is this tier's refusal.
+        result = font_extend.extend_cff_font(subset_bytes, donor, missing_chars)
+    except ValueError as exc:
+        msg = str(exc)
+        if "off by" in msg:
+            return None, "cff_donor_too_different"
+        if "no standard glyph name" in msg:
+            return None, "cff_no_glyph_name"
+        if "no glyph for" in msg:
+            return None, "glyph_not_in_donor"
+        return None, "cff_extend_failed"
+    except Exception:  # noqa: BLE001
+        return None, "cff_extend_failed"
+
+    if not _set_simple_widths(doc, refs,
+                              {code_for.get(ch, ord(ch)): result["width_1000"][ch]
+                               for ch in missing_chars}):
+        return None, "bad_widths"
+    doc.update_stream(refs["ff_xref"], result["font_bytes"])
+    _add_tounicode_entries(doc, refs.get("tu_xref"),
+                           {code_for.get(ch, ord(ch)): ord(ch) for ch in missing_chars},
+                           hex_digits=2)
+    return result["names"], None
+
+
 def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
     """Inject `missing_chars` into a SIMPLE font's embedded subset, in place.
 
@@ -1404,7 +1573,11 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
         code_for = {}
     refs = _simple_font_refs(doc, font_display_name)
     if not refs:
-        return None, "no_font_ref"
+        # No TrueType program under this name. It may still be a simple font
+        # whose outlines are a bare CFF, which is what every Adobe producer
+        # emits — that has its own tier.
+        return _try_extend_simple_cff(doc, font_display_name, missing_chars,
+                                      code_for=code_for)
     try:
         subset_bytes = doc.xref_stream(refs["ff_xref"])
     except Exception:  # noqa: BLE001

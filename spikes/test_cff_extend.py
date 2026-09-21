@@ -162,6 +162,74 @@ if donor:
     except ValueError:
         check("a char with no Adobe glyph name raises", True)
 
+# ---------------------------------------------------------------------------
+# The bug this tier exists to close: an edit that SHIPS characters the font
+# cannot draw. Reading the text back cannot see it — /ToUnicode reports the
+# right characters while the viewer paints notdef boxes — so the font program
+# itself is asked.
+# ---------------------------------------------------------------------------
+import random  # noqa: E402
+import warnings  # noqa: E402
+warnings.simplefilter("ignore")
+from api import extract_spans, apply_replacements  # noqa: E402
+import inplace_spike as sp  # noqa: E402
+
+
+def undrawable(doc, page, want_font, chars):
+    for f in doc[page].get_fonts(full=True):
+        if f[3].split("+")[-1] != want_font:
+            continue
+        raw = doc.extract_font(f[0])[3]
+        if not raw:
+            return None
+        cov = None
+        try:
+            cov = {chr(cp) for cp in (TTFont(io.BytesIO(raw), lazy=True).getBestCmap() or {})}
+        except Exception:  # noqa: BLE001
+            cov = sp._cff_glyph_coverage(raw)
+        if cov is None:
+            return None
+        return {c for c in chars if not c.isspace() and c not in cov}
+    return None
+
+
+sp._SIMPLE_GLYPH_MEMO.clear()
+cov = sp._simple_font_glyph_coverage(fitz.open(stream=pdf, filetype="pdf"),
+                                     base_name.split("+")[-1])
+check("coverage is readable for a CFF font at all", cov is not None,
+      "None means the missing-glyph check is skipped entirely")
+if cov:
+    check("coverage reports the accents as absent",
+          not any(c in cov for c in ACCENTS), sorted(set(ACCENTS) & cov))
+    check("coverage reports plain letters as present", "A" in cov and "z" in cov)
+
+spans = extract_spans(pdf)
+usable = [s for s in spans if len(s["text"].strip()) >= 6 and s.get("size", 0) > 5]
+random.Random(11).shuffle(usable)
+shipped = flagged = 0
+for sd in usable[:5]:
+    new_text = "Zoé Ångström-Ñuñez " + sd["text"].strip()[:10]
+    out, rep = apply_replacements(pdf, [(sd, new_text)], preserve_size=True, try_inplace=True)
+    if not rep["in_place"]["count"]:
+        continue
+    shipped += 1
+    d2 = fitz.open(stream=out, filetype="pdf")
+    pg = d2[sd["page"]]
+    for b in pg.get_text("rawdict")["blocks"]:
+        for ln in b.get("lines", []):
+            for sp_ in ln.get("spans", []):
+                body = "".join(c["c"] for c in sp_["chars"])
+                if "Zo" in body and "ngstr" in body:
+                    bad = undrawable(d2, sd["page"], sp_["font"].split("+")[-1], set(body))
+                    if bad:
+                        flagged += 1
+    d2.close()
+print(f"  accented edits accepted in place: {shipped}, of which undrawable: {flagged}")
+check("an accented edit is accepted in place on a CFF font", shipped > 0,
+      "all refused — the injection tier never ran")
+check("no accepted edit ships a character the font cannot draw", flagged == 0,
+      f"{flagged} of {shipped}")
+
 print(f"\n{'=' * 70}")
 if FAIL:
     print(f"RESULT: {len(FAIL)} FAILED -> {FAIL}")
