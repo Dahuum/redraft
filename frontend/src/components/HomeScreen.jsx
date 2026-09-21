@@ -263,8 +263,10 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
 
       {/* Main Workspace Canvas */}
       <main className="pt-20 min-h-screen flex flex-col px-lg pb-lg md:px-xl md:pb-xl max-w-[1100px] mx-auto w-full relative z-10 animate-fade">
-        {/* Ambient Glow */}
-        <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[600px] h-[600px] bg-accent-cyan/5 rounded-full blur-[120px] pointer-events-none -z-10"></div>
+        {/* Ambient Glow. Capped to the container: a fixed 600px circle centred
+            on a 390px screen reaches x=495, and a transformed box still counts
+            as scrollable overflow — the whole page panned 105px sideways. */}
+        <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[min(600px,100%)] h-[600px] bg-accent-cyan/5 rounded-full blur-[120px] pointer-events-none -z-10"></div>
 
         <div className="flex-1 flex flex-col w-full mx-auto">
           {/* Guest banner — edit/sign/download work now; sign-in unlocks more */}
