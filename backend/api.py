@@ -317,6 +317,39 @@ def _check_size(label: str, data: bytes, limit: int) -> None:
                  f"The limit is {limit // (1024 * 1024)} MB.")
 
 
+def _check_readable(label: str, data: bytes, filename: str = "") -> None:
+    """Reject a PDF we cannot work with, before anything else touches it.
+
+    A password-protected file opens without complaining and only fails later,
+    deep inside font ingestion, as a bare ValueError — which reached the user
+    as HTTP 500 Internal Server Error. It is not a server error; it is a file
+    we cannot read, and the user can fix it in one step if we say so.
+
+    A file that opens with no pages at all is damaged (a truncated upload is
+    the usual cause) and was being reported as a document that simply has no
+    text, which sends the user looking for the wrong problem.
+    """
+    name = f"“{filename}”" if filename else label
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            400, f"Couldn't read {name}. It may be corrupt, encrypted, "
+                 f"or not a valid PDF ({type(exc).__name__}).")
+    try:
+        if getattr(doc, "needs_pass", False) or getattr(doc, "is_encrypted", False):
+            raise HTTPException(
+                400, f"{name} is password-protected. Remove the password in your "
+                     f"PDF reader and upload it again — Redraft can't open a "
+                     f"locked file.")
+        if doc.page_count == 0:
+            raise HTTPException(
+                400, f"{name} has no readable pages. The file looks damaged or "
+                     f"incomplete — try downloading or exporting it again.")
+    finally:
+        doc.close()
+
+
 def _check_rows(rows: list) -> None:
     if len(rows) > MAX_ROWS:
         raise HTTPException(
@@ -1292,6 +1325,7 @@ async def extract(file: UploadFile = File(...), user: str = Depends(optional_use
     if not data:
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
+    _check_readable("The PDF", data, getattr(file, "filename", ""))
     _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
     try:
         spans = extract_spans(data)
@@ -1323,6 +1357,7 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
     if not data:
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
+    _check_readable("The PDF", data, getattr(file, "filename", ""))
     _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
     try:
         edit_list = json.loads(edits)
@@ -1411,6 +1446,7 @@ async def bulk(template: UploadFile = File(...),
         raise HTTPException(400, "Both a template PDF and a data file are required.")
     _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
     _check_size("The data file", data_bytes, MAX_DATA_BYTES)
+    _check_readable("The template PDF", tmpl_bytes, getattr(template, "filename", ""))
     _ingest_embedded_fonts(tmpl_bytes)  # use the template's own embedded fonts
 
     try:
@@ -1514,6 +1550,7 @@ async def fonts(file: UploadFile = File(...), user: str = Depends(require_user))
     if not data:
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
+    _check_readable("The PDF", data, getattr(file, "filename", ""))
     auto = _ingest_embedded_fonts(data)  # adopt the PDF's own embedded fonts first
     try:
         spans = extract_spans(data)
@@ -1706,6 +1743,7 @@ async def annex_model(file: UploadFile = File(...), template: str = Form(None),
     if not data:
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
+    _check_readable("The PDF", data, getattr(file, "filename", ""))
     _ingest_embedded_fonts(data)
     tmpl_in = None
     if template:
@@ -1779,6 +1817,7 @@ async def annex_generate(template: UploadFile = File(...),
         raise HTTPException(400, "Both a template PDF and a data file are required.")
     _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
     _check_size("The data file", data_bytes, MAX_DATA_BYTES)
+    _check_readable("The template PDF", tmpl_bytes, getattr(template, "filename", ""))
     _ingest_embedded_fonts(tmpl_bytes)
 
     try:
