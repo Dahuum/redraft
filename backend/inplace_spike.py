@@ -397,6 +397,51 @@ def _encode_fallback(text, encoding_name):
 _SIMPLE_GLYPH_MEMO: dict = {}  # font display name -> set of covered chars, or None
 
 
+def _type1_glyph_coverage(raw):
+    """Characters a PostScript Type 1 program (PFA/PFB) can draw, or None.
+
+    The third embedded-program format, after TrueType and bare CFF, and the
+    last one whose coverage could not be read — so the missing-glyph check was
+    skipped on every pdfTeX document and the viewer painted notdef boxes.
+    fontTools' t1Lib cannot help: on these subsets it raises "can't find end
+    of eexec part".
+
+    A Type 1 font keeps its glyph names in the eexec-encrypted section, which
+    is a fixed, documented stream cipher (R=55665, the first 4 plaintext bytes
+    discarded). Decrypting it and reading the CharStrings keys is enough — the
+    outlines themselves are not needed to answer "can this font draw X".
+    """
+    if not raw:
+        return None
+    try:
+        i = raw.find(b"eexec")
+        if i < 0:
+            return None
+        enc = raw[i + 5:].lstrip(b"\r\n\t ")
+        # PFA keeps the section as hex, PFB as binary.
+        if all(c in b"0123456789abcdefABCDEF \r\n\t" for c in enc[:64]):
+            import binascii
+            enc = binascii.unhexlify(re.sub(rb"[^0-9A-Fa-f]", b"", enc))
+        r = 55665
+        out = bytearray()
+        for b in enc:
+            out.append(b ^ (r >> 8))
+            r = ((b + r) * 52845 + 22719) & 0xFFFF
+        clear = bytes(out[4:])
+        names = re.findall(rb"/([A-Za-z][A-Za-z0-9._]*)\s+\d+\s+(?:-\||RD)\s", clear)
+        if not names:
+            return None
+        from fontTools import agl
+        chars = set()
+        for n in names:
+            uv = agl.AGL2UV.get(n.decode("latin-1"))
+            if uv is not None:
+                chars.add(chr(uv))
+        return chars or None
+    except Exception:  # noqa: BLE001 — unreadable -> skip, don't block
+        return None
+
+
 def _cff_glyph_coverage(raw):
     """Characters a BARE CFF (Type1C) program can draw, or None.
 
@@ -464,9 +509,14 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
                     import io as _io
                     tt = TTFont(_io.BytesIO(raw), fontNumber=0, lazy=True)
                     cmap = tt.getBestCmap() or {}
-                    coverage = {chr(cp) for cp in cmap}
-            except Exception:  # noqa: BLE001 — not SFNT; may still be a bare CFF
-                coverage = _cff_glyph_coverage(raw)
+                    # Empty is "no Unicode cmap to read", not "draws nothing".
+                    # LibreOffice's DejaVu subsets carry only a (1,0) table
+                    # keyed by glyph order, so getBestCmap finds nothing —
+                    # and calling that zero coverage would mark every
+                    # character missing on a font that draws them all.
+                    coverage = {chr(cp) for cp in cmap} or None
+            except Exception:  # noqa: BLE001 — not SFNT; try the other two
+                coverage = _cff_glyph_coverage(raw) or _type1_glyph_coverage(raw)
             break
         if coverage is not None:
             break
@@ -2616,13 +2666,20 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             new_codes = _encode_fallback(new, enc_name)
             if new_codes is None:
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
+        if True:
+            # Both encoders need this check, not just the fallback.
+            #
             # _encode_fallback only proves the WinAnsi/MacRoman *encoding*
-            # table has a byte for each character — not that this embedded
-            # subset's font program actually has a glyph outline there (see
-            # _simple_font_glyph_coverage's docstring). _encode_simple_text
-            # above doesn't need this: it's built from the doc's own
-            # /ToUnicode, so a hit there is already something the doc
-            # genuinely renders.
+            # table has a byte for each character, never that this subset has
+            # an outline there. _encode_simple_text was trusted instead,
+            # on the grounds that it is built from the document's own
+            # /ToUnicode and so only names things the document renders. That
+            # is not true: /ToUnicode is a reverse map for EXTRACTION and can
+            # name a code whose glyph the program does not contain. The CID
+            # branch above has guarded against exactly this since the
+            # 'Fécture'-with-no-ink bug; the simple branch did not, and an
+            # arXiv paper accordingly shipped .notdef boxes for 'é', 'Å',
+            # 'Ñ' and 'ñ' with every text-level check passing.
             coverage = _simple_font_glyph_coverage(doc, nm)
             if coverage is not None:
                 missing = sorted({ch for ch in new if not ch.isspace() and ch not in coverage})
