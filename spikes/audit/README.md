@@ -14,7 +14,7 @@ python3 audit_paths.py                   # /bulk, /annex, overlays, /compose
 python3 audit_stress.py                  # adversarial text, successive edits, scale
 ```
 
-`audit_paths.py` needs the API running (`uvicorn api:app --port 8000` from
+`audit_paths.py` and the bulk half of `audit_stress.py` need the API running (`uvicorn api:app --port 8000` from
 `backend/`). `RD_BACKEND` and `RD_API` override what is measured, which is how
 a fix is A/B'd against the commit before it.
 
