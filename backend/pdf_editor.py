@@ -354,31 +354,101 @@ def _parse_cmap_chars(raw: bytes) -> set:
 _LAST_PATH: dict = {"value": None}
 
 
+# Style words different foundries use for the SAME regular face. Without
+# "Book" a DejaVu query can never match: fontconfig styles DejaVu Sans's
+# regular face "Book", so :style=Regular found nothing, the exact lookup fell
+# through, and the fuzzy one below answered with the BOLD file.
+_REGULAR_SYNONYMS = ("Regular", "Book", "Roman", "Normal")
+
+
+def _family_variants(family: str):
+    """The family as written, plus a CamelCase-split form.
+
+    A PDF names the face as it was embedded — "DejaVuSans" — while fontconfig
+    knows it as "DejaVu Sans", so an exact query on the embedded spelling
+    matches nothing.
+    """
+    out = [family]
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", family)
+    if spaced != family:
+        out.append(spaced)
+    return out
+
+
+def _file_weight_ok(path: str, weight: int, style: str) -> bool:
+    """Does the font FILE actually carry the weight and slant asked for?
+
+    fc-match answers every query for this family with DejaVuSans-Bold.ttf,
+    whatever weight is requested, and the only gate was a substring test on
+    the basename — which "dejavusansbold.ttf" passes for family "DejaVuSans".
+    The redraw engine then re-stamped untouched regular text in BOLD, which is
+    wider, and it collided with the run after it by 17pt.
+
+    Unreadable metadata returns True: this is a veto on a demonstrably wrong
+    file, not a second opinion on every good one.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+        tt = TTFont(path, lazy=True, fontNumber=0)
+        os2 = tt["OS/2"] if "OS/2" in tt else None
+        got = int(getattr(os2, "usWeightClass", weight) or weight)
+        italic = bool(int(getattr(os2, "fsSelection", 0)) & 1) if os2 is not None else False
+        if abs(got - weight) > 150:
+            _dbg(f"system REJECTED wrong weight: {path} is {got}, wanted {weight}")
+            return False
+        if italic != (style == "italic"):
+            _dbg(f"system REJECTED wrong slant: {path} italic={italic}, wanted {style!r}")
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — cannot read it, so cannot veto it
+        return True
+
+
+_WIDTH_TOKENS = ("condensed", "narrow", "extended", "expanded", "semicond",
+                 "mono", "display", "caption", "inline", "outline", "shadow")
+
+
+def _width_variant_rank(path: str) -> tuple:
+    """Sort key preferring the plainest cut: fewest width/optical tokens, then
+    the shortest name. "DejaVuSans.ttf" beats "DejaVuSansCondensed.ttf"."""
+    base = os.path.basename(path).lower()
+    return (sum(1 for t in _WIDTH_TOKENS if t in base), len(base))
+
+
 def _find_system_font(family: str, weight: int, style: str) -> bytes | None:
     """
     Search system fonts via ``fc-list`` (Linux fontconfig).
 
     Returns the raw font bytes if a matching font is found, else None.
     """
-    # Build fc-list style string
-    style_str = _weight_name(weight)
+    base = _weight_name(weight)
+    styles = list(_REGULAR_SYNONYMS) if base == "Regular" else [base]
     if style == "italic":
-        style_str += " Italic" if style_str != "Regular" else "Italic"
+        styles = [(f"{s} Italic" if s != "Regular" else "Italic") for s in styles]
 
-    try:
-        result = subprocess.run(
-            ["fc-list", f":family={family}:style={style_str}", "--format=%{file}\n"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for path in result.stdout.strip().splitlines():
-            path = path.strip()
-            if path and os.path.exists(path):
-                _dbg(f"system fc-list match: family={family!r} style={style_str!r} → {path}")
-                _LAST_PATH["value"] = f"system:{path}"
-                with open(path, "rb") as f:
-                    return f.read()
-    except Exception:
-        pass
+    for fam in _family_variants(family):
+        for style_str in styles:
+            try:
+                result = subprocess.run(
+                    ["fc-list", f":family={fam}:style={style_str}", "--format=%{file}\n"],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except Exception:
+                continue
+            cands = [pp.strip() for pp in result.stdout.strip().splitlines()
+                     if pp.strip() and os.path.exists(pp.strip())]
+            cands = [pp for pp in cands if _file_weight_ok(pp, weight, style)]
+            if not cands:
+                continue
+            # fontconfig treats a style like "Condensed,Book" as matching
+            # "Book", so a :style=Book query returns DejaVuSansCondensed.ttf
+            # alongside DejaVuSans.ttf — and taking the first hit restamped the
+            # text in a narrower face. Prefer the plainest cut of the family.
+            path = min(cands, key=_width_variant_rank)
+            _dbg(f"system fc-list match: family={fam!r} style={style_str!r} → {path}")
+            _LAST_PATH["value"] = f"system:{path}"
+            with open(path, "rb") as f:
+                return f.read()
 
     # Broader fc-match fallback
     try:
@@ -391,7 +461,11 @@ def _find_system_font(family: str, weight: int, style: str) -> bytes | None:
         if path and os.path.exists(path):
             fam_clean = family.lower().replace(" ", "")
             base_clean = os.path.basename(path).lower().replace("-", "").replace("_", "")
-            if fam_clean in base_clean:
+            # The family substring alone is not enough: "dejavusans" is a
+            # substring of "dejavusansbold.ttf", so every weight of a family
+            # passed this test and fc-match hands back the same Bold file for
+            # every weight asked.
+            if fam_clean in base_clean and _file_weight_ok(path, weight, style):
                 _dbg(f"system fc-match accepted: query={query!r} → {path}")
                 _LAST_PATH["value"] = f"system:{path}"
                 with open(path, "rb") as f:
