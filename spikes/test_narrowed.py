@@ -66,6 +66,22 @@ for key, new in (("programmation", "informatique"),
     others_a = [(w[4], round(w[0], 1), round(w[1], 1)) for w in after if abs(w[1] - y) >= 3]
     check("  ...no other line moved", others_b == others_a)
 
+# ── the centred signature block keeps its axis ──
+ext0 = S._visible_extents(fitz.open(stream=raw, filetype="pdf")[0])
+axis = next((e[0] + e[1]) / 2 for e in ext0 if e[3].startswith("Managing Director"))
+for old, new in (("Larbi EL HILALI", "Nadia BERRADA"), ("Larbi EL HILALI", "Abderrahmane EL MOUSSAOUI")):
+    sd = next(s for s in spans if old in s["text"])
+    out, rep = api.apply_replacements(raw, [(sd, sd["text"].replace(old, new))], try_inplace=True)
+    e = next(x for x in S._visible_extents(fitz.open(stream=out, filetype="pdf")[0]) if new in x[3])
+    check(f"centred signature: {new!r} stays on the block's axis",
+          rep["in_place"]["count"] == 1 and abs((e[0] + e[1]) / 2 - axis) < 0.3,
+          f"{(e[0] + e[1]) / 2:.2f} vs {axis:.2f}")
+sd = next(s for s in spans if "Sara Idrissi" in s["text"])
+out, _ = api.apply_replacements(raw, [(sd, sd["text"].replace("Sara Idrissi", "Nour El Houda Bennani"))],
+                                try_inplace=True)
+n = next(s for s in api.extract_spans(out) if "Nour El Houda" in s["text"])
+check("a left-aligned line is not recentred (control)", abs(n["bbox"][0] - sd["bbox"][0]) < 0.05)
+
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not FAIL else f"{len(FAIL)} FAILED -> {FAIL}")
 sys.exit(1 if FAIL else 0)

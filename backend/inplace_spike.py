@@ -3246,32 +3246,44 @@ def _left_text_x1(page, target) -> float:
 
 def _shift_field_object(doc, page, base_ys, x0, x1, dx, tol: float = 0.6) -> int:
     """Move the text object that draws the field — and ONLY the field — by
-    *dx* page points. Returns 1, or 0 when no such object can be isolated."""
+    *dx* page points. Returns 1, or 0 when no such object can be isolated.
+
+    One pass over the streams: the object to move and every other object on
+    the line are collected together. (Reading the streams a second time to
+    look for other objects left the first pass's stream stale, so the move
+    was written where nothing rendered it and still reported success.)"""
     if abs(dx) < 0.01:
         return 0
-    found = []
+    found, others = [], []
     for st in _content_streams(doc, page):
         for obj in _text_objects(st["data"]):
             pos = obj["positions"]
             if not pos:
                 continue
             on = [q for q in pos if any(abs(q[1] - by) <= tol for by in base_ys)]
-            if not on or len(on) != len(pos):
+            if not on:
                 continue
-            if abs(on[0][0] - x0) > tol or any(q[0] > x1 + tol for q in on):
-                continue
-            if not obj["rigid"] or not obj["x_scale"]:
-                return 0
-            found.append((st, obj))
+            if len(on) == len(pos) and abs(on[0][0] - x0) <= tol \
+                    and not any(q[0] > x1 + tol for q in on):
+                if not obj["rigid"] or not obj["x_scale"]:
+                    return 0
+                found.append((st, obj))
+            else:
+                others.append(obj)
     if len(found) != 1:
         return 0
+    # And nothing ELSE draws inside the field: Word sets "Benguerir, le " and
+    # the date as two objects, and moving only the first split the line.
+    for obj2 in others:
+        if any(any(abs(q[1] - by) <= tol for by in base_ys) and x0 + tol < q[0] < x1 - tol
+               for q in (obj2["positions"] or [])):
+            return 0
     st, obj = found[0]
     data = st["data"]
-    a, b = obj["x_at"]
-    new = data[:a] + f"{float(data[a:b]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b:]
+    a_, b_ = obj["x_at"]
+    new = data[:a_] + f"{float(data[a_:b_]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b_:]
     doc.update_stream(st["xref"], new)
     return 1
-
 
 _TW_OP = re.compile(rb"(?<![\w.])(-?\d*\.?\d+)\s+Tw\b")
 _TF_OP = re.compile(rb"/[^\s/\[\]()<>]+\s+(-?\d*\.?\d+)\s+Tf\b")
@@ -3379,6 +3391,89 @@ def _rejustify(doc, page, base_y_pdf: float, field_x0: float, delta: float,
         out[m.start(1):m.end(1)] = f"{t['gap_before'] + step:.3f}".encode()
     doc.update_stream(st["xref"], bytes(out))
     return True
+
+
+def _visible_extents(page):
+    """[(x0, x1_visible, baseline_y, text)] per span, trailing spaces ignored
+    — Word ends a centred line with a space that is not part of its look."""
+    out = []
+    for b in page.get_text("rawdict")["blocks"]:
+        for l in b.get("lines", []):
+            for sp in l["spans"]:
+                vis = [c for c in sp["chars"] if c["c"].strip()]
+                if vis:
+                    out.append((vis[0]["bbox"][0], vis[-1]["bbox"][2], sp["origin"][1],
+                                "".join(c["c"] for c in sp["chars"])))
+    return out
+
+
+def _centred_line(page, target) -> bool:
+    """Is *target* one of a block of CENTRED lines?
+
+    Evidence only: two or more lines within a few leadings share its visible
+    centre while starting at a different x. A Word signature block
+    ("Benguerir, le …" / "Larbi EL HILALI," / "Managing Director 1337")
+    centres every line on x=386.3; an edit that kept the left edge left
+    "Nadia BERRADA," 3pt off the axis the other lines sit on."""
+    ext = _visible_extents(page)
+    y = target["origin"][1]
+    mine = [e for e in ext if abs(e[2] - y) <= 0.6 and e[3] == target["text"]]
+    if not mine:
+        return False
+    x0, x1 = mine[0][0], mine[0][1]
+    c = (x0 + x1) / 2.0
+    size = target["size"]
+    mates = [e for e in ext if abs(e[2] - y) > 0.6 and abs(e[2] - y) <= 6 * size
+             and abs((e[0] + e[1]) / 2.0 - c) <= 0.6 and abs(e[0] - x0) > 1.0]
+    return len(mates) >= 2
+
+
+def _recentre_line(pdf: bytes, tpage: int, target, base_ys, tol: float = 0.6):
+    """Put the edited CENTRED line back on its original axis, as a whole.
+
+    A centred line is the unit that is centred, not the field: Word sets
+    "Larbi EL HILALI" and its comma, or "Benguerir, le " and the date, as
+    separate objects, and moving only the field's object split the line.
+    Every text object drawn on the line — and only on it — moves by the same
+    amount. Returns the new bytes, or None to leave the edit as it was."""
+    y = target["origin"][1]
+    orig_vis = target.get("_vis_centre")
+    doc = fitz.open(stream=pdf, filetype="pdf")
+    try:
+        page = doc[tpage]
+        ext = [e for e in _visible_extents(page) if abs(e[2] - y) <= tol]
+        if not ext or orig_vis is None:
+            return None
+        cur = (min(e[0] for e in ext) + max(e[1] for e in ext)) / 2.0
+        dx = orig_vis - cur
+        if abs(dx) < 0.02:
+            return None
+        writes = []
+        for st in _content_streams(doc, page):
+            for obj in _text_objects(st["data"]):
+                pos = obj["positions"]
+                if pos is None:
+                    continue
+                on = [q for q in pos if any(abs(q[1] - by) <= tol for by in base_ys)]
+                if not on:
+                    continue
+                if len(on) != len(pos) or not obj["rigid"] or not obj["x_scale"]:
+                    return None      # draws elsewhere too, or can't be moved whole
+                writes.append((st, obj))
+        if not writes:
+            return None
+        by_stream = {}
+        for st, obj in writes:
+            by_stream.setdefault(st["xref"], (st, []))[1].append(obj)
+        for xref, (st, objs) in by_stream.items():
+            data = st["data"]
+            for obj in sorted(objs, key=lambda o: o["x_at"][0], reverse=True):
+                a, b = obj["x_at"]
+                data = data[:a] + f"{float(data[a:b]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b:]
+            doc.update_stream(xref, data)
+        return doc.tobytes(garbage=4, deflate=True)
+    finally:
+        doc.close()
 
 
 def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
@@ -3735,6 +3830,13 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         left_x1 = _left_text_x1(odoc[tpage], target) if right_col else None
         # A JUSTIFIED line re-justifies instead of growing or shrinking.
         just_margin = None if right_col else _justified_margin(odoc[tpage], target)
+        # A CENTRED line keeps its centre: half the change goes each way.
+        centred = (not right_col and just_margin is None
+                   and _centred_line(odoc[tpage], target))
+        if centred:
+            _ln = [e for e in _visible_extents(odoc[tpage])
+                   if abs(e[2] - target["origin"][1]) <= 0.6]
+            target = dict(target, _vis_centre=(min(e[0] for e in _ln) + max(e[1] for e in _ln)) / 2.0)
     finally:
         odoc.close()
     # How much the value may grow before anything has to move, and how much
@@ -3876,7 +3978,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     if right_col and new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
         sdoc = fitz.open(stream=edited, filetype="pdf")
         try:
-            if _shift_field_object(sdoc, sdoc[tpage], line_ys, old_x0, new_x1,
+            if _shift_field_object(sdoc, sdoc[tpage], line_ys, old_x0, old_x1,
                                    -(new_x1 - old_x1)):
                 edited = sdoc.tobytes(garbage=4, deflate=True)
                 right_shifted = True
@@ -3957,6 +4059,9 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                 "message": _REASON_MSG["cannot_reflow"]}
 
     diff = {"outside": None, "inside": None}
+    if centred:
+        edited = _recentre_line(edited, tpage, target, line_ys) or edited
+
     if verify:
         # The exclusion zone for "did anything ELSE on the page change" must
         # cover where the edited text NOW sits, not just its old extent — a
