@@ -163,9 +163,23 @@ def moved_text(before_pdf: bytes, out_pdf: bytes, page: int, span: dict,
     # Followers on the edited line, left to right: prose until the first
     # gutter wider than two em, pinned from there on.
     follow = sorted((w for w in wb if on_line(w) and w[0] >= x1 - tol), key=lambda w: w[0])
+    rows = {}
+    for w in wb:
+        rows.setdefault(round((w[1] + w[3]) / 2), []).append(w)
+    gut = []
+    for ws in rows.values():
+        ws.sort()
+        gut += [ws[j] for j in range(1, len(ws)) if ws[j][0] - ws[j - 1][2] > 0.6 * (ws[j][3] - ws[j][1])]
+
+    def is_cell(w):
+        # Lines up, after a gutter, with gutter-separated words on 2+ other
+        # rows — written independently of the engine's own test on purpose.
+        return w in gut and len({round(v[1]) for v in gut if abs(v[1] - w[1]) >= 2
+                                 and (abs(v[0] - w[0]) <= 0.5 or abs(v[2] - w[2]) <= 0.5)}) >= 2
+
     pinned_from, cur = None, x1
     for w in follow:
-        if w[0] - cur > em:
+        if w[0] - cur > em or is_cell(w):
             pinned_from = w[0]
             break
         cur = max(cur, w[2])

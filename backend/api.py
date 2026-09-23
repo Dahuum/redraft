@@ -609,11 +609,22 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
     follow = sorted((w for w in wb if on_line(w) and w[0] >= x1 - tol),
                     key=lambda w: w[0])
     pinned_from, cur = None, x1
+    cell_page = None
     for w in follow:
         if w[0] - cur > em2:
             pinned_from = w[0]
             break
+        # A table cell is pinned however narrow its gutter: "North" after
+        # "Widget A" sits 9pt away, under two em, and was nudged 0.7pt by
+        # a redraw that shrank the product name to fit.
+        if cell_page is None:
+            cell_page = fitz.open(stream=before, filetype="pdf")
+        if _spike._is_column_cell(cell_page[pno], sd["bbox"], w[0]):
+            pinned_from = w[0]
+            break
         cur = max(cur, w[2])
+    if cell_page is not None:
+        cell_page.close()
 
     def same(v, w):
         return v[4] == w[4] and abs(v[0] - w[0]) <= tol and abs(v[1] - w[1]) <= tol
