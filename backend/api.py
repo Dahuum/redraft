@@ -544,6 +544,10 @@ def extract_spans(pdf_bytes: bytes) -> list:
                     "bbox":   list(span["bbox"]),     # [x0,y0,x1,y1] in PDF pts
                     "origin": list(span["origin"]),
                     **({"rtl": True} if _is_rtl_text(span["text"]) else {}),
+                    # Invisible text (render mode 3, alpha 0): the OCR layer
+                    # a scanner lays over a PICTURE of the page. Editing it
+                    # changes nothing anyone can see — see _INVISIBLE_MSG.
+                    **({"invisible": True} if span.get("alpha", 255) == 0 else {}),
                 })
         doc.close()
     return result
@@ -1050,6 +1054,13 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
     return bad
 
 
+_INVISIBLE_MSG = (
+    "This text is an invisible layer over a scanned image — what you see on the "
+    "page is a picture of the text, not the text itself. Changing it would change "
+    "nothing visible, only what search and copy return, so the field was left as "
+    "it was. To change what the page shows, add new text over it instead.")
+
+
 def apply_replacements(pdf_bytes: bytes, replacements: list,
                        preserve_size: bool = True, try_inplace: bool = False,
                        _known_refusals: list = None) -> tuple:
@@ -1080,6 +1091,26 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
     # the W-9, a field that alone resized 8.0pt -> 5.6pt and reported
     # "resized_to_fit" came back at full size, overflowing, with the response
     # saying nothing at all.
+    # An OCR layer over a scan. "Editing" it reported success while the page
+    # the user sees stayed exactly as it was (0 pixels changed) and its text
+    # layer started contradicting its image; redrawing instead would print
+    # crisp new text over the scanned picture of the old. Neither is an edit.
+    invisible = [sd for sd, _ in replacements if sd.get("invisible")]
+    if invisible:
+        replacements = [(sd, nt) for sd, nt in replacements if not sd.get("invisible")]
+        refused = [{"text": sd["text"][:60], "reason": "invisible_text",
+                    "message": _INVISIBLE_MSG} for sd in invisible]
+        if not replacements:
+            return pdf_bytes, {"fonts": [], "warnings": [
+                f"{sd['text'][:40]!r} was left unchanged: {_INVISIBLE_MSG}" for sd in invisible],
+                "in_place": {"count": 0, "total": len(invisible), "refusals": refused}}
+        out, rep = apply_replacements(pdf_bytes, replacements, preserve_size, try_inplace,
+                                      _known_refusals)
+        rep.setdefault("in_place", {}).setdefault("refusals", []).extend(refused)
+        rep["warnings"] = list(rep.get("warnings") or []) + [
+            f"{sd['text'][:40]!r} was left unchanged: {_INVISIBLE_MSG}" for sd in invisible]
+        return out, rep
+
     inplace_refusals = list(_known_refusals or [])
     if try_inplace:
         (pdf_bytes, in_place_count, replacements,

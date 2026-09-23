@@ -1030,6 +1030,7 @@ def get_spans(doc: fitz.Document, page_num: int = 0) -> list:
                     "size":   span["size"],
                     "color":  _int_to_rgb(span["color"]),
                     "flags":  span["flags"],
+                    "alpha":  span.get("alpha", 255),
                 })
     return spans
 

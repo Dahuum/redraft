@@ -19,7 +19,7 @@ CORPUS = os.environ.get(
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples")
 API = os.environ.get("RD_API", "http://localhost:8000")
 HARD = ("cannot_render", "runs_off_the_page", "cannot_place", "overlaps_neighbour",
-        "moves_column")
+        "moves_column", "invisible_text")
 
 # The composer sets real ligatures, and PDFs are full of typographic
 # lookalikes. Comparing raw characters calls correct output "lost text".

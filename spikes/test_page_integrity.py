@@ -16,6 +16,9 @@ looking only at the edited text:
     column's caption, and the caption's next line was pushed off the page.
   * ANNEX LABEL. The total's widened cell reached into its own "Total HT"
     label, and every generated annex printed "Total H".
+  * INVISIBLE OCR TEXT. On a scan the text is a picture; the searchable layer
+    over it is drawn invisibly. Editing it reported success, changed no pixel,
+    and left the text layer contradicting the image. It is refused now.
 """
 import os
 import sys
@@ -166,6 +169,23 @@ check("annex: the 'Total HT' label survives a longer total", "Total HT" in txt, 
 check("annex: the recomputed total is printed", want in txt, want)
 check("annex: no field was dropped", not [w for w in rep.get("warnings", []) if "left unchanged" in w],
       str([w[:80] for w in rep.get("warnings", []) if "left unchanged" in w]))
+
+# --- invisible OCR layer over a scanned page ---------------------------------
+pic = fitz.open()
+pp = pic.new_page(width=300, height=120)
+pp.insert_text((20, 60), "Nom : Sara Idrissi", fontsize=14)
+img = pp.get_pixmap(dpi=100).tobytes("png")
+scan = fitz.open()
+sp_ = scan.new_page(width=300, height=120)
+sp_.insert_image(sp_.rect, stream=img)
+sp_.insert_text((20, 60), "Nom : Sara Idrissi", fontsize=14, render_mode=3)
+scan_b = scan.tobytes()
+ss = [s for s in api.extract_spans(scan_b) if "Sara" in s["text"]]
+check("scan: the OCR layer is marked invisible", ss and ss[0].get("invisible"), str(ss[:1]))
+out, rep = api.apply_replacements(scan_b, [(ss[0], "Nom : Salma B")], try_inplace=True)
+check("scan: editing invisible text is refused, bytes untouched", out == scan_b)
+check("scan: the refusal says why",
+      [r["reason"] for r in rep["in_place"]["refusals"]] == ["invisible_text"], str(rep["in_place"]))
 
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not FAIL else f"{len(FAIL)} FAILED -> {FAIL}")
