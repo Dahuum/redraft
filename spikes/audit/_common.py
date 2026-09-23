@@ -18,7 +18,8 @@ CORPUS = os.environ.get(
     "RD_CORPUS", os.path.join(os.path.expanduser("~"), ".cache", "redraft-audit", "corpus"))
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples")
 API = os.environ.get("RD_API", "http://localhost:8000")
-HARD = ("cannot_render", "runs_off_the_page", "cannot_place", "overlaps_neighbour")
+HARD = ("cannot_render", "runs_off_the_page", "cannot_place", "overlaps_neighbour",
+        "moves_column")
 
 # The composer sets real ligatures, and PDFs are full of typographic
 # lookalikes. Comparing raw characters calls correct output "lost text".
@@ -132,6 +133,62 @@ def output_defects(out_pdf: bytes, page: int, new_text: str, base: dict) -> list
     finally:
         d.close()
     return found
+
+
+def moved_text(before_pdf: bytes, out_pdf: bytes, page: int, span: dict,
+               tol: float = 0.6) -> list:
+    """Words the user did not touch that are no longer where they were.
+
+    None of the other checks look at text outside the edit, so a table whose
+    columns slid 39pt left after a quantity edit passed as clean. Allowed to
+    move: prose right after the field on its own line (a word processor
+    pushes it). Everything else — other lines, text before the field, and
+    anything on the line past a column gutter wider than two em — must stay
+    within *tol* points.
+    """
+    x0, y0, x1, y1 = span["bbox"]
+    em = 2.0 * float(span.get("size") or 10.0)
+    b = fitz.open(stream=before_pdf, filetype="pdf")
+    a = fitz.open(stream=out_pdf, filetype="pdf")
+    try:
+        wb = b[page].get_text("words")
+        wa = a[page].get_text("words")
+    finally:
+        b.close(); a.close()
+
+    def on_line(w):
+        ov = min(w[3], y1) - max(w[1], y0)
+        return ov > 0.5 * min(w[3] - w[1], y1 - y0)
+
+    # Followers on the edited line, left to right: prose until the first
+    # gutter wider than two em, pinned from there on.
+    follow = sorted((w for w in wb if on_line(w) and w[0] >= x1 - tol), key=lambda w: w[0])
+    pinned_from, cur = None, x1
+    for w in follow:
+        if w[0] - cur > em:
+            pinned_from = w[0]
+            break
+        cur = max(cur, w[2])
+
+    must = []
+    for w in wb:
+        if on_line(w):
+            if w[2] > x0 + tol and w[0] < x1 - tol:
+                continue                                   # the edit itself
+            if w[0] >= x1 - tol and (pinned_from is None or w[0] < pinned_from - tol):
+                continue                                   # prose that may flow
+        must.append(w)
+    pool = list(wa)
+    lost = []
+    for w in must:
+        k = next((i for i, v in enumerate(pool) if v[4] == w[4]
+                  and abs(v[0] - w[0]) <= tol and abs(v[1] - w[1]) <= tol), None)
+        if k is None:
+            lost.append(w)
+        else:
+            pool.pop(k)
+    return [f"{w[4][:14]!r}@{w[0]:.0f},{w[1]:.0f} moved/lost" for w in lost[:3]] + (
+        [f"+{len(lost) - 3} more"] if len(lost) > 3 else [])
 
 
 def corpus_docs(limit=None):

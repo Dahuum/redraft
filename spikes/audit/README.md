@@ -42,6 +42,43 @@ perfect while the page was wrong.
    `1.140.000,00` instead of `11,400.00`, and recomputed the Total HT to
    agree. Internally consistent, looks finished, 100x wrong.
 
+## Then the page itself: eight more, found by asking what ELSE moved
+
+Every check above looks at the edited text. None looked at the rest of the
+page, and a table whose columns slid 39pt left passed all of them.
+`moved_text` (in `_common.py`) now requires every word the user did not touch
+to stay within 0.6pt, except the prose that directly follows the field — the
+chain of words within two em of each other, which a word processor pushes.
+It found, and the fixes are pinned in `test_table_edits.py` and
+`test_page_integrity.py`:
+
+5. **Redraw overprint.** Edited cells were identified by `id()` of dicts from
+   two different extractions — never equal — so the second edited cell on a
+   row was "pushed" and redrawn with its OLD value beside the new: `1,0000000`.
+6. **In-place column pull.** `_push = _dx - slack`, unclamped: `1 -> 10` in a
+   quantity cell moved the price and amount columns 38.9pt LEFT.
+7. **Tight tables read as prose.** A 9pt gutter is under two em; cells are
+   now recognised by lining up with other rows after a gutter
+   (`_is_column_cell`) — zero hits on every prose document in the corpus.
+8. **Tight leading.** Erasing a 7pt header on 6pt leading took "other" off
+   the line below; MuPDF deletes a character its box overlaps by ~16%.
+9. **Painted patches.** The erase painted a sampled colour — grey on a cyan
+   cell. Nothing is painted now: the redaction deletes the glyphs.
+10. **Stranded underline.** A link underline stayed while the redrawn words
+    moved. Decorations wholly inside the field's box now go with it.
+11. **Crossing the gutter.** A lengthened sentence ran through the next
+    column's caption and pushed "Python 3" off the page. Both engines' output
+    is now checked against the page (`api._layout_violation`, glyph-outline
+    boxes), and an edit that disturbs anything else is refused.
+12. **"Total H".** The annex widened the total's cell into its own label on
+    every generated annex, since before this session. Cells now never widen
+    past the text before them on their row.
+
+Also new: a LibreOffice/Skia font numbers its glyphs privately, so a letter
+the document never used had no code and the edit was refused. Codes are now
+allocated above `/LastChar` (never 32, which `Tw` stretches) and the glyph
+injected under them — `"Widget A" -> "Widget Ap"` in genuine Liberation Sans.
+
 ## Two rules, both learned the hard way
 
 **"Will this draw?" has exactly one honest answer: `page.get_texttrace()`,
@@ -70,6 +107,8 @@ looked like clean passes:
 | annex arithmetic | paired an alphabetically-sorted ZIP against input order, reporting all six as broken |
 | successive edits | tracked the field by bbox; a centred field legitimately moves 58pt when its text shortens |
 | `/compose` | compared raw characters against output that correctly uses `fi` ligatures |
+| multi-page annex | defaulted a missing `page` key to 0, so "items on page 2" was an empty list and "all removed" passed vacuously |
+| `moved_text` itself | calibrated before use: fires on 5 of 6 table edits on the old build, silent on a no-op and on the fix |
 
 The tell was always a **control** failing: plain text refusing, the unchanged
 row breaking, a document that visibly works being flagged.
@@ -86,7 +125,9 @@ point `RD_API` at it.
 ## Where editing stands
 
 515 single-field edits over 26 documents from 13 pipelines, plus batches,
-bulk, annex, overlays, adversarial text and scale: **0 defects, 0 crashes.**
+bulk, annex, overlays, adversarial text and scale: **0 defects, 0 crashes** —
+now including "nothing else on the page moved". Clean 461 (89.5%), refused 54
+with a stated reason, 348 of them edited byte-for-byte in place.
 
 Shortening never fails. Same-length is ~96%. The rest of the refusals are
 dominated by one missing capability — text that no longer fits with nothing on

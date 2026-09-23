@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _common  # noqa: E402
-from _common import HARD, corpus_docs, output_defects, page_facts  # noqa: E402
+from _common import HARD, corpus_docs, moved_text, output_defects, page_facts  # noqa: E402
 from api import extract_spans, apply_replacements  # noqa: E402
 
 import warnings  # noqa: E402
@@ -76,7 +76,7 @@ for label, path in corpus_docs():
                 tot["inplace"] += 1
             else:
                 tot["redrawn"] += 1
-            bad = output_defects(out, page, new, base)
+            bad = output_defects(out, page, new, base) + moved_text(data, out, page, sd)
             if bad:
                 tot["defects"] += 1
                 d0["defects"] += 1
