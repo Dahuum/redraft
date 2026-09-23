@@ -69,6 +69,7 @@ a bug:
     keys glyph maps by font name, not by the specific embedded font object.
 """
 import base64
+import hashlib
 import io
 import re
 
@@ -394,7 +395,7 @@ def _encode_fallback(text, encoding_name):
         return None
 
 
-_SIMPLE_GLYPH_MEMO: dict = {}  # font display name -> set of covered chars, or None
+_SIMPLE_GLYPH_MEMO: dict = {}  # (display name, sha256 of the program) -> covered chars, or None
 
 
 def _type1_glyph_coverage(raw):
@@ -494,9 +495,8 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
     "succeeds" while what actually gets painted is garbage. Returns None if
     the font can't be found/parsed (caller should skip the check, not treat
     unknown as missing)."""
-    if font_display_name in _SIMPLE_GLYPH_MEMO:
-        return _SIMPLE_GLYPH_MEMO[font_display_name]
     coverage = None
+    key = None
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
             if f[3].split("+")[-1] != font_display_name:
@@ -504,6 +504,12 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
             raw = None
             try:
                 raw = doc.extract_font(f[0])[3]
+                # Keyed by the program's content, not its name: two documents
+                # embedding different subsets of one family used to share a
+                # single entry for the life of the server process.
+                key = (font_display_name, hashlib.sha256(raw or b"").hexdigest())
+                if key in _SIMPLE_GLYPH_MEMO:
+                    return _SIMPLE_GLYPH_MEMO[key]
                 if raw:
                     from fontTools.ttLib import TTFont
                     import io as _io
@@ -520,7 +526,8 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
             break
         if coverage is not None:
             break
-    _SIMPLE_GLYPH_MEMO[font_display_name] = coverage
+    if key is not None:
+        _SIMPLE_GLYPH_MEMO[key] = coverage
     return coverage
 
 
@@ -968,7 +975,29 @@ def _apply(doc, runs, loc_result, new_codes, is_cid):
         new_hex = b"<" + _codes_to_bytes(new_codes, is_cid) + b">"
         new_data = data[:start] + new_hex + data[end:]
     else:
-        touched = loc_result["touched"]
+        touched = list(loc_result["touched"])
+        # Leave the unchanged PREFIX exactly as the producer drew it. Chrome
+        # sets every glyph with its own `Td` carrying HarfBuzz's advance
+        # (kerning and subpixel rounding included); rebuilding the whole
+        # match from font advances moved "Atlas" 0.62pt in "Company: Atlas
+        # Consulting SARL" -> "... Atlas Group", where the producer's own
+        # re-print keeps it exactly in place. Whole runs whose glyphs are
+        # all shared with the new text are kept byte-for-byte.
+        old_seq, per_run = [], []
+        for ri in touched:
+            codes = [c for t in runs[ri]["str_toks"] for c in t["codes"]]
+            per_run.append(len(codes))
+            old_seq += codes
+        p = 0
+        while p < min(len(old_seq), len(new_codes)) and old_seq[p] == new_codes[p]:
+            p += 1
+        keep, used = 0, 0
+        while keep < len(touched) - 1 and used + per_run[keep] <= p:
+            used += per_run[keep]
+            keep += 1
+        if keep:
+            touched = touched[keep:]
+            new_codes = new_codes[used:]
         r_first = touched[0]
         xref, data = runs[r_first]["xref"], runs[r_first]["data"]
         new_hex = _codes_to_bytes(new_codes, is_cid)
@@ -1220,9 +1249,12 @@ def _cid_program_gid_map(doc, font_display_name: str) -> dict:
     already relies on — and anything else returns nothing rather than a wrong
     answer.
     """
-    key = (id(doc), font_display_name)
-    if key in _CID_PROGRAM_GIDS:
-        return _CID_PROGRAM_GIDS[key]
+    # Keyed by the font PROGRAM's content, never by the document. This was
+    # (id(doc), name): id() is a memory address, reused as soon as a document
+    # is freed, so a later document opened at the same address was handed an
+    # earlier one's glyph map — on a sequence of Chrome prints an edit that
+    # succeeds alone came back "unmappable", and the same mechanism can map a
+    # letter to a GID in a DIFFERENT subset and draw the wrong glyph.
     out: dict = {}
     try:
         from fontTools.ttLib import TTFont
@@ -1243,6 +1275,9 @@ def _cid_program_gid_map(doc, font_display_name: str) -> dict:
                 raw = doc.xref_stream(refs["ff_xref"])
                 if not raw:
                     continue
+                key = (font_display_name, hashlib.sha256(raw).hexdigest())
+                if key in _CID_PROGRAM_GIDS:
+                    return _CID_PROGRAM_GIDS[key]
                 tt = TTFont(io.BytesIO(raw))
                 try:
                     gid_of = {n: i for i, n in enumerate(tt.getGlyphOrder())}
@@ -1257,12 +1292,12 @@ def _cid_program_gid_map(doc, font_display_name: str) -> dict:
                 finally:
                     tt.close()
                 if out:
+                    _CID_PROGRAM_GIDS[key] = out
                     break
             if out:
                 break
     except Exception:  # noqa: BLE001 — an unreadable program means no map
         out = {}
-    _CID_PROGRAM_GIDS[key] = out
     return out
 
 

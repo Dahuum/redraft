@@ -75,20 +75,33 @@ CASES = [
 DPI = 110
 
 
-def producer_twin(doc: str, old: str, new: str) -> bytes | None:
+CHROME = shutil.which("google-chrome-stable") or shutil.which("chromium")
+
+
+def producer_twin(doc: str, old: str, new: str, producer: str = "libreoffice") -> bytes | None:
+    """The document as *producer* typesets its source with old -> new."""
     ext = "csv" if doc == "sales" else "html"
-    src = open(os.path.join(SRC, f"{doc}.{ext}"), encoding="utf-8").read()
-    if src.count(old) != 1:
+    if producer == "chrome" and ext != "html":
         return None
-    d = os.path.join(WORK, "src")
+    src = open(os.path.join(SRC, f"{doc}.{ext}"), encoding="utf-8").read()
+    if old and src.count(old) != 1:
+        return None
+    d = os.path.join(WORK, producer)
     os.makedirs(d, exist_ok=True)
     name = f"{doc}.{ext}"
-    open(os.path.join(d, name), "w", encoding="utf-8").write(src.replace(old, new))
+    open(os.path.join(d, name), "w", encoding="utf-8").write(src.replace(old, new) if old else src)
     out = os.path.join(d, f"{doc}.pdf")
     if os.path.exists(out):
         os.remove(out)
-    subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", d, name],
-                   cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=200)
+    if producer == "chrome":
+        # Skia/PDF: Type0 CID fonts, Identity-H — a different pipeline from
+        # LibreOffice's simple TrueType fonts, on the same source.
+        subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+                        "--print-to-pdf=" + out, "file://" + os.path.join(d, name)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    else:
+        subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", d, name],
+                       cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=200)
     return open(out, "rb").read() if os.path.exists(out) else None
 
 
@@ -142,70 +155,54 @@ if not shutil.which("libreoffice"):
     sys.exit(0)
 
 rows = []
-for doc, old, new in CASES:
-    orig_path = os.path.join(CORPUS, f"{doc}.pdf")
-    if not os.path.exists(orig_path):
-        continue
-    orig = open(orig_path, "rb").read()
-    twin = producer_twin(doc, old, new)
-    if twin is None:
-        rows.append((doc, old, new, "no twin", "", "", ""))
-        continue
-    # Baseline: the producer is deterministic, so the unedited original and a
-    # regenerated unedited source must match — otherwise the comparison
-    # would measure LibreOffice, not Redraft.
-    spans = extract_spans(orig)
-    sd = next((s for s in spans if old in s["text"]), None)
-    if sd is None:
-        rows.append((doc, old, new, "not found", "", "", ""))
-        continue
-    t = sd["text"]
-    out, rep = apply_replacements(orig, [(sd, t.replace(old, new))], preserve_size=True,
-                                  try_inplace=True)
-    engine = "in-place" if rep["in_place"]["count"] else (
-        "refused" if out == orig else "redraw")
-    if out == orig:
-        rows.append((doc, old, new, engine, "", "", "refused: " + str(
-            [r.get("reason") for r in rep["in_place"]["refusals"]][:1])))
-        continue
-    off, frac, box = compare(out, twin)
-    # Did the PRODUCER itself move text other than the edit? An auto-sized
-    # HTML table re-lays every column when one label shortens, and Calc
-    # auto-fits a column to a wider letter. No in-place editor can or should
-    # reproduce that: the edit kept the author's layout, the twin changed it.
-    relayout, _, _ = compare(orig, twin)
-    relayout = [w for w in relayout if w[0] not in old.split()]
-    if not off and frac < 0.0005:
-        verdict = "IDENTICAL"
-    elif not off:
-        verdict = "CLOSE"
-    elif relayout and not [w for w in off if w[0] not in new.split()
-                           and w not in relayout]:
-        verdict = "PRODUCER RE-LAYOUT (edit kept the original layout)"
-    else:
-        verdict = "VISIBLE"
-    rows.append((doc, old, new, engine, len(off), f"{frac * 100:.3f}%", verdict +
-                 (f"  e.g. {off[:3]}" if off else "") + (f"  ink box {box}" if box else "")))
+PRODUCERS = ["libreoffice"] + (["chrome"] if CHROME else [])
+for producer in PRODUCERS:
+    for doc, old, new in CASES:
+        # The original is the producer's own output of the untouched source
+        # (the corpus copy for LibreOffice, a fresh print for Chrome).
+        orig = producer_twin(doc, "", "", producer)
+        twin = producer_twin(doc, old, new, producer)
+        tag = f"{doc}/{producer[:6]}"
+        if orig is None or twin is None:
+            continue
+        spans = extract_spans(orig)
+        sd = next((s for s in spans if old in s["text"]), None)
+        if sd is None:
+            rows.append((tag, old, new, "not found", "", "", ""))
+            continue
+        out, rep = apply_replacements(orig, [(sd, sd["text"].replace(old, new))],
+                                      preserve_size=True, try_inplace=True)
+        reflowed = bool(rep["in_place"].get("reflowed"))
+        engine = ("reflow" if reflowed else "in-place") if rep["in_place"]["count"] else (
+            "refused" if out == orig else "redraw")
+        if out == orig:
+            rows.append((tag, old, new, engine, "", "", "refused: " + str(
+                [r.get("reason") for r in rep["in_place"]["refusals"]][:1])))
+            continue
+        off, frac, box = compare(out, twin)
+        relayout, _, _ = compare(orig, twin)
+        relayout = [w for w in relayout if w[0] not in old.split()]
+        if not off and frac < 0.0005:
+            verdict = "IDENTICAL"
+        elif not off:
+            verdict = "CLOSE"
+        elif relayout and not [w for w in off if w[0] not in new.split()
+                               and w not in relayout]:
+            verdict = "PRODUCER RE-LAYOUT (edit kept the original layout)"
+        else:
+            verdict = "VISIBLE"
+        rows.append((tag, old, new, engine, len(off), f"{frac * 100:.3f}%", verdict +
+                     (f"  e.g. {off[:3]}" if off else "") + (f"  ink box {box}" if box else "")))
 
-# Control: an unedited original against its regenerated source.
-for doc in ("invoice", "form", "letter", "report", "sales"):
-    orig_path = os.path.join(CORPUS, f"{doc}.pdf")
-    if os.path.exists(orig_path):
-        ext = "csv" if doc == "sales" else "html"
-        src = open(os.path.join(SRC, f"{doc}.{ext}"), encoding="utf-8").read()
-        d = os.path.join(WORK, "src")
-        open(os.path.join(d, f"{doc}.{ext}"), "w", encoding="utf-8").write(src)
-        out = os.path.join(d, f"{doc}.pdf")
-        if os.path.exists(out):
-            os.remove(out)
-        subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", d,
-                        f"{doc}.{ext}"], cwd=d, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=200)
-        if os.path.exists(out):
-            off, frac, box = compare(open(orig_path, "rb").read(), open(out, "rb").read())
-            rows.append((doc, "(control)", "(unedited)", "-", len(off), f"{frac * 100:.3f}%",
-                         "baseline noise" + (f"  ink box {box}" if box else "")))
+    # Control: the producer is deterministic — two prints of one source match.
+    for doc in ("invoice", "form", "letter", "report", "sales"):
+        a1 = producer_twin(doc, "", "", producer)
+        a2 = producer_twin(doc, "", "", producer)
+        if a1 and a2:
+            off, frac, box = compare(a1, a2)
+            rows.append((f"{doc}/{producer[:6]}", "(control)", "(unedited)", "-", len(off),
+                         f"{frac * 100:.3f}%", "baseline noise" + (f"  ink box {box}" if box else "")))
 
-print(f"{'doc':8} {'old':24} {'new':18} {'engine':9} {'off':>4} {'ink':>8}  verdict")
+print(f"{'doc':15} {'old':24} {'new':18} {'engine':9} {'off':>4} {'ink':>8}  verdict")
 for r in rows:
-    print(f"{r[0]:8} {r[1][:24]:24} {r[2][:18]:18} {r[3]:9} {str(r[4]):>4} {str(r[5]):>8}  {r[6]}")
+    print(f"{r[0]:15} {r[1][:24]:24} {r[2][:18]:18} {r[3]:9} {str(r[4]):>4} {str(r[5]):>8}  {r[6]}")

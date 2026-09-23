@@ -59,8 +59,17 @@ def _refuse(reason: str, message: str) -> dict:
 
 
 def _lines(page):
-    """Visual lines with per-character style, left to right, top to bottom."""
-    out = []
+    """VISUAL lines with per-character style, left to right, top to bottom.
+
+    A visual line is everything on one baseline. The extractor's own "lines"
+    are not that: Word draws "Né le", "12/05/2001", " à " and "Essaouira" as
+    four separate pieces of one line, and taking them one at a time lost
+    words off the end of lines and broke every paragraph they belonged to.
+    Pieces on the same baseline are merged and ordered by position; a piece
+    far from the rest (another column) is not, since only pieces that abut
+    within a word space are joined.
+    """
+    pieces = []
     for b in page.get_text("rawdict")["blocks"]:
         for l in b.get("lines", []):
             if l.get("dir", (1, 0)) != (1, 0):
@@ -73,10 +82,23 @@ def _lines(page):
                                   "font": s["font"], "size": s["size"],
                                   "color": s["color"]})
             if chars:
-                out.append({"y": chars[0]["oy"], "x0": chars[0]["ox"],
-                            "bbox": fitz.Rect(l["bbox"]), "chars": chars})
-    out.sort(key=lambda l: (round(l["y"], 1), l["x0"]))
+                pieces.append({"y": chars[0]["oy"], "x0": chars[0]["ox"],
+                               "bbox": fitz.Rect(l["bbox"]), "chars": chars})
+    pieces.sort(key=lambda l: (round(l["y"], 1), l["x0"]))
+    out = []
+    for pc in pieces:
+        prev = out[-1] if out else None
+        if prev and abs(prev["y"] - pc["y"]) <= 0.5 and \
+                pc["x0"] - prev["bbox"].x1 <= 0.5 * pc["chars"][0]["size"]:
+            prev["chars"] = sorted(prev["chars"] + pc["chars"], key=lambda c: c["ox"])
+            prev["bbox"] |= pc["bbox"]
+        else:
+            out.append(dict(pc, bbox=fitz.Rect(pc["bbox"])))
     return out
+
+
+def _blank(line):
+    return not "".join(c["c"] for c in line["chars"]).strip()
 
 
 def _paragraph(lines, target_bbox):
@@ -87,7 +109,18 @@ def _paragraph(lines, target_bbox):
     if idx is None:
         return None, None
     x0 = lines[idx]["x0"]
-    col = [l for l in lines if abs(l["x0"] - x0) <= 0.6]
+    # A blank line is a paragraph break: Word separates paragraphs with
+    # empty lines at the same leading, which otherwise glued thirteen lines
+    # of four paragraphs into one.
+    col = [l for l in lines if abs(l["x0"] - x0) <= 0.6 or _blank(l)]
+    k0 = col.index(lines[idx])
+    lo = k0
+    while lo - 1 >= 0 and not _blank(col[lo - 1]):
+        lo -= 1
+    hi = k0
+    while hi + 1 < len(col) and not _blank(col[hi + 1]):
+        hi += 1
+    col = [l for l in col[lo:hi + 1] if abs(l["x0"] - x0) <= 0.6]
     k = col.index(lines[idx])
     lead = None
     for j in (k + 1, k - 1):
@@ -174,7 +207,8 @@ def _units(chars, m):
         if cm:
             for L in range(min(cm["max_len"], len(chars) - i), 1, -1):
                 seg = chars[i:i + L]
-                if any(x["font"] != c["font"] or x["size"] != c["size"] for x in seg):
+                if any(x["font"] != c["font"] or abs(x["size"] - c["size"]) > 0.01 * c["size"]
+                       for x in seg):
                     continue
                 code = cm["rev"].get("".join(x["c"] for x in seg))
                 if code is not None:
@@ -268,8 +302,10 @@ def _reflow(doc, span, new_text):
             last = dict(l["chars"][-1])
             last["c"] = " "
             stream.append(last)
+    # Sizes agree to 1%: Word reports one line of a 14.04pt paragraph as
+    # 14.064pt, from a scale folded into its text matrix.
     for c in stream:
-        if c["size"] != stream[0]["size"]:
+        if abs(c["size"] - stream[0]["size"]) > 0.01 * stream[0]["size"]:
             return _refuse("mixed_size", "The paragraph mixes type sizes.")
 
     x0 = para[0]["x0"]
@@ -369,7 +405,6 @@ def _reflow(doc, span, new_text):
         gids, why = S._try_extend_simple(doc, fname, chars, code_for=alloc)
         if gids is None:
             return _refuse("missing_glyph", f"Couldn't add {chars}: {why}.")
-        S._SIMPLE_GLYPH_MEMO.pop(fname, None)
         m.reset()
         # The ToUnicode map now names the new codes; re-read it.
     try:
