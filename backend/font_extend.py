@@ -352,6 +352,209 @@ def resolve_donor_detailed(fontname: str):
     return _donor_cache[cache_key]
 
 
+def _cff_stub():
+    """cffLib wants an otFont for compile/decompile; only recalcBBoxes is read.
+
+    Passing None raises AttributeError deep inside the compiler, which is why
+    this exists rather than being inlined at each call.
+    """
+    import types
+    return types.SimpleNamespace(recalcBBoxes=False, isTTF=False)
+
+
+def _glyph_name_for(ch: str):
+    """Adobe glyph name for a character, or None if it has no standard one."""
+    global _AGL_REV
+    if _AGL_REV is None:
+        from fontTools import agl
+        _AGL_REV = {v: k for k, v in agl.AGL2UV.items()}
+    return _AGL_REV.get(ord(ch))
+
+
+_AGL_REV = None
+
+# How far a donor's letters may sit from this subset's own, per landmark,
+# before injecting them would be visible. 6% is under half the 13% at which a
+# wrong-sized letter was first noticed by eye in this codebase, and well above
+# the 1-2% that separates metrically compatible cuts of the same design.
+_CFF_MAX_LANDMARK_ERR = 0.06
+
+
+_CAP_REFS = ("H", "E", "T", "A", "I", "N")
+_XH_REFS = ("x", "o", "e", "n", "u", "c")
+
+
+def _cff_bounds(charstrings, name):
+    from fontTools.pens.boundsPen import BoundsPen
+    try:
+        bp = BoundsPen(None)
+        charstrings[name].draw(bp)
+        return bp.bounds
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cff_landmarks(charstrings):
+    """(cap height, x-height) read off a CFF's OWN reference glyphs, or Nones.
+
+    Flat-topped letters only: 'O' and 'e' overshoot the line they sit on, so a
+    mix of the two measures a different thing depending on which glyphs a
+    subset happens to contain — and a subset contains whatever the document
+    used, which is arbitrary.
+    """
+    cap = xh = None
+    for n in _CAP_REFS:
+        if n in charstrings:
+            b = _cff_bounds(charstrings, n)
+            if b:
+                cap = b[3]
+                break
+    for n in _XH_REFS:
+        if n in charstrings:
+            b = _cff_bounds(charstrings, n)
+            if b:
+                xh = b[3]
+                break
+    return cap, xh
+
+
+def _tt_landmarks(donor, scale):
+    """The same two landmarks from a TrueType donor, in the subset's units."""
+    from fontTools.pens.boundsPen import BoundsPen
+    cmap, gset = donor.getBestCmap(), donor.getGlyphSet()
+    cap = xh = None
+    for group, ref in ((_CAP_REFS, "cap"), (_XH_REFS, "xh")):
+        for n in group:
+            g = cmap.get(ord(n))
+            if not g:
+                continue
+            bp = BoundsPen(gset)
+            try:
+                gset[g].draw(bp)
+            except Exception:  # noqa: BLE001
+                continue
+            if bp.bounds:
+                if ref == "cap":
+                    cap = bp.bounds[3] * scale
+                else:
+                    xh = bp.bounds[3] * scale
+                break
+    return cap, xh
+
+
+def extend_cff_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dict:
+    """Copy each char in `chars` from a TrueType donor into a COPY of a bare
+    CFF (Type1C) subset. Returns:
+      {"font_bytes": bytes, "names": {char: glyphname}, "width_1000": {char: w}}
+
+    The TrueType path (extend_font) cannot do this: a PDF's /FontFile3 holds a
+    BARE CFF program with no SFNT wrapper, so TTFont() rejects it outright with
+    "bad sfntVersion". Every Adobe-produced document embeds its fonts this way
+    — the whole IRS form set, and most of what Distiller and InDesign emit —
+    so without this, any edit on those files that needs a character outside
+    the subset can only be refused.
+
+    Raises ValueError if the subset is not CFF, if a char has no standard
+    Adobe glyph name, or if the donor cannot draw it. Callers must treat any
+    exception as "extension not possible" and refuse, never ship a partial
+    result.
+    """
+    from fontTools.cffLib import CFFFontSet
+    from fontTools.ttLib import TTFont
+    from fontTools.pens.t2CharStringPen import T2CharStringPen
+    from fontTools.pens.transformPen import TransformPen
+
+    stub = _cff_stub()
+    cff = CFFFontSet()
+    try:
+        cff.decompile(io.BytesIO(subset_bytes), stub)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"not a CFF program: {type(exc).__name__}") from exc
+    if not cff.fontNames:
+        raise ValueError("CFF has no font")
+    td = cff[cff.fontNames[0]]
+    cs = td.CharStrings
+
+    donor = TTFont(io.BytesIO(donor_bytes))
+    if "glyf" not in donor:
+        raise ValueError("donor is not a glyf-outline (TrueType) font")
+    # CFF charstrings are expressed in the font's own units; a PDF Type1C
+    # subset is 1000/em by convention and its /Widths are already in those
+    # units, so the donor is scaled into 1000 rather than the other way round.
+    scale = 1000.0 / donor["head"].unitsPerEm
+    cmap = donor.getBestCmap()
+    gset = donor.getGlyphSet()
+
+    # A donor is only allowed near the page if its letters are the RIGHT SIZE
+    # in this font's own terms. correct_external_donor cannot be used here —
+    # it needs glyf outlines on both sides and returns None for a CFF target —
+    # so the check is made directly, against landmarks measured from the
+    # subset's own glyphs. Injecting unmeasured is how a Tw Cen MT field came
+    # to be drawn with Poppins letterforms 33% too tall.
+    sub_cap, sub_xh = _cff_landmarks(cs)
+    don_cap, don_xh = _tt_landmarks(donor, scale)
+    checked = []
+    for a, b, label in ((sub_cap, don_cap, "cap height"), (sub_xh, don_xh, "x-height")):
+        if a and b and a > 1:
+            checked.append((label, abs(b - a) / a))
+    if not checked:
+        raise ValueError("cannot measure this subset against the donor")
+    worst_label, worst = max(checked, key=lambda t: t[1])
+    if worst > _CFF_MAX_LANDMARK_ERR:
+        raise ValueError(
+            f"donor {worst_label} is off by {worst * 100:.0f}% "
+            f"(limit {_CFF_MAX_LANDMARK_ERR * 100:.0f}%)")
+
+    names, widths = {}, {}
+    for ch in chars:
+        name = _glyph_name_for(ch)
+        if not name:
+            raise ValueError(f"no standard glyph name for {ch!r}")
+        adv_units = None
+        if name in cs:
+            # Already drawable — nothing to inject, but the caller still needs
+            # its width and name to place it.
+            names[ch] = name
+            widths[ch] = _cff_advance(cs, name)
+            continue
+        gname = cmap.get(ord(ch))
+        if not gname:
+            raise ValueError(f"no glyph for {ch!r} in donor")
+        adv_units = donor["hmtx"][gname][0] * scale
+        # The glyph set is handed to the pen as well as to the transform: a
+        # composite like 'e' + acute reaches addComponent, and without a glyph
+        # set to resolve the parts it raises instead of drawing.
+        pen = T2CharStringPen(adv_units, gset)
+        gset[gname].draw(TransformPen(pen, (scale, 0, 0, scale, 0, 0)))
+        charstring = pen.getCharString(private=td.Private,
+                                       globalSubrs=td.GlobalSubrs)
+        charstring.private = td.Private
+        charstring.globalSubrs = td.GlobalSubrs
+        # CharStrings.__setitem__ only REPLACES a name already in the
+        # name->index map, so a new glyph has to go in through the index.
+        cs.charStringsIndex.append(charstring)
+        cs.charStrings[name] = len(cs.charStringsIndex) - 1
+        td.charset.append(name)
+        names[ch] = name
+        widths[ch] = adv_units
+
+    out = io.BytesIO()
+    cff.compile(out, stub)
+    return {"font_bytes": out.getvalue(), "names": names, "width_1000": widths,
+            "landmark_error": worst, "landmark_checked": worst_label}
+
+
+def _cff_advance(charstrings, name: str) -> float:
+    """Advance width of a glyph already in the CFF, in 1000ths of an em."""
+    from fontTools.pens.basePen import NullPen
+    csobj = charstrings[name]
+    csobj.draw(NullPen())
+    w = getattr(csobj, "width", None)
+    if w is None:
+        w = charstrings.private.defaultWidthX if hasattr(charstrings, "private") else 0
+    return float(w)
+
+
 def extend_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dict:
     """Copy each char in `chars` from donor into a COPY of the subset font
     (never mutates the input bytes). Returns:

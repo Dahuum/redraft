@@ -38,8 +38,31 @@ import fitz  # PyMuPDF >= 1.18
 _FONT_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".font_cache")
 os.makedirs(_FONT_CACHE_DIR, exist_ok=True)
 
-# In-process resolved-font cache: fontname → bytes or None
+# In-process resolved-font cache: fontname → bytes or None. Holds only fonts
+# that are the same for every document and every user: the system's, and the
+# open-source catalogue's. Never a font taken from an upload — see _DOC_FONTS.
 _RESOLVED: dict = {}
+
+# Fonts belonging to ONE request: the uploaded document's own embedded fonts,
+# and fonts the signed-in user supplied. {cache file name: bytes}, consulted
+# before anything shared and never memoised into _RESOLVED.
+#
+# They used to be written into the shared .font_cache directory under the
+# family name, where the first upload to supply "Calibri" or "Arial" became
+# THE Calibri or Arial for every later user's documents — a full commercial
+# font lifted from one customer's file was being served to all of them, and
+# a crafted PDF could plant an "Arial" whose glyphs draw other letters.
+import contextvars as _contextvars
+_DOC_FONTS: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_fonts", default=None)
+
+
+def font_cache_key(fontname: str) -> str:
+    """The cache file name for *fontname* — shared by the disk cache and the
+    per-request overlay, so both are looked up the same way."""
+    fam, weight, style = _parse_font_name(fontname)
+    nospace = re.sub(r"[^A-Za-z0-9]", "", fam)[:64] or "font"
+    style = "italic" if str(style).lower().startswith("ital") else "normal"
+    return f"{nospace}-{int(weight)}-{style}.ttf"
 
 # Where the last resolved font actually came from — keyed by fontname.
 # Value: human-readable source description, e.g.
@@ -167,6 +190,15 @@ _FONT_SUBSTITUTES: dict = {
     "BrittanySignature": ("DancingScript", "Signature-style script"),
     "Mistrully":      ("Pacifico",      "Playful signature-style script"),
     "MistrullyRegular": ("Pacifico",   "Playful signature-style script"),
+    # Metric-compatible open clones (Chrome OS "Croscore" + Crosextra): drawn
+    # to the commercial fonts' exact advance widths, so a substituted run
+    # keeps every line break and column of the original.
+    "TimesNewRoman":  ("Tinos",         "Metrically compatible Times New Roman substitute"),
+    "TimesNewRomanPS": ("Tinos",        "Metrically compatible Times New Roman substitute"),
+    "CourierNew":     ("Cousine",       "Metrically compatible Courier New substitute"),
+    "CourierNewPS":   ("Cousine",       "Metrically compatible Courier New substitute"),
+    "Calibri":        ("Carlito",       "Metrically compatible Calibri substitute"),
+    "Cambria":        ("Caladea",       "Metrically compatible Cambria substitute"),
     # Arial variants → Arimo (metrically identical, open-source)
     "Arial":          ("Arimo",         "Metrically compatible Arial substitute"),
     "ArialMT":        ("Arimo",         "Metrically compatible Arial substitute"),
@@ -241,11 +273,31 @@ _WEIGHT_MAP = {
     # "Regu"/"Medi" instead of "Regular"/"Medium". See the italic-detection
     # comment above for why this family matters.
     "Regu": 400, "Medi": 500,
+    # Glued onto the family by generators that write no separator: fpdf2
+    # names its subsets "DejaVuSansBook" / "DejaVuSansBold". "Book" was not
+    # a weight here, so the family stayed "DejaVuSansBook", no donor was
+    # found, and every fpdf2 edit needing a new letter fell to the redraw.
+    "Book": 400, "Semibold": 600, "Demi": 600, "DemiBold": 600,
+    "Heavy": 800, "UltraLight": 200, "Hairline": 100,
 }
 _WEIGHT_NAME = {v: k for k, v in _WEIGHT_MAP.items()}
 _WEIGHT_NAME[400] = "Regular"
 _WEIGHT_NAME[500] = "Medium"  # keep the reverse map on the canonical Google
                               # Fonts filename word, not the URW "Medi" abbreviation
+_WEIGHT_NAME[600] = "SemiBold"
+_WEIGHT_NAME[800] = "ExtraBold"
+_WEIGHT_NAME[200] = "ExtraLight"
+_WEIGHT_NAME[100] = "Thin"
+
+# Abbreviated style suffixes, recognised ONLY after a hyphen — "-Bd", "-It"
+# on Adobe's HelveticaNeueLTStd, "-Roman" for the regular cut. Never glued:
+# "TimesNewRoman" must not become "TimesNew" in a Roman weight.
+_HYPHEN_STYLES = {
+    "Bd": "Bold", "BdIt": "BoldItalic", "It": "Italic", "Md": "Medium",
+    "MdIt": "MediumItalic", "Lt": "Light", "LtIt": "LightItalic", "Blk": "Black",
+    "Hv": "Heavy", "Th": "Thin", "Rg": "Regular", "Roman": "Regular",
+    "SmBd": "SemiBold", "XBd": "ExtraBold", "Obl": "Oblique",
+}
 
 
 def _weight_name(w: int) -> str:
@@ -263,6 +315,12 @@ def _parse_font_name(fontname: str) -> tuple:
     'ariitaft'            → ('Arial', 400, 'normal')   ← truncated alias
     """
     bare = fontname.split("+")[-1]
+    # Foundry suffixes carry no style: "Arial-BoldMT", "TimesNewRomanPSMT".
+    bare = re.sub(r"(?<=[a-z])(PSMT|MT)$", "", bare) if bare not in _WEIGHT_OVERRIDES else bare
+    if "-" in bare:
+        head, _, tail = bare.rpartition("-")
+        if tail in _HYPHEN_STYLES:
+            bare = head + "-" + _HYPHEN_STYLES[tail]
 
     # Apply weight override before any parsing
     if bare in _WEIGHT_OVERRIDES:
@@ -289,6 +347,10 @@ def _parse_font_name(fontname: str) -> tuple:
             weight = wval
             family = re.sub(r"-?" + wname + "$", "", name)
             break
+
+    # "TimesNewRomanPS-BoldMT": the PS left on the family after the weight.
+    if " " not in family:
+        family = re.sub(r"(?<=[a-z])PS$", "", family)
 
     # Apply family alias (e.g. 'Inter18pt' → 'Inter')
     family = _FAMILY_ALIASES.get(family, family)
@@ -354,31 +416,129 @@ def _parse_cmap_chars(raw: bytes) -> set:
 _LAST_PATH: dict = {"value": None}
 
 
+# Style words different foundries use for the SAME regular face. Without
+# "Book" a DejaVu query can never match: fontconfig styles DejaVu Sans's
+# regular face "Book", so :style=Regular found nothing, the exact lookup fell
+# through, and the fuzzy one below answered with the BOLD file.
+_REGULAR_SYNONYMS = ("Regular", "Book", "Roman", "Normal")
+
+
+# URW's pre-2017 names for the fonts Ghostscript ships (gsfonts). pdfTeX and
+# a generation of Ghostscript-made PDFs embed them under these names, while
+# the same typefaces are installed today as "Nimbus Roman" etc., so an arXiv
+# paper's NimbusRomNo9L-ReguItal found no genuine donor and every letter its
+# subset lacked was refused. In the Nimbus Roman No9 L family "Medi" (Medium)
+# IS the bold cut — the Times Bold clone — not a 500 weight.
+_URW_LEGACY = {
+    "nimbusromno9l": "Nimbus Roman", "nimbussanl": "Nimbus Sans",
+    "nimbussannarl": "Nimbus Sans Narrow", "nimbusmonl": "Nimbus Mono PS",
+    "urwpalladiol": "P052", "urwbookmanl": "URW Bookman", "urwgothicl": "URW Gothic",
+    "centuryschl": "C059", "urwchanceryl": "Z003",
+    "standardsyml": "Standard Symbols PS", "dingbats": "D050000L",
+}
+_URW_MEDI_IS_BOLD = {"nimbusromno9l", "urwpalladiol", "centuryschl"}
+
+
+def _urw_key(family: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", family.lower())
+
+
+def _family_variants(family: str):
+    """The family as written, plus a CamelCase-split form, plus the modern
+    name of a legacy URW family.
+
+    A PDF names the face as it was embedded — "DejaVuSans" — while fontconfig
+    knows it as "DejaVu Sans", so an exact query on the embedded spelling
+    matches nothing.
+    """
+    out = [family]
+    if _urw_key(family) in _URW_LEGACY:
+        out.append(_URW_LEGACY[_urw_key(family)])
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", family)
+    if spaced != family:
+        out.append(spaced)
+    return out
+
+
+def _file_weight_ok(path: str, weight: int, style: str) -> bool:
+    """Does the font FILE actually carry the weight and slant asked for?
+
+    fc-match answers every query for this family with DejaVuSans-Bold.ttf,
+    whatever weight is requested, and the only gate was a substring test on
+    the basename — which "dejavusansbold.ttf" passes for family "DejaVuSans".
+    The redraw engine then re-stamped untouched regular text in BOLD, which is
+    wider, and it collided with the run after it by 17pt.
+
+    Unreadable metadata returns True: this is a veto on a demonstrably wrong
+    file, not a second opinion on every good one.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+        tt = TTFont(path, lazy=True, fontNumber=0)
+        os2 = tt["OS/2"] if "OS/2" in tt else None
+        got = int(getattr(os2, "usWeightClass", weight) or weight)
+        italic = bool(int(getattr(os2, "fsSelection", 0)) & 1) if os2 is not None else False
+        if abs(got - weight) > 150:
+            _dbg(f"system REJECTED wrong weight: {path} is {got}, wanted {weight}")
+            return False
+        if italic != (style == "italic"):
+            _dbg(f"system REJECTED wrong slant: {path} italic={italic}, wanted {style!r}")
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — cannot read it, so cannot veto it
+        return True
+
+
+_WIDTH_TOKENS = ("condensed", "narrow", "extended", "expanded", "semicond",
+                 "mono", "display", "caption", "inline", "outline", "shadow")
+
+
+def _width_variant_rank(path: str) -> tuple:
+    """Sort key preferring the plainest cut: fewest width/optical tokens, then
+    the shortest name. "DejaVuSans.ttf" beats "DejaVuSansCondensed.ttf"."""
+    base = os.path.basename(path).lower()
+    return (sum(1 for t in _WIDTH_TOKENS if t in base), len(base))
+
+
 def _find_system_font(family: str, weight: int, style: str) -> bytes | None:
     """
     Search system fonts via ``fc-list`` (Linux fontconfig).
 
     Returns the raw font bytes if a matching font is found, else None.
     """
-    # Build fc-list style string
-    style_str = _weight_name(weight)
+    if weight == 500 and _urw_key(family) in _URW_MEDI_IS_BOLD:
+        weight = 700
+    base = _weight_name(weight)
+    styles = list(_REGULAR_SYNONYMS) if base == "Regular" else [base]
     if style == "italic":
-        style_str += " Italic" if style_str != "Regular" else "Italic"
+        # "Oblique" too: DejaVu and Nimbus Sans slant rather than italicise,
+        # and name the cut accordingly.
+        styles = [(f"{s} {sl}" if s != "Regular" else sl)
+                  for s in styles for sl in ("Italic", "Oblique")]
 
-    try:
-        result = subprocess.run(
-            ["fc-list", f":family={family}:style={style_str}", "--format=%{file}\n"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for path in result.stdout.strip().splitlines():
-            path = path.strip()
-            if path and os.path.exists(path):
-                _dbg(f"system fc-list match: family={family!r} style={style_str!r} → {path}")
-                _LAST_PATH["value"] = f"system:{path}"
-                with open(path, "rb") as f:
-                    return f.read()
-    except Exception:
-        pass
+    for fam in _family_variants(family):
+        for style_str in styles:
+            try:
+                result = subprocess.run(
+                    ["fc-list", f":family={fam}:style={style_str}", "--format=%{file}\n"],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except Exception:
+                continue
+            cands = [pp.strip() for pp in result.stdout.strip().splitlines()
+                     if pp.strip() and os.path.exists(pp.strip())]
+            cands = [pp for pp in cands if _file_weight_ok(pp, weight, style)]
+            if not cands:
+                continue
+            # fontconfig treats a style like "Condensed,Book" as matching
+            # "Book", so a :style=Book query returns DejaVuSansCondensed.ttf
+            # alongside DejaVuSans.ttf — and taking the first hit restamped the
+            # text in a narrower face. Prefer the plainest cut of the family.
+            path = min(cands, key=_width_variant_rank)
+            _dbg(f"system fc-list match: family={fam!r} style={style_str!r} → {path}")
+            _LAST_PATH["value"] = f"system:{path}"
+            with open(path, "rb") as f:
+                return f.read()
 
     # Broader fc-match fallback
     try:
@@ -391,7 +551,11 @@ def _find_system_font(family: str, weight: int, style: str) -> bytes | None:
         if path and os.path.exists(path):
             fam_clean = family.lower().replace(" ", "")
             base_clean = os.path.basename(path).lower().replace("-", "").replace("_", "")
-            if fam_clean in base_clean:
+            # The family substring alone is not enough: "dejavusans" is a
+            # substring of "dejavusansbold.ttf", so every weight of a family
+            # passed this test and fc-match hands back the same Bold file for
+            # every weight asked.
+            if fam_clean in base_clean and _file_weight_ok(path, weight, style):
                 _dbg(f"system fc-match accepted: query={query!r} → {path}")
                 _LAST_PATH["value"] = f"system:{path}"
                 with open(path, "rb") as f:
@@ -707,6 +871,13 @@ def resolve_full_font(fontname: str) -> bytes | None:
     Returns raw font bytes if found, None if all sources fail.
     Logs a clear warning on failure.
     """
+    overlay = _DOC_FONTS.get()
+    if overlay:
+        key = font_cache_key(fontname)
+        if key in overlay:
+            _FONT_SOURCE[fontname] = f"document:{key}"
+            return overlay[key]
+
     if fontname in _RESOLVED:
         return _RESOLVED.get(fontname + ":bytes")
 
@@ -812,10 +983,27 @@ def _sample_bg(pix: fitz.Pixmap, rect: fitz.Rect) -> tuple:
     _grab(x0,     y_mid)
     _grab(x1 - 1, y_mid)
 
+    # Just outside both ends of the text, at mid-height: clear of the line's
+    # own glyphs and, unlike the strips above and below, of its neighbours'.
+    for dx in (2, 4):
+        _grab(x0 - dx, y_mid)
+        _grab(x1 - 1 + dx, y_mid)
+
     if not samples:
         return (1.0, 1.0, 1.0)
-    samples.sort(key=lambda t: t[0] + t[1] + t[2])
-    m = samples[len(samples) // 2]
+    # The MODE, not the median. A background is one exact colour repeated;
+    # ink and antialiasing are scattered values. On tight leading the strips
+    # above and below run through the neighbouring lines' glyphs, and the
+    # median of an IRS 1040 header cell came back (176,204,200) — a grey
+    # patch on a (220,255,250) cell, visible at a glance.
+    from collections import Counter
+    counts = Counter(samples)
+    best, n_best = max(counts.items(), key=lambda kv: (kv[1], sum(kv[0])))
+    if n_best >= 3:
+        m = best
+    else:
+        samples.sort(key=lambda t: t[0] + t[1] + t[2])
+        m = samples[len(samples) // 2]
     return (m[0] / 255.0, m[1] / 255.0, m[2] / 255.0)
 
 
@@ -885,7 +1073,11 @@ def _detect_alignments(spans: list) -> dict:
     a one-off coincidence exceedingly unlikely while still catching every
     genuine column pattern (which has more than one row by definition).
     """
-    X1_TOL   = 3.0   # pt — right-edge tolerance for right-alignment
+    X1_TOL   = 1.0   # pt — right-edge tolerance for right-alignment. Was 3:
+                     # ragged-right prose ends anywhere within a few points
+                     # of the margin, and six unrelated paragraph lines on the
+                     # IRS 1040 voted a left-aligned header "right". A real
+                     # right-aligned column is set to the exact point.
     CX_TOL   = 3.0   # pt — midpoint tolerance for centering
     X0_MIN   = 3.0   # pt — minimum x0 difference to distinguish from same-text
     MIN_MATES = 2    # other spans required to corroborate a column, not just one
@@ -929,6 +1121,20 @@ def _detect_alignments(spans: list) -> dict:
             result[key] = "left"
             continue
 
+        # ── Left is evidence too, not only the fallback. Text stacked at one
+        # left edge ("Credit for / other / dependents" on the IRS 1040) was
+        # outvoted by two unrelated fields elsewhere on the page that happen
+        # to end near the same x, read as right-aligned, and a longer value
+        # was drawn leftward over the checkbox beside it. Left edges set by
+        # software coincide exactly, so the tolerance is tight, and a tie
+        # goes to left: it is the one reading that leaves x0 where it was.
+        left_mates = sum(
+            1 for j in range(n)
+            if j != i
+            and abs(x0s[j] - x0_i) <= 0.5
+            and abs(x1s[j] - x1_i) > X0_MIN
+        )
+
         # ── Right: shares x1, different x0 — needs >= 2 corroborating mates ─
         right_mates = sum(
             1 for j in range(n)
@@ -936,7 +1142,7 @@ def _detect_alignments(spans: list) -> dict:
             and abs(x1s[j] - x1_i) <= X1_TOL
             and abs(x0s[j] - x0_i) > X0_MIN
         )
-        if right_mates >= MIN_MATES:
+        if right_mates >= MIN_MATES and right_mates > left_mates:
             result[key] = "right"
             continue
 
@@ -948,7 +1154,7 @@ def _detect_alignments(spans: list) -> dict:
             and abs(x0s[j] - x0_i) > X0_MIN
             and abs(x1s[j] - x1_i) > X0_MIN
         )
-        if center_mates >= MIN_MATES:
+        if center_mates >= MIN_MATES and center_mates > left_mates:
             result[key] = "center"
             continue
 
@@ -1105,7 +1311,20 @@ class PDFEditor:
             # can't know whether a trailing span needs to move out of the way
             # until you know how wide the replacement actually turned out.
             draw_ops = []        # (ox, oy, fontname_to_use, fontsize, draw_text, color)
-            edited_ids = {id(span) for span, _ in items}
+            # `all_spans` is a fresh extraction, so its dicts are never the
+            # caller's: an id() test matched nothing, and every edited cell
+            # after a widening edit on the same line was taken for an
+            # untouched neighbour — pushed right and redrawn with its OLD
+            # text beside the new one (an annex row read "1,0000000").
+            # Match by origin and text instead; not by bbox, which callers
+            # widen on purpose (see api._relax_numeric).
+            def _same_span(a, b):
+                return (a["text"].strip() == b["text"].strip()
+                        and abs(a["origin"][0] - b["origin"][0]) <= 0.5
+                        and abs(a["origin"][1] - b["origin"][1]) <= 0.5)
+            edited_ids = {id(s) for s in all_spans
+                          if any(_same_span(s, span) for span, _ in items)}
+            edited_ids |= {id(span) for span, _ in items}
             overflowing = []     # (span, new_x1, oy) — left-aligned edits that overran their box
 
             for span, new_text in items:
@@ -1288,7 +1507,12 @@ class PDFEditor:
                     cursor = new_x1
                     prev_orig_x1 = orig_x1
                     for f in followers:
-                        gap = max(0.0, f["bbox"].x0 - prev_orig_x1)
+                        # A word gap is kept exactly; a table gutter only
+                        # needs two em — otherwise a qty going 1 -> 10 moves
+                        # every column after it (same rule as the in-place
+                        # engine's _would_tear_line).
+                        gap = min(max(0.0, f["bbox"].x0 - prev_orig_x1),
+                                  2.0 * edited_span["size"])
                         needed_x0 = cursor + gap
                         dx = needed_x0 - f["bbox"].x0
                         if dx > 0.1:
@@ -1304,15 +1528,61 @@ class PDFEditor:
             # out of the way. See the (unchanged) note on TRUE redaction
             # above `apply_redactions`: this removes the underlying text
             # operators, not just a cosmetic paint-over.
-            for span, _ in items:
-                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
-                                      cross_out=False)
-            for span in shifted_spans:
-                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
-                                      cross_out=False)
+            # Clipped against the lines above and below: on tightly leaded
+            # type the boxes overlap (7pt on 6pt leading on the IRS 1040),
+            # and erasing a header's full box removed "other" from the line
+            # under it. Stopping at our own baseline for a line below, and at
+            # theirs for a line above, still removes every glyph of ours.
+            def _erase_rect(span):
+                r = fitz.Rect(span["bbox"])
+                oy = span["origin"][1]
+                gap = 0.5 * span["size"]
+                # An underline sits just under the descenders — Chrome draws
+                # it 0.4pt below the text box — so the box reaches a little
+                # further down, unless a line below clips it back.
+                r.y1 += 0.15 * span["size"]
+                for o in all_spans:
+                    ob = o["bbox"]
+                    if ob.x1 <= r.x0 or ob.x0 >= r.x1:
+                        continue
+                    ooy = o["origin"][1]
+                    # Clear of the neighbour's glyph BOX, not just its
+                    # baseline: MuPDF deletes a character whose box the
+                    # redaction overlaps by as little as ~16%, and stopping
+                    # at our own baseline still took "other" off the line
+                    # below on 7pt type at 6pt leading. Too small a box to
+                    # delete our own glyphs is caught below and covered.
+                    if ooy > oy + gap and ob.y0 < r.y1:
+                        r.y1 = max(min(r.y1, ob.y0), r.y0 + 0.3 * span["size"])
+                    elif ooy < oy - gap and ob.y1 > r.y0:
+                        r.y0 = min(max(r.y0, ob.y1), r.y1 - 0.3 * span["size"])
+                return r
+            # Nothing is PAINTED. The redaction deletes the old glyphs from
+            # the content stream, so a background-coloured rectangle on top
+            # hid nothing — it only destroyed what lay under the text: the
+            # underline of a link (gone from "reflection" on a Wikipedia
+            # page), a table rule crossing the cell, a gradient or scanned
+            # background it could only approximate with one flat colour.
+            erase = [_erase_rect(sp_) for sp_, _ in items] + \
+                    [_erase_rect(sp_) for sp_ in shifted_spans]
+            # A decoration lying ENTIRELY inside the field's box — a link's
+            # underline, a strike-through — belongs to the old glyphs and goes
+            # with them; kept, it was left stranded under whatever words the
+            # redraw put there. Anything reaching outside the box (a table
+            # rule, a cell's shading) belongs to the page and is untouched.
+            for er in erase:
+                page.add_redact_annot(er, cross_out=False, fill=False)
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
-                                  graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                  graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
                                   text=fitz.PDF_REDACT_TEXT_REMOVE)
+            # Unless deletion failed: then, and only there, cover it the old
+            # way. Text still readable inside an erased box is the evidence.
+            for (sp_, er) in zip([x for x, _ in items] + shifted_spans, erase):
+                left_over = page.get_text("text", clip=er).strip()
+                if left_over and any(ch in left_over for ch in sp_["text"].strip()[:40]
+                                     if not ch.isspace()):
+                    page.draw_rect(er, color=None, overlay=True,
+                                   fill=_sample_bg(pix, fitz.Rect(sp_["bbox"])))
 
             # ── Draw the measured edits, then the shifted (unchanged-text)
             # neighbors at their new position, in their own original font.

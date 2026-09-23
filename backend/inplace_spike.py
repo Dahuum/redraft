@@ -69,6 +69,7 @@ a bug:
     keys glyph maps by font name, not by the specific embedded font object.
 """
 import base64
+import hashlib
 import io
 import re
 
@@ -136,15 +137,33 @@ def _name_key(name: str) -> str:
     return "".join(c for c in name.lower() if c.isalnum())
 
 
+# Words that name the REGULAR cut and nothing else. The PDF structure calls a
+# PyMuPDF-embedded font "DejaVu Sans Book" while extraction calls it
+# "DejaVuSans"; with no way to connect the two, the space glyph (known only
+# from what the page draws) went missing and every edit on such a document —
+# 16 of 16, shortening included — was refused as "unmappable".
+_REGULAR_WORDS = ("book", "regular", "roman", "normal", "plain")
+
+
+def _regular_key(key: str) -> str:
+    for w in _REGULAR_WORDS:
+        if key.endswith(w) and len(key) > len(w) + 2:
+            return key[:-len(w)]
+    return key
+
+
 def _lookup_by_name(mapping: dict, name: str):
-    """mapping[name], falling back to a match on _name_key."""
+    """mapping[name], falling back to a match on _name_key, then on the key
+    with a regular-style word dropped — accepted only when unambiguous."""
     if name in mapping:
         return mapping[name]
     want = _name_key(name)
     for k, v in mapping.items():
         if _name_key(k) == want:
             return v
-    return None
+    want_r = _regular_key(want)
+    hits = [v for k, v in mapping.items() if _regular_key(_name_key(k)) == want_r]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _gid_maps(doc):
@@ -394,7 +413,93 @@ def _encode_fallback(text, encoding_name):
         return None
 
 
-_SIMPLE_GLYPH_MEMO: dict = {}  # font display name -> set of covered chars, or None
+_SIMPLE_GLYPH_MEMO: dict = {}  # (display name, sha256 of the program) -> covered chars, or None
+
+
+def _type1_glyph_coverage(raw):
+    """Characters a PostScript Type 1 program (PFA/PFB) can draw, or None.
+
+    The third embedded-program format, after TrueType and bare CFF, and the
+    last one whose coverage could not be read — so the missing-glyph check was
+    skipped on every pdfTeX document and the viewer painted notdef boxes.
+    fontTools' t1Lib cannot help: on these subsets it raises "can't find end
+    of eexec part".
+
+    A Type 1 font keeps its glyph names in the eexec-encrypted section, which
+    is a fixed, documented stream cipher (R=55665, the first 4 plaintext bytes
+    discarded). Decrypting it and reading the CharStrings keys is enough — the
+    outlines themselves are not needed to answer "can this font draw X".
+    """
+    if not raw:
+        return None
+    try:
+        i = raw.find(b"eexec")
+        if i < 0:
+            return None
+        enc = raw[i + 5:].lstrip(b"\r\n\t ")
+        # PFA keeps the section as hex, PFB as binary.
+        if all(c in b"0123456789abcdefABCDEF \r\n\t" for c in enc[:64]):
+            import binascii
+            enc = binascii.unhexlify(re.sub(rb"[^0-9A-Fa-f]", b"", enc))
+        r = 55665
+        out = bytearray()
+        for b in enc:
+            out.append(b ^ (r >> 8))
+            r = ((b + r) * 52845 + 22719) & 0xFFFF
+        clear = bytes(out[4:])
+        names = re.findall(rb"/([A-Za-z][A-Za-z0-9._]*)\s+\d+\s+(?:-\||RD)\s", clear)
+        if not names:
+            return None
+        from fontTools import agl
+        chars = set()
+        for n in names:
+            uv = agl.AGL2UV.get(n.decode("latin-1"))
+            if uv is not None:
+                chars.add(chr(uv))
+        return chars or None
+    except Exception:  # noqa: BLE001 — unreadable -> skip, don't block
+        return None
+
+
+def _cff_glyph_coverage(raw):
+    """Characters a BARE CFF (Type1C) program can draw, or None.
+
+    Without this the coverage check was skipped entirely on every
+    Adobe-produced document. fontTools' SFNT reader rejects a /FontFile3 —
+    it has no sfnt wrapper — so the parse raised, coverage came back None,
+    and None means "cannot tell, do not block". The caller then wrote
+    character codes the subset has no outline for and the viewer painted
+    notdef boxes, while extraction still reported the right characters
+    because /ToUnicode had been updated. Silent, and invisible to any check
+    that reads the text back.
+
+    A CFF stores glyphs by NAME, so coverage is its charset mapped through
+    the Adobe glyph list.
+    """
+    if not raw:
+        return None
+    try:
+        import io as _io
+        from fontTools.cffLib import CFFFontSet
+        from fontTools import agl
+        cff = CFFFontSet()
+        cff.decompile(_io.BytesIO(raw), font_extend._cff_stub())
+        if not cff.fontNames:
+            return None
+        names = cff[cff.fontNames[0]].CharStrings.keys()
+        out = set()
+        for n in names:
+            uv = agl.AGL2UV.get(n)
+            if uv is not None:
+                out.add(chr(uv))
+            elif n.startswith("uni") and len(n) == 7:
+                try:
+                    out.add(chr(int(n[3:], 16)))
+                except ValueError:
+                    pass
+        return out or None
+    except Exception:  # noqa: BLE001 — truly unparseable -> skip, don't block
+        return None
 
 
 def _simple_font_glyph_coverage(doc, font_display_name: str):
@@ -408,27 +513,39 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
     "succeeds" while what actually gets painted is garbage. Returns None if
     the font can't be found/parsed (caller should skip the check, not treat
     unknown as missing)."""
-    if font_display_name in _SIMPLE_GLYPH_MEMO:
-        return _SIMPLE_GLYPH_MEMO[font_display_name]
     coverage = None
+    key = None
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
             if f[3].split("+")[-1] != font_display_name:
                 continue
+            raw = None
             try:
                 raw = doc.extract_font(f[0])[3]
+                # Keyed by the program's content, not its name: two documents
+                # embedding different subsets of one family used to share a
+                # single entry for the life of the server process.
+                key = (font_display_name, hashlib.sha256(raw or b"").hexdigest())
+                if key in _SIMPLE_GLYPH_MEMO:
+                    return _SIMPLE_GLYPH_MEMO[key]
                 if raw:
                     from fontTools.ttLib import TTFont
                     import io as _io
                     tt = TTFont(_io.BytesIO(raw), fontNumber=0, lazy=True)
                     cmap = tt.getBestCmap() or {}
-                    coverage = {chr(cp) for cp in cmap}
-            except Exception:  # noqa: BLE001 — unparseable font -> skip, don't block
-                coverage = None
+                    # Empty is "no Unicode cmap to read", not "draws nothing".
+                    # LibreOffice's DejaVu subsets carry only a (1,0) table
+                    # keyed by glyph order, so getBestCmap finds nothing —
+                    # and calling that zero coverage would mark every
+                    # character missing on a font that draws them all.
+                    coverage = {chr(cp) for cp in cmap} or None
+            except Exception:  # noqa: BLE001 — not SFNT; try the other two
+                coverage = _cff_glyph_coverage(raw) or _type1_glyph_coverage(raw)
             break
         if coverage is not None:
             break
-    _SIMPLE_GLYPH_MEMO[font_display_name] = coverage
+    if key is not None:
+        _SIMPLE_GLYPH_MEMO[key] = coverage
     return coverage
 
 
@@ -854,7 +971,48 @@ def _locate(runs, refmap, font_name, old_codes, is_cid, which=None,
 
 
 # ── apply (mutating — given a successful locate result) ─────────────────────
-def _apply(doc, runs, loc_result, new_codes, is_cid):
+def _kerned_array(codes, kern, is_cid) -> bytes:
+    """TJ array elements for *codes* with *kern* (TJ units between each pair).
+
+    kern[i] sits between codes[i] and codes[i+1]; a zero splits nothing, so a
+    run the producer would not have kerned comes out as one string."""
+    out, cur = [], []
+    for i, c in enumerate(codes):
+        cur.append(c)
+        k = kern[i] if kern and i < len(kern) else 0
+        if k:
+            out.append(b"<" + _codes_to_bytes(cur, is_cid) + b">")
+            out.append(("%g" % k).encode())
+            cur = []
+    if cur:
+        out.append(b"<" + _codes_to_bytes(cur, is_cid) + b">")
+    return b" ".join(out)
+
+
+def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
+    """Splice *new_codes* in. *kern* (optional, len(new_codes) - 1) carries the
+    producer's kerning between consecutive new glyphs, in TJ units; see
+    kerning.py. Where it is non-zero a Tj becomes a TJ so it can be written."""
+    if kern and not any(kern):
+        kern = None
+    if loc_result["case"] == "single_token" and kern:
+        run = runs[loc_result["run"]]
+        xref, data = run["xref"], run["data"]
+        tok = run["str_toks"][loc_result["tok"]]
+        ci0, ci1 = loc_result["code_lo"], loc_result["code_hi"]
+        pre, post = tok["codes"][:ci0], tok["codes"][ci1 + 1:]
+        merged = pre + new_codes + post
+        full_kern = [0] * max(0, len(pre) - 1) + ([0] if pre else []) + list(kern) + \
+            ([0] if post else []) + [0] * max(0, len(post) - 1)
+        body = _kerned_array(merged, full_kern, is_cid)
+        if run["op"] == "TJ":
+            new_data = data[:tok["start"]] + body + data[tok["end"]:]
+        elif run["op"] == "Tj":
+            new_data = data[:run["full_start"]] + b"[" + body + b"]TJ" + data[run["full_end"]:]
+        else:
+            return _apply(doc, runs, loc_result, new_codes, is_cid, None)
+        doc.update_stream(xref, new_data)
+        return
     if loc_result["case"] == "single_token":
         run = runs[loc_result["run"]]
         xref, data = run["xref"], run["data"]
@@ -873,14 +1031,38 @@ def _apply(doc, runs, loc_result, new_codes, is_cid):
         xref, data = run["xref"], run["data"]
         start = run["str_toks"][loc_result["tok_lo"]]["start"]
         end = run["str_toks"][loc_result["tok_hi"]]["end"]
-        new_hex = b"<" + _codes_to_bytes(new_codes, is_cid) + b">"
+        new_hex = _kerned_array(new_codes, kern, is_cid) if kern else \
+            b"<" + _codes_to_bytes(new_codes, is_cid) + b">"
         new_data = data[:start] + new_hex + data[end:]
     else:
-        touched = loc_result["touched"]
+        touched = list(loc_result["touched"])
+        # Leave the unchanged PREFIX exactly as the producer drew it. Chrome
+        # sets every glyph with its own `Td` carrying HarfBuzz's advance
+        # (kerning and subpixel rounding included); rebuilding the whole
+        # match from font advances moved "Atlas" 0.62pt in "Company: Atlas
+        # Consulting SARL" -> "... Atlas Group", where the producer's own
+        # re-print keeps it exactly in place. Whole runs whose glyphs are
+        # all shared with the new text are kept byte-for-byte.
+        old_seq, per_run = [], []
+        for ri in touched:
+            codes = [c for t in runs[ri]["str_toks"] for c in t["codes"]]
+            per_run.append(len(codes))
+            old_seq += codes
+        p = 0
+        while p < min(len(old_seq), len(new_codes)) and old_seq[p] == new_codes[p]:
+            p += 1
+        keep, used = 0, 0
+        while keep < len(touched) - 1 and used + per_run[keep] <= p:
+            used += per_run[keep]
+            keep += 1
+        if keep:
+            touched = touched[keep:]
+            new_codes = new_codes[used:]
+            if kern:
+                kern = kern[used:]
         r_first = touched[0]
         xref, data = runs[r_first]["xref"], runs[r_first]["data"]
-        new_hex = _codes_to_bytes(new_codes, is_cid)
-        first_repl = b"[<" + new_hex + b">]TJ"
+        first_repl = b"[" + _kerned_array(new_codes, kern, is_cid) + b"]TJ"
         edits = [(runs[r_first]["full_start"], runs[r_first]["full_end"], first_repl)]
         for ri in touched[1:]:
             rr = runs[ri]
@@ -1078,11 +1260,45 @@ _EXTEND_FAIL_MSG = {
 }
 
 
+def _cidtogid_stream(doc, refs):
+    """The xref of a CIDFont's /CIDToGIDMap STREAM, or None when the map is
+    Identity (or absent, which means Identity)."""
+    obj = doc.xref_object(refs["cid_xref"], compressed=True) or ""
+    m = re.search(r"/CIDToGIDMap\s*(\d+)\s+0\s+R", obj)
+    return int(m.group(1)) if m else None
+
+
 def _finish_cid_extend(doc, refs, result, missing_chars):
     """Write an extended CID font back: /W widths, the font program,
-    and /ToUnicode. Shared by both donor sources."""
+    and /ToUnicode. Shared by both donor sources.
+
+    Returns {char: CODE}. With an Identity map the code is the new glyph id.
+    With a /CIDToGIDMap STREAM — fpdf2 subsets this way, CID 36 drawing
+    glyph 20 — the new glyphs get fresh CIDs above every one in use, and the
+    map is extended to point them at the new glyph ids. Writing glyph ids as
+    codes there (the old behaviour) made every edit on an fpdf2 document
+    unlocatable, and it was redrawn."""
+    code_of = dict(result["gid"])
+    map_xref = _cidtogid_stream(doc, refs)
+    if map_xref is not None:
+        table = bytearray(doc.xref_stream(map_xref) or b"")
+        used = [i // 2 for i in range(0, len(table) - 1, 2)
+                if table[i] or table[i + 1]]
+        widths = _cid_widths_map(doc, refs["cid_xref"])
+        nxt = max(used + list(widths) + [0]) + 1
+        for ch in missing_chars:
+            cid = nxt
+            nxt += 1
+            if cid > 0xFFFF:
+                return None, "cid_space_full"
+            need = 2 * (cid + 1)
+            if len(table) < need:
+                table.extend(b"\x00" * (need - len(table)))
+            table[2 * cid:2 * cid + 2] = int(result["gid"][ch]).to_bytes(2, "big")
+            code_of[ch] = cid
+        doc.update_stream(map_xref, bytes(table))
     kind, val = doc.xref_get_key(refs["cid_xref"], "W")
-    additions = "".join(f" {result['gid'][ch]}[{result['width_1000'][ch]}]" for ch in missing_chars)
+    additions = "".join(f" {code_of[ch]}[{result['width_1000'][ch]}]" for ch in missing_chars)
     if kind == "array" and val and val.endswith("]"):
         # /W stored inline on the CIDFontType2 dict itself.
         doc.xref_set_key(refs["cid_xref"], "W", val[:-1] + additions + "]")
@@ -1103,8 +1319,8 @@ def _finish_cid_extend(doc, refs, result, missing_chars):
         return None, "bad_width_array"  # unexpected /W shape — refuse rather than risk it
     doc.update_stream(refs["ff_xref"], result["font_bytes"])
     _add_tounicode_entries(doc, refs.get("tu_xref"),
-                           {result["gid"][ch]: ord(ch) for ch in missing_chars})
-    return result["gid"], None
+                           {code_of[ch]: ord(ch) for ch in missing_chars})
+    return code_of, None
 
 
 _CID_PROGRAM_GIDS: dict = {}
@@ -1128,9 +1344,12 @@ def _cid_program_gid_map(doc, font_display_name: str) -> dict:
     already relies on — and anything else returns nothing rather than a wrong
     answer.
     """
-    key = (id(doc), font_display_name)
-    if key in _CID_PROGRAM_GIDS:
-        return _CID_PROGRAM_GIDS[key]
+    # Keyed by the font PROGRAM's content, never by the document. This was
+    # (id(doc), name): id() is a memory address, reused as soon as a document
+    # is freed, so a later document opened at the same address was handed an
+    # earlier one's glyph map — on a sequence of Chrome prints an edit that
+    # succeeds alone came back "unmappable", and the same mechanism can map a
+    # letter to a GID in a DIFFERENT subset and draw the wrong glyph.
     out: dict = {}
     try:
         from fontTools.ttLib import TTFont
@@ -1151,6 +1370,9 @@ def _cid_program_gid_map(doc, font_display_name: str) -> dict:
                 raw = doc.xref_stream(refs["ff_xref"])
                 if not raw:
                     continue
+                key = (font_display_name, hashlib.sha256(raw).hexdigest())
+                if key in _CID_PROGRAM_GIDS:
+                    return _CID_PROGRAM_GIDS[key]
                 tt = TTFont(io.BytesIO(raw))
                 try:
                     gid_of = {n: i for i, n in enumerate(tt.getGlyphOrder())}
@@ -1165,12 +1387,12 @@ def _cid_program_gid_map(doc, font_display_name: str) -> dict:
                 finally:
                     tt.close()
                 if out:
+                    _CID_PROGRAM_GIDS[key] = out
                     break
             if out:
                 break
     except Exception:  # noqa: BLE001 — an unreadable program means no map
         out = {}
-    _CID_PROGRAM_GIDS[key] = out
     return out
 
 
@@ -1207,6 +1429,20 @@ def _try_extend(doc, font_display_name, missing_chars):
     if not refs:
         return None, "no_stream_refs"
     subset_bytes = doc.xref_stream(refs["ff_xref"])
+
+    # The GENUINE typeface at this weight, when it is installed or in the
+    # open-source catalogue, before anything else: it is exact. Only failing
+    # that is another cut synthesised or a lookalike measured. A Chrome
+    # letter's bold 'M' came out 11.16pt wide — neither Regular (10.35) nor
+    # Bold (11.94) — synthesised from the Regular cut in the document while
+    # the real DejaVu Sans Bold sat installed on the machine.
+    try:
+        g_raw, g_kind = font_extend.resolve_donor_detailed(font_display_name)
+        if g_raw and g_kind == "family":
+            result = font_extend.extend_font(subset_bytes, g_raw, missing_chars)
+            return _finish_cid_extend(doc, refs, result, missing_chars)
+    except Exception:  # noqa: BLE001 — fall through to the other donors
+        pass
 
     # The family's own other cut, already embedded in this document, before
     # anything downloadable. Without this the CID path takes whatever
@@ -1269,6 +1505,17 @@ def _try_extend(doc, font_display_name, missing_chars):
 
 _SIMPLE_EXTEND_FAIL_MSG = {
     "no_font_ref": "Couldn't locate this font's own reference on the page.",
+    "cff_encoding_unsupported": ("This font's outlines are a CFF program and its encoding "
+                                 "isn't one whose character codes can be mapped safely, so "
+                                 "the glyph can't be added without changing how the existing "
+                                 "text is read."),
+    "cff_code_unmapped": ("This font's encoding doesn't assign the character to the code "
+                          "the text uses, so adding the glyph wouldn't make it draw."),
+    "cff_donor_too_different": ("The only donor available for this font has letters a "
+                                "noticeably different size from it, so adding them would "
+                                "be visible."),
+    "cff_no_glyph_name": "This character has no standard name a CFF font can store it under.",
+    "cff_extend_failed": "Couldn't add the glyph to this font's CFF program.",
     "no_fontfile": "This font's outlines aren't embedded as a TrueType program.",
     "no_donor": ("No other cut of this family is embedded in the document, and no "
                  "open-source donor could be resolved for it."),
@@ -1332,7 +1579,7 @@ def _simple_font_refs(doc, font_display_name: str, require_truetype: bool = True
     return None
 
 
-def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
+def _set_simple_widths(doc, refs, code_to_width: dict, extend: bool = False) -> bool:
     """Write real advance widths into the font's /Widths array.
 
     Not optional. A subsetter that drops a glyph also zeroes its width, and
@@ -1362,6 +1609,14 @@ def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
     if len(widths) != (last - first + 1):
         return False   # unexpected shape — refuse rather than misalign the table
 
+    grow_to = max(code_to_width) if (extend and code_to_width) else last
+    if grow_to > last:
+        # Only for codes this engine itself allocated past /LastChar (see
+        # _allocate_private_codes): nothing in the document can be drawn
+        # with them yet, so widening the table moves nothing that exists.
+        if grow_to > 255:
+            return False
+        widths += [0.0] * (grow_to - last)
     for code, w in code_to_width.items():
         idx = code - first
         if 0 <= idx < len(widths):
@@ -1369,12 +1624,214 @@ def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
         else:
             return False   # outside the declared range; extending it is a
                            # bigger change than this path should make silently
+    if grow_to > last:
+        doc.xref_set_key(refs["font_xref"], "LastChar", str(grow_to))
+        refs["last_char"] = grow_to
     body = "[" + " ".join(f"{int(round(w))}" for w in widths) + "]"
     if w_xref is not None:
         doc.update_object(w_xref, body)
     else:
         doc.xref_set_key(refs["font_xref"], "Widths", body)
     return True
+
+
+def _simple_cff_refs(doc, font_display_name: str):
+    """Locate a simple /Type1 font whose outlines are a bare CFF (/FontFile3).
+
+    Separate from _simple_font_refs, which requires /Subtype /TrueType and
+    /FontFile2. Adobe's producers emit neither: the IRS forms are /Type1 with
+    /FontFile3, /Encoding /WinAnsiEncoding and /Widths declared 0..255.
+    """
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[3].split("+")[-1] != font_display_name:
+                continue
+            xref = f[0]
+            obj = doc.xref_object(xref, compressed=True)
+            flat = obj.replace(" ", "")
+            if "/Subtype/Type0" in flat:
+                continue
+            if "/Subtype/Type1" not in flat and "/Subtype/MMType1" not in flat:
+                continue
+            m = re.search(r"/FontDescriptor\s+(\d+)\s+0\s+R", obj)
+            if not m:
+                continue
+            fd_xref = int(m.group(1))
+            fd = doc.xref_object(fd_xref, compressed=True)
+            m2 = re.search(r"/FontFile3\s+(\d+)\s+0\s+R", fd)
+            if not m2:
+                continue
+            enc = re.search(r"/Encoding\s*/(\w+)", obj)
+            fc = re.search(r"/FirstChar\s+(\d+)", obj)
+            lc = re.search(r"/LastChar\s+(\d+)", obj)
+            tu = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", obj)
+            kind, val = doc.xref_get_key(xref, "Widths")
+            return {"font_xref": xref, "fd_xref": fd_xref,
+                    "ff_xref": int(m2.group(1)),
+                    "encoding": enc.group(1) if enc else None,
+                    "first_char": int(fc.group(1)) if fc else None,
+                    "last_char": int(lc.group(1)) if lc else None,
+                    "widths_kind": kind, "widths_val": val,
+                    "tu_xref": int(tu.group(1)) if tu else None}
+    return None
+
+
+def _winansi_maps(code: int, ch: str) -> bool:
+    """Does /WinAnsiEncoding assign *ch* to *code*?
+
+    WinAnsiEncoding is Windows-1252, so the question is decodable rather than
+    a table to carry. It matters because a simple font renders by CODE: the
+    injected glyph is stored under its standard Adobe name, and only an
+    encoding that already points this code at that name will draw it. Where it
+    does not, this tier refuses instead of writing a /Differences entry — that
+    is a change to how EXISTING text is interpreted, not just an addition.
+    """
+    try:
+        return bytes([code]).decode("cp1252") == ch
+    except Exception:  # noqa: BLE001 — undefined in 1252
+        return False
+
+
+def _try_extend_simple_cff(doc, font_display_name, missing_chars, code_for=None):
+    """Give a CFF-outline simple font the glyphs it lacks, in place.
+
+    The TrueType tier cannot touch these files at all — a /FontFile3 is a bare
+    CFF program and fontTools' SFNT reader rejects it — so every edit on an
+    Adobe-produced document that needed a character outside the subset used to
+    refuse and fall through to the redraw engine, which repaints the page and
+    embeds a font the producer never wrote.
+
+    Returns ({char: glyph name}, None) or (None, reason).
+    """
+    if code_for is None:
+        code_for = {}
+    refs = _simple_cff_refs(doc, font_display_name)
+    if not refs:
+        return None, "no_font_ref"
+    if refs.get("encoding") not in ("WinAnsiEncoding", "StandardEncoding"):
+        return None, "cff_encoding_unsupported"
+    for ch in missing_chars:
+        if not _winansi_maps(code_for.get(ch, ord(ch)), ch):
+            return None, "cff_code_unmapped"
+    try:
+        subset_bytes = doc.xref_stream(refs["ff_xref"])
+    except Exception:  # noqa: BLE001
+        return None, "no_fontfile"
+    if not subset_bytes:
+        return None, "no_fontfile"
+
+    donor, _kind = font_extend.resolve_donor_detailed(font_display_name)
+    if not donor:
+        return None, "no_donor"
+    try:
+        # extend_cff_font measures the donor against landmarks read off this
+        # subset's own glyphs and raises rather than inject something the
+        # wrong size. Its refusal is this tier's refusal.
+        result = font_extend.extend_cff_font(subset_bytes, donor, missing_chars)
+    except ValueError as exc:
+        msg = str(exc)
+        if "off by" in msg:
+            return None, "cff_donor_too_different"
+        if "no standard glyph name" in msg:
+            return None, "cff_no_glyph_name"
+        if "no glyph for" in msg:
+            return None, "glyph_not_in_donor"
+        return None, "cff_extend_failed"
+    except Exception:  # noqa: BLE001
+        return None, "cff_extend_failed"
+
+    if not _set_simple_widths(doc, refs,
+                              {code_for.get(ch, ord(ch)): result["width_1000"][ch]
+                               for ch in missing_chars}):
+        return None, "bad_widths"
+    doc.update_stream(refs["ff_xref"], result["font_bytes"])
+    _add_tounicode_entries(doc, refs.get("tu_xref"),
+                           {code_for.get(ch, ord(ch)): ord(ch) for ch in missing_chars},
+                           hex_digits=2)
+    return result["names"], None
+
+
+def _private_code_font(doc, refs) -> bool:
+    """A simple TrueType font whose codes are the producer's own invention.
+
+    LibreOffice, Chrome/Skia and most subsetting producers number glyphs
+    1, 2, 3... in the order they were first used and declare no /Encoding;
+    the font program's own (1,0) or (3,0) cmap is what maps code to glyph.
+    Such a font has no code at all for a character the document never used,
+    so the encoder refused every edit introducing one — on a LibreOffice
+    sales sheet, "Widget A" could become "Widget Al" but never "Widget Ap".
+    """
+    if not refs or not refs.get("ff_xref"):
+        return False
+    obj = doc.xref_object(refs["font_xref"], compressed=True)
+    return "/Encoding" not in obj
+
+
+def _allocate_private_codes(doc, refs, rev: dict, chars) -> dict:
+    """{char: code} for *chars*, from codes nothing in the document uses.
+
+    Taken strictly above /LastChar, so no existing code — declared, mapped,
+    or merely reserved in /Widths — is ever reused, and never 32: PDF applies
+    word spacing (Tw) to byte 32 in a simple font, so a letter there would
+    stretch whenever the line is justified. Returns {} if there is no room.
+    """
+    last = refs.get("last_char")
+    if last is None:
+        return {}
+    used = set(rev.values()) | set(range(0, last + 1))
+    out, code = {}, max(last + 1, 33)
+    for ch in chars:
+        while code in used or code == 32:
+            code += 1
+        if code > 255:
+            return {}
+        out[ch] = code
+        used.add(code)
+    return out
+
+
+def _map_private_codes(original: bytes, extended: bytes, code_gid: dict) -> bytes:
+    """*extended* with its cmap restored to *original*'s, plus code -> gid.
+
+    The injectors key new glyphs by Unicode codepoint (cmap[ord(ch)]), which
+    is right for an encoded font and wrong for a private one, where code 112
+    ('p' in Unicode) may already draw some other letter. Every original entry
+    is put back and only the allocated codes are added: (1,0) by the code
+    itself, (3,0) at both the code and 0xF000 + code, the two places a viewer
+    looks for a symbolic font. A byte-sized (format 0) table that cannot hold
+    a glyph id above 255 is rebuilt as format 6, which can.
+    """
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
+    src = TTFont(io.BytesIO(original))
+    dst = TTFont(io.BytesIO(extended))
+    order = dst.getGlyphOrder()
+    orig_tables = {(t.platformID, t.platEncID): dict(t.cmap) for t in src["cmap"].tables} \
+        if "cmap" in src else {}
+    if "cmap" not in dst:
+        return extended
+    new_tables = []
+    for t in dst["cmap"].tables:
+        key = (t.platformID, t.platEncID)
+        m = dict(orig_tables.get(key, t.cmap))
+        if key in ((1, 0), (3, 0)):
+            for code, gid in code_gid.items():
+                m[code] = order[gid]
+                if key == (3, 0):
+                    m[0xF000 + code] = order[gid]
+        fmt = t.format
+        if fmt == 0 and (any(dst.getGlyphID(n) > 255 for n in m.values())
+                         or any(c > 255 for c in m)):
+            fmt = 6 if key[0] == 1 else 4
+        nt = CmapSubtable.newSubtable(fmt)
+        nt.platformID, nt.platEncID, nt.language = t.platformID, t.platEncID, \
+            getattr(t, "language", 0)
+        nt.cmap = m
+        new_tables.append(nt)
+    dst["cmap"].tables = new_tables
+    buf = io.BytesIO()
+    dst.save(buf)
+    return buf.getvalue()
 
 
 def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
@@ -1404,7 +1861,11 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
         code_for = {}
     refs = _simple_font_refs(doc, font_display_name)
     if not refs:
-        return None, "no_font_ref"
+        # No TrueType program under this name. It may still be a simple font
+        # whose outlines are a bare CFF, which is what every Adobe producer
+        # emits — that has its own tier.
+        return _try_extend_simple_cff(doc, font_display_name, missing_chars,
+                                      code_for=code_for)
     try:
         subset_bytes = doc.xref_stream(refs["ff_xref"])
     except Exception:  # noqa: BLE001
@@ -1414,17 +1875,27 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
 
     result = None
     provenance = None
-    # 1. The family's own other cut, already in this document.
+    # 0. The genuine typeface at this weight, installed or open-source: exact.
+    #    (See the same step in _try_extend.)
     try:
-        import font_donors
-        import glyph_synth
-        donor = font_donors.find_in_document_donor(
-            doc, font_display_name, missing_chars)
-        if donor:
-            result = glyph_synth.inject_into_font(subset_bytes, donor["glyphs"])
-            provenance = donor["provenance"]
-    except Exception:  # noqa: BLE001 — fall through to the network donor
+        g_raw, g_kind = font_extend.resolve_donor_detailed(font_display_name)
+        if g_raw and g_kind == "family":
+            result = font_extend.extend_font(subset_bytes, g_raw, missing_chars)
+            provenance = "the genuine family"
+    except Exception:  # noqa: BLE001
         result = None
+    # 1. The family's own other cut, already in this document.
+    if result is None:
+        try:
+            import font_donors
+            import glyph_synth
+            donor = font_donors.find_in_document_donor(
+                doc, font_display_name, missing_chars)
+            if donor:
+                result = glyph_synth.inject_into_font(subset_bytes, donor["glyphs"])
+                provenance = donor["provenance"]
+        except Exception:  # noqa: BLE001 — fall through to the network donor
+            result = None
 
     # 2. An open-source donor — through the same measured transform, so its
     #    own proportions do not come across unchanged.
@@ -1455,12 +1926,22 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
         except Exception:  # noqa: BLE001
             return None, "inject_failed"
 
+    private = _private_code_font(doc, refs)
     if not _set_simple_widths(doc, refs,
                               {code_for.get(ch, ord(ch)): result["width_1000"][ch]
-                               for ch in missing_chars}):
+                               for ch in missing_chars},
+                              extend=private):
         return None, "bad_widths"
 
-    doc.update_stream(refs["ff_xref"], result["font_bytes"])
+    font_bytes = result["font_bytes"]
+    if private:
+        try:
+            font_bytes = _map_private_codes(
+                subset_bytes, font_bytes,
+                {code_for[ch]: result["gid"][ch] for ch in missing_chars})
+        except Exception:  # noqa: BLE001 — unmapped glyphs would draw nothing
+            return None, "inject_failed"
+    doc.update_stream(refs["ff_xref"], font_bytes)
     # A simple font's /ToUnicode is keyed by character CODE, not by glyph id.
     _add_tounicode_entries(doc, refs.get("tu_xref"),
                            {code_for.get(ch, ord(ch)): ord(ch) for ch in missing_chars},
@@ -1802,13 +2283,17 @@ def _reflow_same_line(doc, page, base_ys, from_x: float, dx: float,
 
     Returns the number of items shifted, or None if reflow isn't safe here.
     """
-    if abs(dx) < 0.01:
+    grows = field is not None and abs(field[3] - field[1]) >= 0.01
+    if abs(dx) < 0.01 and not grows:
         return 0
     edits, shifted = [], 0
     for st in _content_streams(doc, page):
         data = st["data"]
         hits = []
-        for obj in _text_objects(data):
+        # With nothing to push (a field changing width in front of a column)
+        # only the field's own rules are rewritten; no text object moves, so
+        # none needs to be proven movable.
+        for obj in (_text_objects(data) if abs(dx) >= 0.01 else ()):
             pos = obj["positions"]
             if pos is None:
                 # Where this object draws cannot be worked out from its
@@ -2073,6 +2558,44 @@ def _next_text_x0(page, target_bbox):
             continue              # the field itself, or text before it
         best = span["bbox"][0] if best is None else min(best, span["bbox"][0])
     return best
+
+
+def _is_column_cell(page, target_bbox, x: float,
+                    gutter_em: float = 0.6, tol: float = 0.5, need: int = 2) -> bool:
+    """Is the text starting at *x* on the field's line a TABLE CELL?
+
+    Gap width alone cannot tell a table from prose. A spreadsheet row
+    "Widget A | North | 1420" has a 9pt gutter before "North" at 10pt type —
+    under two em, so it was taken for prose, and shortening "Widget A" pulled
+    the whole row 9.4pt out of its columns. What a reader's eye actually uses
+    is alignment: a cell sits after a gutter AND lines up, at its left or
+    right edge, with gutter-separated words on other rows.
+
+    Measured over the 26-document corpus: every prose document (two arXiv
+    papers, letters, contracts, a report) scores zero such words — justified
+    text lines up at the margins, but its words are not preceded by a gutter
+    — while the IRS 1040 scores 342, the sales table 10, the leader-dot form
+    20.
+    """
+    y0, y1 = fitz.Rect(target_bbox).y0, fitz.Rect(target_bbox).y1
+    rows: dict = {}
+    for w in page.get_text("words"):
+        rows.setdefault(round((w[1] + w[3]) / 2), []).append(w)
+    gut = []                                        # (word, row key)
+    for key, ws in rows.items():
+        ws.sort()
+        for j in range(1, len(ws)):
+            h = ws[j][3] - ws[j][1]
+            if ws[j][0] - ws[j - 1][2] > gutter_em * h:
+                gut.append((ws[j], key))
+    me = next((w for w, _ in gut
+               if abs(w[0] - x) <= 1.0 and min(w[3], y1) - max(w[1], y0) > 0), None)
+    if me is None:
+        return False
+    lines = {k for w, k in gut
+             if abs(w[1] - me[1]) >= 2.0
+             and (abs(w[0] - me[0]) <= tol or abs(w[2] - me[2]) <= tol)}
+    return len(lines) >= need
 
 
 def _pinned_at(positions, x: float, tol: float = 1.5) -> bool:
@@ -2361,6 +2884,32 @@ def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
     return total * size / 1000.0
 
 
+def _producer_kerning(doc, tpage, font_name, new_text, new_codes):
+    """TJ adjustments between the new glyphs, if this page's producer kerns.
+
+    Only where codes and characters correspond one to one (a ligature would
+    shift the pairing), and only from the family's complete font — a subset
+    rarely keeps its kerning tables. None means: set it unkerned, as before.
+    """
+    if len(new_codes) != len(new_text) or len(new_text) < 2:
+        return None
+    try:
+        import kerning
+        from pdf_editor import resolve_full_font
+        full = resolve_full_font(font_name)
+        k = kerning.font_kern(full)
+        if k is None:
+            return None
+        if not kerning.producer_kerns(doc[tpage], font_name, k,
+                                      doc.metadata.get("producer", "")):
+            return None
+        adj = [-round(k.char_pair(a, b) * 1000.0 / k.upem, 3)
+               for a, b in zip(new_text, new_text[1:])]
+        return adj if any(adj) else None
+    except Exception:  # noqa: BLE001 — kerning is refinement, never a reason to fail
+        return None
+
+
 def _finish_prepare(doc, tpage, nm, is_cid, old_codes, new_codes,
                     extended_chars, which):
     """Tokenise the page and locate the splice for already-encoded codes."""
@@ -2415,6 +2964,14 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
         # the code that actually renders.
         fm = {**_cid_program_gid_map(doc, nm),
               **(_lookup_by_name(_gid_maps(doc), nm) or {})}
+        # With a /CIDToGIDMap stream, CIDs are not glyph ids: the codes must
+        # come from the font's own /ToUnicode, never from the glyph maps.
+        _t0 = next((f[0] for p_ in range(doc.page_count)
+                    for f in doc[p_].get_fonts(full=True)
+                    if f[3].split("+")[-1] == nm and f[2] == "Type0"), None)
+        _refs = _font_stream_refs(doc, _t0) if _t0 else None
+        if isinstance(_refs, dict) and _cidtogid_stream(doc, _refs) is not None:
+            fm = {_norm(k): v for k, v in (cidmap or {}).get("rev", {}).items() if len(k) == 1}
         missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
         if missing:
             new_gids, fail_reason = _try_extend(doc, nm, missing)
@@ -2439,20 +2996,45 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             old_codes = _encode_fallback(old_n, enc_name)
             if old_codes is None:
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
+        alloc_missing = []
+        if new_codes is None and cm:
+            # Characters this private-code font has never drawn get codes of
+            # their own; the glyphs themselves are injected below, under
+            # exactly those codes. See _private_code_font.
+            prefs = _simple_font_refs(doc, nm)
+            if _private_code_font(doc, prefs):
+                need = [ch for ch in dict.fromkeys(new)
+                        if ch not in cm["rev"] and not ch.isspace()]
+                alloc = _allocate_private_codes(doc, prefs, cm["rev"], need)
+                if alloc:
+                    rev2 = dict(cm["rev"]); rev2.update(alloc)
+                    new_codes = _encode_simple_text(new, rev2, max(cm["max_len"], 1))
+                    # Missing by construction, whatever the coverage reader
+                    # can or cannot tell about this font.
+                    alloc_missing = sorted(alloc)
         if new_codes is None:
             new_codes = _encode_fallback(new, enc_name)
             if new_codes is None:
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
+        if True:
+            # Both encoders need this check, not just the fallback.
+            #
             # _encode_fallback only proves the WinAnsi/MacRoman *encoding*
-            # table has a byte for each character — not that this embedded
-            # subset's font program actually has a glyph outline there (see
-            # _simple_font_glyph_coverage's docstring). _encode_simple_text
-            # above doesn't need this: it's built from the doc's own
-            # /ToUnicode, so a hit there is already something the doc
-            # genuinely renders.
+            # table has a byte for each character, never that this subset has
+            # an outline there. _encode_simple_text was trusted instead,
+            # on the grounds that it is built from the document's own
+            # /ToUnicode and so only names things the document renders. That
+            # is not true: /ToUnicode is a reverse map for EXTRACTION and can
+            # name a code whose glyph the program does not contain. The CID
+            # branch above has guarded against exactly this since the
+            # 'Fécture'-with-no-ink bug; the simple branch did not, and an
+            # arXiv paper accordingly shipped .notdef boxes for 'é', 'Å',
+            # 'Ñ' and 'ñ' with every text-level check passing.
             coverage = _simple_font_glyph_coverage(doc, nm)
-            if coverage is not None:
-                missing = sorted({ch for ch in new if not ch.isspace() and ch not in coverage})
+            if coverage is not None or alloc_missing:
+                missing = sorted(set(alloc_missing) | (
+                    {ch for ch in new if not ch.isspace() and ch not in coverage}
+                    if coverage is not None else set()))
                 if missing:
                     # Try to give the ORIGINAL font the glyphs it lacks rather
                     # than refusing. Refusing here is not neutral: the caller
@@ -2524,7 +3106,378 @@ def _spans_multiple_fonts(doc, tpage, old_n, old_codes_by_cid) -> bool:
     return 3 <= best < len(old_n)
 
 
-def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
+# Refusals about the SHAPE of the span rather than the new text: the line
+# contains something the engine cannot splice through (a glyph drawn by a
+# second font object, a run boundary mid-word, spacing it can't rebuild).
+# When the change itself sits clear of that, editing only the changed words
+# succeeds where the whole line cannot.
+_NARROWABLE = {"spans_multiple_fonts", "ragged_multirun_boundary",
+               "kerning_split_within_run", "sequence_not_found", "unmappable",
+               "cannot_reflow"}
+
+
+def _changed_words(old: str, new: str):
+    """(start, old_mid, new_mid): the smallest WHOLE-word stretch that differs.
+
+    Word-aligned so the splice never cuts through a ligature or a kerned pair
+    inside a word, and so the stretch is specific enough to find again."""
+    p = 0
+    while p < min(len(old), len(new)) and old[p] == new[p]:
+        p += 1
+    q = 0
+    while q < min(len(old), len(new)) - p and old[-1 - q] == new[-1 - q]:
+        q += 1
+    while p > 0 and not old[p - 1].isspace():
+        p -= 1
+    end = len(old) - q
+    while end < len(old) and not old[end].isspace():
+        end += 1
+    q = len(old) - end
+    return p, old[p:end], new[p:len(new) - q]
+
+
+def _sub_target(page, target, start, length):
+    """A span dict for characters [start, start+length) of *target*."""
+    tb = fitz.Rect(target["bbox"])
+    for b in page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
+        for l in b.get("lines", []):
+            for sp in l["spans"]:
+                if abs(sp["origin"][1] - target["origin"][1]) > 0.5 or \
+                        abs(sp["bbox"][0] - tb.x0) > 0.5:
+                    continue
+                chars = sp["chars"]
+                txt = "".join(c["c"] for c in chars)
+                if txt != target["text"] or start + length > len(chars) or length <= 0:
+                    return None
+                seg = chars[start:start + length]
+                r = fitz.Rect(seg[0]["bbox"])
+                for c in seg[1:]:
+                    r |= fitz.Rect(c["bbox"])
+                sub = dict(target)
+                sub["text"] = txt[start:start + length]
+                sub["bbox"] = tuple(r)
+                sub["origin"] = seg[0]["origin"]
+                return sub
+    return None
+
+
+def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
+         verify: bool = True) -> dict:
+    """In-place edit of `old` -> `new` (see _edit_core). When the whole span
+    can't be spliced for a structural reason, the changed words alone are
+    tried: a Word line whose apostrophes are drawn by a second font object
+    refused "programmation" -> "informatique" three words away from them."""
+    r = _edit_core(pdf_bytes, old, new, page, bbox, verify)
+    if r.get("ok") or r.get("reason") not in _NARROWABLE or old == new:
+        return r
+    start, old_mid, new_mid = _changed_words(old, new)
+    if not old_mid.strip() or old_mid == old:
+        return r
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return r
+    try:
+        found = None
+        pages = [page] if page is not None else range(doc.page_count)
+        for pno in pages:
+            for sp in _spans(doc[pno]):
+                if sp["text"] == old and (bbox is None or
+                                          fitz.Rect(sp["bbox"]).intersects(fitz.Rect(bbox))):
+                    found = (pno, sp)
+                    break
+            if found:
+                break
+        if not found:
+            return r
+        sub = _sub_target(doc[found[0]], found[1], start, len(old_mid))
+    finally:
+        doc.close()
+    if sub is None:
+        return r
+    r2 = _edit_core(pdf_bytes, old_mid, new_mid, found[0], sub["bbox"], verify,
+                    _target=(found[0], sub))
+    if r2.get("ok"):
+        r2["narrowed"] = {"from": old[:60], "to": old_mid}
+        return r2
+    return r
+
+
+_NUMERIC_RE = re.compile(r"^[\s$€£]*[-+]?\d[\d\s.,']*\d(?:[.,]\d{1,3})?\s*(?:%|MAD|EUR|USD|€|\$)?\s*$|^[\s$€£]*\d\s*$")
+
+
+def _right_aligned_column(page, target) -> bool:
+    """Is *target* a number in a RIGHT-aligned column?
+
+    Only on column evidence: two or more other numbers on the page share its
+    right edge exactly while starting elsewhere. Guessing from the text alone
+    was measured and rejected — an "anchor looks round" rule flagged 225 of
+    940 numbers in the corpus, LibreOffice's left-aligned invoice amounts and
+    arXiv page numbers among them — and a wrong guess MOVES a value that was
+    placed correctly. With no evidence the left edge is kept, as before.
+    """
+    t = (target.get("text") or "").strip()
+    if not t or not _NUMERIC_RE.match(t):
+        return False
+    x0, x1, y = target["origin"][0], target["bbox"][2], target["origin"][1]
+    mates = 0
+    for s in _spans(page):
+        st = s["text"].strip()
+        if not st or not _NUMERIC_RE.match(st):
+            continue
+        if abs(s["origin"][1] - y) <= 2.0:
+            continue
+        if abs(s["bbox"][2] - x1) < 0.1 and abs(s["origin"][0] - x0) > 1.0:
+            mates += 1
+    return mates >= 2
+
+
+def _left_text_x1(page, target) -> float:
+    """Right edge of the nearest text on the field's line to its LEFT, or the
+    page's left margin: how far a right-aligned value may grow."""
+    x0, y = target["origin"][0], target["origin"][1]
+    best = None
+    for s in _spans(page):
+        if abs(s["origin"][1] - y) > 1.0 or s["bbox"][2] > x0 + 0.5:
+            continue
+        best = s["bbox"][2] if best is None else max(best, s["bbox"][2])
+    return best if best is not None else 18.0
+
+
+def _shift_field_object(doc, page, base_ys, x0, x1, dx, tol: float = 0.6) -> int:
+    """Move the text object that draws the field — and ONLY the field — by
+    *dx* page points. Returns 1, or 0 when no such object can be isolated.
+
+    One pass over the streams: the object to move and every other object on
+    the line are collected together. (Reading the streams a second time to
+    look for other objects left the first pass's stream stale, so the move
+    was written where nothing rendered it and still reported success.)"""
+    if abs(dx) < 0.01:
+        return 0
+    found, others = [], []
+    for st in _content_streams(doc, page):
+        for obj in _text_objects(st["data"]):
+            pos = obj["positions"]
+            if not pos:
+                continue
+            on = [q for q in pos if any(abs(q[1] - by) <= tol for by in base_ys)]
+            if not on:
+                continue
+            if len(on) == len(pos) and abs(on[0][0] - x0) <= tol \
+                    and not any(q[0] > x1 + tol for q in on):
+                if not obj["rigid"] or not obj["x_scale"]:
+                    return 0
+                found.append((st, obj))
+            else:
+                others.append(obj)
+    if len(found) != 1:
+        return 0
+    # And nothing ELSE draws inside the field: Word sets "Benguerir, le " and
+    # the date as two objects, and moving only the first split the line.
+    for obj2 in others:
+        if any(any(abs(q[1] - by) <= tol for by in base_ys) and x0 + tol < q[0] < x1 - tol
+               for q in (obj2["positions"] or [])):
+            return 0
+    st, obj = found[0]
+    data = st["data"]
+    a_, b_ = obj["x_at"]
+    new = data[:a_] + f"{float(data[a_:b_]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b_:]
+    doc.update_stream(st["xref"], new)
+    return 1
+
+_TW_OP = re.compile(rb"(?<![\w.])(-?\d*\.?\d+)\s+Tw\b")
+_TF_OP = re.compile(rb"/[^\s/\[\]()<>]+\s+(-?\d*\.?\d+)\s+Tf\b")
+
+
+def _justified_margin(page, target, tol: float = 0.3):
+    """The right margin the field's line is JUSTIFIED to, or None.
+
+    Justified means: the line ends exactly where another line of the same
+    paragraph ends — same left edge, a line or two away. A ragged line, or a
+    paragraph's last line, has no such partner."""
+    y, size = target["origin"][1], target["size"]
+    lines = {}
+    for b in page.get_text("dict")["blocks"]:
+        for l in b.get("lines", []):
+            if l.get("dir", (1, 0)) != (1, 0) or not l["spans"]:
+                continue
+            key = round(l["spans"][0]["origin"][1], 1)
+            x0, x1 = l["bbox"][0], l["bbox"][2]
+            if key in lines:
+                x0, x1 = min(x0, lines[key][0]), max(x1, lines[key][1])
+            lines[key] = (x0, x1)
+    mine = next((v for k, v in lines.items() if abs(k - y) <= 1.0), None)
+    if mine is None:
+        return None
+    for k, (x0, x1) in lines.items():
+        if abs(k - y) <= 1.0 or abs(k - y) > 3.5 * size:
+            continue
+        if abs(x0 - mine[0]) <= 0.6 and abs(x1 - mine[1]) <= tol:
+            return mine[1]
+    return None
+
+
+def _rejustify(doc, page, base_y_pdf: float, field_x0: float, delta: float,
+               max_shrink_em: float, max_grow_em: float, size: float,
+               tol: float = 0.6, need_spacing: bool = False):
+    """Re-justify the one text object drawing the field's line so its end
+    moves back by *delta* page points, the way the producer would: the word
+    spacing (Tw) or, where Tw cannot apply (two-byte CID codes), the TJ
+    adjustment before every space. Returns True when written."""
+    objs = []
+    for st in _content_streams(doc, page):
+        for obj in _text_objects(st["data"]):
+            pos = obj["positions"]
+            if pos is None or abs(obj["y"] - base_y_pdf) > tol:
+                continue
+            if any(abs(q[1] - base_y_pdf) > tol for q in pos):
+                continue
+            objs.append((st, obj))
+    if len(objs) != 1:
+        return False            # the line is drawn by several objects: decline
+    st, obj = objs[0]
+    if obj["x"] > field_x0 + tol or not obj["x_scale"]:
+        return False
+    data = st["data"]
+    region = data[obj["bt"]:obj["et"]]
+    tfm = list(_TF_OP.finditer(data[:obj["et"]]))
+    if not tfm:
+        return False
+    tfs = float(tfm[-1].group(1))
+    xs = obj["x_scale"]
+    tws = list(_TW_OP.finditer(region))
+    runs = [r for r in _text_runs(data) if obj["bt"] <= r["full_start"] < obj["et"]]
+    if len(tws) == 1:
+        # Word spacing applies to every byte 32 of a simple font's strings.
+        n = sum(t["raw"].count(b" ") for r in runs for t in r["str_toks"])
+        if n == 0:
+            return False
+        old = float(tws[0].group(1))
+        if need_spacing and abs(old) < 1e-6:
+            return False        # no margin partner and no word spacing: ragged
+        new = old - delta / (n * xs)
+        if not (-max_shrink_em * size <= new * xs <= max_grow_em * size):
+            return False
+        a, b = obj["bt"] + tws[0].start(1), obj["bt"] + tws[0].end(1)
+        doc.update_stream(st["xref"], data[:a] + f"{new:.5f}".encode() + data[b:])
+        return True
+    # TJ: the adjustment before each string that starts with a space.
+    writes = []
+    for r in runs:
+        if r["op"] != "TJ":
+            continue
+        for t in r["str_toks"]:
+            raw = t["raw"]
+            if t.get("gap_before") is not None and (raw[:2] == b"\x00 " or raw[:1] == b" "):
+                writes.append(t)
+    if not writes:
+        return False
+    gaps = {round(t["gap_before"], 2) for t in writes}
+    if len(gaps) != 1:
+        return False            # not uniform: kerning, not justification
+    if need_spacing and abs(next(iter(gaps))) < 1e-6:
+        return False
+    n = len(writes)
+    step = delta * 1000.0 / (n * tfs * xs)
+    new_gap = next(iter(gaps)) + step
+    if not (-max_grow_em * 1000.0 <= new_gap <= max_shrink_em * 1000.0):
+        return False
+    out = bytearray(data)
+    for t in sorted(writes, key=lambda t: t["start"], reverse=True):
+        # the number sits just before the string token
+        m = re.search(rb"(-?\d*\.?\d+)\s*$", bytes(out[:t["start"]]))
+        if not m:
+            return False
+        out[m.start(1):m.end(1)] = f"{t['gap_before'] + step:.3f}".encode()
+    doc.update_stream(st["xref"], bytes(out))
+    return True
+
+
+def _visible_extents(page):
+    """[(x0, x1_visible, baseline_y, text)] per span, trailing spaces ignored
+    — Word ends a centred line with a space that is not part of its look."""
+    out = []
+    for b in page.get_text("rawdict")["blocks"]:
+        for l in b.get("lines", []):
+            for sp in l["spans"]:
+                vis = [c for c in sp["chars"] if c["c"].strip()]
+                if vis:
+                    out.append((vis[0]["bbox"][0], vis[-1]["bbox"][2], sp["origin"][1],
+                                "".join(c["c"] for c in sp["chars"])))
+    return out
+
+
+def _centred_line(page, target) -> bool:
+    """Is *target* one of a block of CENTRED lines?
+
+    Evidence only: two or more lines within a few leadings share its visible
+    centre while starting at a different x. A Word signature block
+    ("Benguerir, le …" / "Larbi EL HILALI," / "Managing Director 1337")
+    centres every line on x=386.3; an edit that kept the left edge left
+    "Nadia BERRADA," 3pt off the axis the other lines sit on."""
+    ext = _visible_extents(page)
+    y = target["origin"][1]
+    mine = [e for e in ext if abs(e[2] - y) <= 0.6 and e[3] == target["text"]]
+    if not mine:
+        return False
+    x0, x1 = mine[0][0], mine[0][1]
+    c = (x0 + x1) / 2.0
+    size = target["size"]
+    mates = [e for e in ext if abs(e[2] - y) > 0.6 and abs(e[2] - y) <= 6 * size
+             and abs((e[0] + e[1]) / 2.0 - c) <= 0.6 and abs(e[0] - x0) > 1.0]
+    return len(mates) >= 2
+
+
+def _recentre_line(pdf: bytes, tpage: int, target, base_ys, tol: float = 0.6):
+    """Put the edited CENTRED line back on its original axis, as a whole.
+
+    A centred line is the unit that is centred, not the field: Word sets
+    "Larbi EL HILALI" and its comma, or "Benguerir, le " and the date, as
+    separate objects, and moving only the field's object split the line.
+    Every text object drawn on the line — and only on it — moves by the same
+    amount. Returns the new bytes, or None to leave the edit as it was."""
+    y = target["origin"][1]
+    orig_vis = target.get("_vis_centre")
+    doc = fitz.open(stream=pdf, filetype="pdf")
+    try:
+        page = doc[tpage]
+        ext = [e for e in _visible_extents(page) if abs(e[2] - y) <= tol]
+        if not ext or orig_vis is None:
+            return None
+        cur = (min(e[0] for e in ext) + max(e[1] for e in ext)) / 2.0
+        dx = orig_vis - cur
+        if abs(dx) < 0.02:
+            return None
+        writes = []
+        for st in _content_streams(doc, page):
+            for obj in _text_objects(st["data"]):
+                pos = obj["positions"]
+                if pos is None:
+                    continue
+                on = [q for q in pos if any(abs(q[1] - by) <= tol for by in base_ys)]
+                if not on:
+                    continue
+                if len(on) != len(pos) or not obj["rigid"] or not obj["x_scale"]:
+                    return None      # draws elsewhere too, or can't be moved whole
+                writes.append((st, obj))
+        if not writes:
+            return None
+        by_stream = {}
+        for st, obj in writes:
+            by_stream.setdefault(st["xref"], (st, []))[1].append(obj)
+        for xref, (st, objs) in by_stream.items():
+            data = st["data"]
+            for obj in sorted(objs, key=lambda o: o["x_at"][0], reverse=True):
+                a, b = obj["x_at"]
+                data = data[:a] + f"{float(data[a:b]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b:]
+            doc.update_stream(xref, data)
+        return doc.tobytes(garbage=4, deflate=True)
+    finally:
+        doc.close()
+
+
+def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
+               verify: bool = True, _target=None) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof.
 
@@ -2561,6 +3514,10 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         for s in _spans(doc[pno]):
             if old_n in _norm(s["text"]):
                 candidates.append((pno, s))
+    if _target is not None:
+        # A narrowed edit: the caller has already resolved exactly which
+        # characters of which span are meant (see edit()).
+        candidates = [_target]
     if not candidates:
         doc.close()
         return {"ok": False, "reason": "not_found", "message": _REASON_MSG["not_found"]}
@@ -2700,7 +3657,9 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                 if which >= res["loc"].get("n_occurrences", 1):
                     adoc.close()
                     break
-                _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid)
+                res["kern"] = _producer_kerning(doc, tpage, cand_nm, new, res["new_codes"])
+                _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid,
+                       kern=res["kern"])
                 cand_bytes = adoc.tobytes(garbage=0)
                 adoc.close()
                 if _hits_target(cand_bytes):
@@ -2790,7 +3749,12 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         try:
             w = _run_width_pt(d, nm, new_codes, target["size"], is_cid)
             if w >= 0:
-                return old_x0 + w + track * len(new_codes)
+                # The producer's kerning, as written into the TJ (see
+                # _producer_kerning) — without it everything this edit pushes
+                # along the line landed one kern pair too far (0.65pt after
+                # "Fès" on a Chrome print).
+                kern_pt = -sum(prep.get("kern") or []) / 1000.0 * target["size"]
+                return old_x0 + w + kern_pt + track * len(new_codes)
             texts = [_norm(s2["text"]) for s2 in _spans(d[tpage])]
             for s2, t in zip(_spans(d[tpage]), texts):
                 if new_n and new_n in t:
@@ -2857,6 +3821,22 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         seen = _positions_on_baseline(odoc, odoc[tpage], line_ys)
         next_pinned = next_x0 is not None and (
             not seen or _pinned_at(seen, next_x0))
+        # A table cell after the field never moves, in either direction:
+        # moving one row's cell out of its column is visible at a glance.
+        next_cell = next_pinned and _is_column_cell(odoc[tpage], target["bbox"], next_x0)
+        # A number in a right-aligned column keeps its RIGHT edge: it grows
+        # leftward, into the space before it, and pushes nothing.
+        right_col = _right_aligned_column(odoc[tpage], target)
+        left_x1 = _left_text_x1(odoc[tpage], target) if right_col else None
+        # A JUSTIFIED line re-justifies instead of growing or shrinking.
+        just_margin = None if right_col else _justified_margin(odoc[tpage], target)
+        # A CENTRED line keeps its centre: half the change goes each way.
+        centred = (not right_col and just_margin is None
+                   and _centred_line(odoc[tpage], target))
+        if centred:
+            _ln = [e for e in _visible_extents(odoc[tpage])
+                   if abs(e[2] - target["origin"][1]) <= 0.6]
+            target = dict(target, _vis_centre=(min(e[0] for e in _ln) + max(e[1] for e in _ln)) / 2.0)
     finally:
         odoc.close()
     # How much the value may grow before anything has to move, and how much
@@ -2882,6 +3862,10 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     slack = 0.0
     if next_pinned and next_x0 is not None:
         slack = max(0.0, (next_x0 - old_x1) - _gap_keep)
+    if next_cell:
+        # Up to half an em short of the next cell and no further; past that
+        # the tightening levers below, then an honest refusal.
+        slack = max(0.0, (next_x0 - old_x1) - 0.5 * target["size"])
     trailing = max(0.0, (line_end_old or old_x1) - old_x1)
 
     # When the extent can't be established at all, the overflow check and the
@@ -2889,6 +3873,30 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     # either existed — an unmeasurable line is a reason to add nothing, not a
     # reason to throw away a good edit.
     new_x1 = _field_x1()
+    rejustified = False
+    # Justified if another line of the paragraph shares its margin — or, on a
+    # paragraph with one full line, if the producer wrote explicit word
+    # spacing on it: nothing sets Tw for ragged text. Without the second
+    # route a two-line fpdf2 paragraph was never re-justified, and the fit
+    # logic squeezed its letters (Tc) instead — every word visibly tighter.
+    if not right_col and new_x1 not in (None, _TRUNCATED) \
+            and abs(new_x1 - old_x1) > 0.05:
+        # A producer keeps a justified line flush to its margin by respacing
+        # the words; a fixed-spacing edit left fpdf2 and ReportLab paragraphs
+        # ragged inside justified text, every later word off by a growing
+        # amount. Bounded like a typesetter's own justification limits;
+        # beyond them the producer would re-break the line, which this does
+        # not model, so the ordinary fit logic takes over.
+        jdoc = fitz.open(stream=edited, filetype="pdf")
+        try:
+            if _rejustify(jdoc, jdoc[tpage], base_y_pdf, old_x0, new_x1 - old_x1,
+                          max_shrink_em=0.12, max_grow_em=0.6, size=target["size"],
+                          need_spacing=just_margin is None):
+                edited = jdoc.tobytes(garbage=4, deflate=True)
+                rejustified = True
+                new_x1 = old_x1
+        finally:
+            jdoc.close()
     if new_x1 is _TRUNCATED:
         return {"ok": False, "reason": "would_overflow",
                 "message": ("The replacement runs past the edge of the page — far enough "
@@ -2898,8 +3906,11 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         # The value has to end by the margin, and whatever it pushes has to
         # end there too — after absorbing the slack.
         avail = min(right_limit,
-                    old_x1 + slack + max(0.0, right_limit - old_x1 - trailing)
+                    old_x1 + slack + (0.0 if next_cell else
+                                      max(0.0, right_limit - old_x1 - trailing))
                     ) - old_x0
+        if right_col:
+            avail = old_x1 - (left_x1 + 0.5 * target["size"])
         base_w = new_x1 - old_x0
         if base_w - avail > 0.05:
             # Spend the elastic levers a typesetter would, in order of how
@@ -2963,12 +3974,38 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                             f"absorb it — it can't be fitted here without changing the "
                             f"text or its size.")}
 
+    right_shifted = False
+    if right_col and new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
+        sdoc = fitz.open(stream=edited, filetype="pdf")
+        try:
+            if _shift_field_object(sdoc, sdoc[tpage], line_ys, old_x0, old_x1,
+                                   -(new_x1 - old_x1)):
+                edited = sdoc.tobytes(garbage=4, deflate=True)
+                right_shifted = True
+        finally:
+            sdoc.close()
+        if right_shifted:
+            new_x1 = old_x1          # the right edge stays on the column line
+
     rdoc = fitz.open(stream=edited, filetype="pdf")
     try:
         # Only the growth that the slack could not absorb has to be pushed.
         _dx = new_x1 - old_x1 if new_x1 is not None else 0.0
-        _push = _dx - slack if _dx > 0 else _dx
-        if new_x1 is not None and abs(_push) > 0.05:
+        # A neighbour beyond two em is a column, and a column never moves
+        # for growth the gutter absorbed, nor closes up when the field
+        # shrinks. This was `_dx - slack` unclamped: a qty going 1 -> 10
+        # (+5.6pt against 44pt of slack) pulled the price and amount
+        # columns 38.9pt LEFT, and 10 -> 1 pulled them 5.6pt.
+        if next_cell:
+            _push = 0.0
+        elif _dx > 0:
+            _push = max(0.0, _dx - slack)
+        else:
+            _push = 0.0 if slack > 0 else _dx
+        # Called even when nothing is pushed: the field's own underline still
+        # has to take its new width (a link shortened in front of a column
+        # kept a 34pt rule trailing into empty space).
+        if new_x1 is not None and (abs(_push) > 0.05 or abs(_dx) > 0.05):
             reflow_from = min(old_x1, next_x0) if next_x0 is not None else old_x1
             n = _reflow_same_line(rdoc, rdoc[tpage], line_ys,
                                   reflow_from, _push,
@@ -3022,6 +4059,9 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                 "message": _REASON_MSG["cannot_reflow"]}
 
     diff = {"outside": None, "inside": None}
+    if centred:
+        edited = _recentre_line(edited, tpage, target, line_ys) or edited
+
     if verify:
         # The exclusion zone for "did anything ELSE on the page change" must
         # cover where the edited text NOW sits, not just its old extent — a

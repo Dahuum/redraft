@@ -971,7 +971,46 @@ class WeightTransform:
                 f"usable={self.usable}>")
 
 
+_XF_CACHE: dict = {}
+
+
+def _font_digest(tt) -> str:
+    """SHA-256 of a TTFont's program — its original bytes where fontTools
+    kept them, else a re-serialisation. Content, never identity: id() is a
+    memory address and is reused (a glyph-map cache keyed on it once handed
+    one document another's glyphs)."""
+    import hashlib
+    raw = None
+    try:
+        f = getattr(getattr(tt, "reader", None), "file", None)
+        if f is not None and hasattr(f, "getvalue"):
+            raw = f.getvalue()
+    except Exception:  # noqa: BLE001
+        raw = None
+    if raw is None:
+        buf = io.BytesIO()
+        tt.save(buf)
+        raw = buf.getvalue()
+    return hashlib.sha256(raw).hexdigest()
+
+
 def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTransform:
+    """Cached by the two programs' content (see _learn_weight_transform).
+
+    Learning costs about a second, and one edit used to learn the SAME
+    transform up to 32 times — once for every font/encoding/occurrence
+    combination the engine tried — so a single edit on a Word attestation
+    took 22-36 seconds."""
+    try:
+        key = (_font_digest(src_tt), _font_digest(dst_tt), raster_size)
+    except Exception:  # noqa: BLE001 — uncacheable is merely slow
+        return _learn_weight_transform(src_tt, dst_tt, raster_size)
+    if key not in _XF_CACHE:
+        _XF_CACHE[key] = _learn_weight_transform(src_tt, dst_tt, raster_size)
+    return _XF_CACHE[key]
+
+
+def _learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTransform:
     """Fit and TEST a cut→cut transform using only the glyphs both fonts have.
 
     The pool is split: every other glyph fits the transform, the rest are held

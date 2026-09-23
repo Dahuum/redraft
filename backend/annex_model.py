@@ -23,21 +23,61 @@ import re
 
 # ── number parsing/formatting (fr / Morocco: '.' groups, ',' decimals) ──────────
 
+def number_style(text: str) -> str:
+    """"eu" (1.884,30) or "en" (1,884.30) for one number, by its separators.
+
+    Assuming one convention is not safe. These functions were hard-wired to
+    fr-MA, so an annex written in English arithmetic silently: parse_num
+    ("950.00") stripped the dot as a thousands separator and returned 95000,
+    and a 12 x 950.00 line came out as 1.140.000,00 instead of 11,400.00, with
+    the Total HT wrong to match. Wrong money on an invoice looks finished.
+
+    When BOTH separators appear the last one is the decimal point — true in
+    every convention. With only one, three trailing digits mean grouping
+    ('6.281' is six thousand) and anything else means a decimal ('0,3',
+    '950.00'), which is the reading the existing fr-MA behaviour already had.
+    """
+    t = (text or "").strip()
+    dot, comma = t.rfind("."), t.rfind(",")
+    if dot >= 0 and comma >= 0:
+        return "en" if dot > comma else "eu"
+    sep, pos = ((".", dot) if dot >= 0 else ((",", comma) if comma >= 0 else (None, -1)))
+    if sep is None:
+        return "eu"
+    tail = t[pos + 1:]
+    if len(tail) == 3 and tail.isdigit():
+        return "eu" if sep == "." else "en"    # that separator groups
+    return "en" if sep == "." else "eu"        # that separator is the decimal
+
+
 def parse_num(text: str):
-    """'1.884,30' → 1884.3 · '6.281 ' → 6281.0 · '0,3' → 0.3 · '' → None."""
-    t = (text or "").strip().replace(" ", " ").replace(" ", "")
+    """'1.884,30' → 1884.3 · '6.281 ' → 6281.0 · '0,3' → 0.3 · '' → None.
+
+    Also '950.00' → 950.0 and '11,400.00' → 11400.0, which the fr-MA-only
+    version read as 95000 and 11.4.
+    """
+    t = (text or "").strip().replace("\u202f", "").replace("\u00a0", "").replace(" ", "")
     if not t:
         return None
-    t = t.replace(".", "").replace(",", ".")
+    if number_style(t) == "en":
+        t = t.replace(",", "")
+    else:
+        t = t.replace(".", "").replace(",", ".")
     try:
         return float(t)
     except ValueError:
         return None
 
 
-def fmt_num(value: float, decimals: int = 2) -> str:
-    """1884.3 → '1.884,30' · (6281, 0) → '6.281'  (grouping + decimal swapped)."""
+def fmt_num(value: float, decimals: int = 2, style: str = "eu") -> str:
+    """1884.3 → '1.884,30' · (6281, 0) → '6.281' · style="en" → '1,884.30'.
+
+    The style must be the DOCUMENT's own, or a corrected amount is written in
+    a different convention from the line above it.
+    """
     s = f"{value:,.{decimals}f}"          # '1,884.30'
+    if style == "en":
+        return s
     return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
@@ -387,11 +427,31 @@ def detect_template(spans: list) -> dict:
 
 # ── Layer 2: rules → concrete edits ──────────────────────────────────────────────
 
-def _fmt_qty(value: float) -> str:
+def doc_number_style(model: dict) -> str:
+    """The convention THIS document writes its own amounts in.
+
+    A corrected figure has to be written the way the untouched lines above it
+    are written, or one annex ends up carrying both 1.140.000,00 and
+    11,400.00. Decided by majority over every number already on the page, so a
+    single odd cell cannot flip it.
+    """
+    votes = {"eu": 0, "en": 0}
+    for it in model.get("items", []):
+        for key in ("amount", "unitPrice", "qty"):
+            t = (it.get(key) or "").strip()
+            if any(c in t for c in ".,") and any(c.isdigit() for c in t):
+                votes[number_style(t)] += 1
+    tot = (model.get("total") or {}).get("value")
+    if tot and any(c in tot for c in ".,"):
+        votes[number_style(tot)] += 2      # the total is the most telling cell
+    return "en" if votes["en"] > votes["eu"] else "eu"
+
+
+def _fmt_qty(value: float, style: str = "eu") -> str:
     """Quantities print as integers when whole ('6.281', '9'), else with decimals."""
     if value == int(value):
-        return fmt_num(value, 0)
-    return fmt_num(value)
+        return fmt_num(value, 0, style)
+    return fmt_num(value, 2, style)
 
 
 def plan_edits(model: dict, spec: dict | None = None) -> list:
@@ -408,6 +468,7 @@ def plan_edits(model: dict, spec: dict | None = None) -> list:
     spec = spec or {}
     edits: list = []
     total = 0.0
+    style = doc_number_style(model)
 
     for idx, it in enumerate(model["items"]):
         action = spec.get(idx, {})
@@ -428,7 +489,7 @@ def plan_edits(model: dict, spec: dict | None = None) -> list:
             qv = (float(action["qty"]) if isinstance(action["qty"], (int, float))
                   else parse_num(str(action["qty"])))
             qv = qv if qv is not None else (parse_num(it["qty"]) or 0.0)
-            new_qty_text = _fmt_qty(qv)
+            new_qty_text = _fmt_qty(qv, style)
             if ids["qty"] is not None and new_qty_text != it["qty"]:
                 edits.append((ids["qty"], new_qty_text))
         else:
@@ -440,7 +501,7 @@ def plan_edits(model: dict, spec: dict | None = None) -> list:
         orig_amount = parse_num(it["amount"])
         if ids["amount"] is not None and (
                 orig_amount is None or abs(amount - orig_amount) >= 0.005):
-            edits.append((ids["amount"], fmt_num(amount)))
+            edits.append((ids["amount"], fmt_num(amount, 2, style)))
 
     # Dynamic title cleanup: a section whose every child line was removed loses
     # its title too (no dangling empty heading).
@@ -452,7 +513,7 @@ def plan_edits(model: dict, spec: dict | None = None) -> list:
                 edits.append((sid, ""))
 
     if model.get("total") and model["total"].get("valueId") is not None:
-        edits.append((model["total"]["valueId"], fmt_num(round(total, 2))))
+        edits.append((model["total"]["valueId"], fmt_num(round(total, 2), 2, style)))
 
     return edits
 

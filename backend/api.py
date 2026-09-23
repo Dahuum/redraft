@@ -21,6 +21,7 @@ Design notes
 
 import base64
 import csv
+import hashlib
 import io
 import json
 import os
@@ -46,6 +47,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
 import inplace_spike as _spike  # noqa: E402  — true in-place editing, tried before redraw-and-restamp
+import reflow as _reflow  # noqa: E402  — re-wrap a paragraph when a line no longer fits
 from annex_model import (  # noqa: E402  — annex rules
     build_model, plan_edits, plan_header_edits, parse_num, detect_template,
 )
@@ -495,6 +497,36 @@ class _TmpPDF:
             except OSError: pass
 
 
+_RTL_RANGES = (
+    (0x0590, 0x05FF),   # Hebrew
+    (0x0600, 0x06FF),   # Arabic
+    (0x0700, 0x074F),   # Syriac
+    (0x0750, 0x077F),   # Arabic Supplement
+    (0x08A0, 0x08FF),   # Arabic Extended-A
+    (0xFB1D, 0xFDFF),   # Hebrew/Arabic presentation forms
+    (0xFE70, 0xFEFF),   # Arabic presentation forms-B
+)
+
+
+def _is_rtl_text(text: str) -> bool:
+    """Is this span predominantly right-to-left script?
+
+    It matters twice over. PyMuPDF returns characters in the order they are
+    DRAWN, which for a right-to-left run is the reverse of reading order — so
+    "شهادة عمل" comes back as "لمع ةداهش" and the editor would show the user
+    their own document backwards. And the engine cannot edit such a run
+    anyway: placing it needs shaping (contextual forms and ligatures) that
+    nothing here does. Marking it lets the interface say so instead of
+    presenting reversed text as if it were editable.
+    """
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    rtl = sum(1 for c in letters
+              if any(lo <= ord(c) <= hi for lo, hi in _RTL_RANGES))
+    return rtl * 2 > len(letters)
+
+
 def extract_spans(pdf_bytes: bytes) -> list:
     """All spans across all pages as plain serialisable dicts (index == order)."""
     result = []
@@ -511,6 +543,7 @@ def extract_spans(pdf_bytes: bytes) -> list:
                     "flags":  span["flags"],
                     "bbox":   list(span["bbox"]),     # [x0,y0,x1,y1] in PDF pts
                     "origin": list(span["origin"]),
+                    **({"rtl": True} if _is_rtl_text(span["text"]) else {}),
                 })
         doc.close()
     return result
@@ -522,6 +555,126 @@ def page_dims(pdf_bytes: bytes) -> list:
             for i in range(len(doc))]
     doc.close()
     return dims
+
+
+def _layout_violation(before: bytes, after: bytes, sd: dict,
+                      other_boxes=()) -> str | None:
+    """Did editing *sd* disturb anything the user did not touch?
+
+    The engine's own checks look at the edited line. This looks at the PAGE,
+    the way a reader would, comparing words before and after:
+
+    MOVED. Every word must be where it was, except the prose that directly
+    follows the field on its line — the chain of words each within two em of
+    the last, which a word processor would push along. Past a wider gutter
+    the text belongs to something else: on a Chrome-printed Wikipedia page a
+    lengthened sentence pushed a figure caption's "Python 3", 85pt across the
+    column gutter, out to the edge of the paper.
+
+    OVERPRINTED. No word of the new text may cover a word it did not already
+    cover. The same edit ran straight through the caption beside it; a check
+    that only knows about its own baseline cannot see a caption 5pt lower.
+
+    *other_boxes* are fields changed in the same batch, whose words are
+    allowed to differ. Returns "moves_column" / "overlaps_neighbour" / None.
+    """
+    pno = sd.get("page", 0)
+    try:
+        db = fitz.open(stream=before, filetype="pdf")
+        da = fitz.open(stream=after, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if pno >= db.page_count or pno >= da.page_count:
+            return None
+        # Boxes from the glyph OUTLINES, not the font's ascender/descender:
+        # a substitute font with a tall ascender reported the IRS 1040 title
+        # "overlapping" the line above it, 3pt clear of any ink.
+        acc = getattr(fitz, "TEXT_ACCURATE_BBOXES", 0)
+        wb = db[pno].get_text("words", flags=acc)
+        wa = da[pno].get_text("words", flags=acc)
+    finally:
+        db.close()
+        da.close()
+    x0, y0, x1, y1 = sd["bbox"]
+    em2 = 2.0 * float(sd.get("size") or 10.0)
+    tol = 0.6
+
+    def on_line(w):
+        ov = min(w[3], y1) - max(w[1], y0)
+        return ov > 0.5 * min(w[3] - w[1], y1 - y0)
+
+    def in_box(w, b):
+        return (b[0] - tol <= w[0] and w[2] <= b[2] + tol
+                and min(w[3], b[3]) - max(w[1], b[1]) > 0)
+
+    follow = sorted((w for w in wb if on_line(w) and w[0] >= x1 - tol),
+                    key=lambda w: w[0])
+    pinned_from, cur = None, x1
+    cell_page = None
+    for w in follow:
+        if w[0] - cur > em2:
+            pinned_from = w[0]
+            break
+        # A table cell is pinned however narrow its gutter: "North" after
+        # "Widget A" sits 9pt away, under two em, and was nudged 0.7pt by
+        # a redraw that shrank the product name to fit.
+        if cell_page is None:
+            cell_page = fitz.open(stream=before, filetype="pdf")
+        if _spike._is_column_cell(cell_page[pno], sd["bbox"], w[0]):
+            pinned_from = w[0]
+            break
+        cur = max(cur, w[2])
+    if cell_page is not None:
+        cell_page.close()
+
+    def same(v, w):
+        return v[4] == w[4] and abs(v[0] - w[0]) <= tol and abs(v[1] - w[1]) <= tol
+
+    # Indexed by text: a match needs identical text anyway, and comparing
+    # every word with every word was 1.2 million comparisons on an IRS 1040.
+    from collections import defaultdict
+    by_text_a, by_text_b = defaultdict(list), defaultdict(list)
+    for i, v in enumerate(wa):
+        by_text_a[v[4]].append(i)
+    for w in wb:
+        by_text_b[w[4]].append(w)
+    used = set()
+    for w in wb:
+        if on_line(w):
+            if w[2] > x0 + tol and w[0] < x1 - tol:
+                continue                                    # the field itself
+            if w[0] >= x1 - tol and (pinned_from is None or w[0] < pinned_from - tol):
+                continue                                    # prose that flows
+        if any(in_box(w, b) for b in other_boxes):
+            continue
+        k = next((i for i in by_text_a.get(w[4], ()) if i not in used and same(wa[i], w)), None)
+        if k is None:
+            return "moves_column"
+        used.add(k)
+
+    # Words that are new or moved: the edit's own text and the prose it
+    # pushed. None may land on a word that stayed put, unless the original
+    # field already overlapped it (some producers draw a comma over the tail
+    # of the value before it — that is the document, not the edit).
+    fresh, stayed = [], []
+    for v in wa:
+        (stayed if any(same(v, w) for w in by_text_b.get(v[4], ())) else fresh).append(v)
+    for v in fresh:
+        for u in stayed:
+            ix = min(v[2], u[2]) - max(v[0], u[0])
+            iy = min(v[3], u[3]) - max(v[1], u[1])
+            if ix <= 0 or iy <= 0:
+                continue
+            small = min((v[2] - v[0]) * (v[3] - v[1]), (u[2] - u[0]) * (u[3] - u[1])) or 1.0
+            if ix * iy < 0.15 * small:
+                continue
+            if (min(u[2], x1) - max(u[0], x0)) > 0 and (min(u[3], y1) - max(u[1], y0)) > 0:
+                continue                                    # overlapped already
+            if any(in_box(u, b) for b in other_boxes):
+                continue
+            return "overlaps_neighbour"
+    return None
 
 
 def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
@@ -547,20 +700,85 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     in_place_count = 0
     still_needed = []
     refusals = []
+    reflowed = []
     for sd, new_text in replacements:
+        before_this = current
         try:
             r = _spike.edit(current, sd["text"], new_text,
                             page=sd["page"], bbox=sd["bbox"], verify=False)
         except Exception:  # noqa: BLE001
             r = {"ok": False, "reason": "engine_error"}
         if r.get("ok"):
-            current = base64.b64decode(r["pdf_b64"])
-            in_place_count += 1
+            cand = base64.b64decode(r["pdf_b64"])
+            others = [o["bbox"] for o, _ in replacements
+                      if o is not sd and o.get("page", 0) == sd.get("page", 0)]
+            bad = _layout_violation(current, cand, sd, others)
+            if bad:
+                # The engine placed it, and placing it disturbed the page.
+                # Not accepted here; the redraw gets its own chance, under
+                # the same check.
+                r = {"ok": False, "reason": bad, "message": _UNSHIPPABLE_MSG[bad]}
+            else:
+                current = cand
+                in_place_count += 1
+        if r.get("ok") and _may_rewrap(replacements, sd):
+            # In place succeeded — but if re-wrapping the paragraph would
+            # change its line breaks, the producer's own re-print has the
+            # re-wrapped layout, not the in-place one (a shorter name leaves a
+            # line short that the producer would have filled; a justified
+            # line respaced where the producer moved a word). Prefer it then.
+            try:
+                rr = _reflow.reflow(before_this, sd, new_text, multiline_only=True)
+            except Exception:  # noqa: BLE001
+                rr = {"ok": False}
+            # A justified paragraph too: the re-wrap re-justifies every line
+            # exactly as its self-check proved the producer does, where the
+            # in-place splice can only respace the one line it touched.
+            if rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified")):
+                current = rr["pdf"]
+                reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
+                                 "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
+                                 "shift": rr["shift"], "cut": rr.get("cut")})
+        if not r.get("ok") and r.get("reason") in _REFLOW_REASONS:
+            # Too long for its line: re-wrap the paragraph the way its
+            # producer would, if that can be proven (see reflow.py). Not when
+            # another field of this batch sits lower on the page — a re-wrap
+            # can move everything below it, and that field's position would
+            # then be stale.
+            later = any(o is not sd and o.get("page", 0) == sd.get("page", 0)
+                        and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in replacements)
+            if not later:
+                try:
+                    rr = _reflow.reflow(current, sd, new_text)
+                except Exception:  # noqa: BLE001 — a crash is a refusal
+                    rr = {"ok": False}
+                if rr.get("ok"):
+                    current = rr["pdf"]
+                    in_place_count += 1
+                    reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
+                                     "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
+                                     "shift": rr["shift"], "cut": rr.get("cut")})
+                    r = {"ok": True}
+        if r.get("ok"):
+            pass
         else:
             still_needed.append((sd, new_text))
             refusals.append({"text": sd["text"][:60], "reason": r.get("reason"),
                              "message": r.get("message")})
+    _try_inplace_batch.reflowed = reflowed
     return current, in_place_count, still_needed, refusals
+
+
+def _may_rewrap(replacements, sd) -> bool:
+    """A re-wrap may replace an in-place edit only when nothing else in the
+    batch sits lower on the same page: a re-wrap can move everything below."""
+    return not any(o is not sd and o.get("page", 0) == sd.get("page", 0)
+                   and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in replacements)
+
+
+# Refusals that mean "the text no longer fits its line" — the ones a
+# paragraph re-wrap can answer.
+_REFLOW_REASONS = {"would_overflow", "overlaps_neighbour"}
 
 
 # Codepoints a font commonly maps to the SAME glyph as their canonical form,
@@ -652,12 +870,38 @@ _UNSHIPPABLE_MSG = {
         "This value is longer than the space it sits in, and redrawing it "
         "would print it over the text beside it. The field was left as it "
         "was — shorten the value, or give it a line of its own."),
+    "moves_column": (
+        "This value is longer than its table cell, and making room for it "
+        "would push the rest of the row out of line with the columns above "
+        "and below it. The field was left as it was — shorten the value."),
     "runs_off_the_page": (
         "This value is too long for the space it sits in: even shrunk as far "
         "as is reasonable it would run past the edge of the paper, where the "
         "text is simply cut off. The field was left as it was — shorten the "
         "value, or give it a line of its own."),
 }
+
+
+def _is_box_char(ch: str) -> bool:
+    """A character that extracts as a notdef: U+FFFD or a C0 control."""
+    return ch == "\ufffd" or (bool(ch) and ord(ch) < 32 and ch not in " \t\n\r")
+
+
+def _box_chars_near(ref, pno: int, span: dict) -> int:
+    """Notdef-like characters the UNEDITED page has in the run at *span*'s
+    place — the most any edited run there may carry without blame."""
+    if ref is None or pno >= ref.page_count:
+        return 0
+    best = 0
+    for blk in ref[pno].get_text("rawdict")["blocks"]:
+        for line in blk.get("lines", []):
+            for sp_ in line.get("spans", []):
+                if abs(sp_["origin"][1] - span["origin"][1]) > 1.0:
+                    continue
+                if min(sp_["bbox"][2], span["bbox"][2]) - max(sp_["bbox"][0], span["bbox"][0]) <= 0:
+                    continue
+                best = max(best, sum(1 for c in sp_["chars"] if _is_box_char(c["c"])))
+    return best
 
 
 def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dict:
@@ -744,12 +988,13 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
                     for sp_ in line.get("spans", []):
                         if abs(sp_["origin"][1] - oy) > 1.0:
                             continue
-                        for c in sp_["chars"]:
-                            ch = c["c"]
-                            if ch == "\ufffd" or (ch and ord(ch) < 32
-                                                  and ch not in " \t\n\r"):
-                                bad[i] = "cannot_render"
-                                break
+                        n_bad_after = sum(1 for c in sp_["chars"] if _is_box_char(c["c"]))
+                        # A DELTA against the unedited line: Ghostscript's
+                        # /ebook output already carries a 0x19 where the "fi"
+                        # of "certifie" was, and every edit on that line was
+                        # refused over a character the edit never touched.
+                        if n_bad_after and n_bad_after > _box_chars_near(ref, pno, sp_):
+                            bad[i] = "cannot_render"
                         if i in bad:
                             break
                         # Both edges. The redraw's alignment pass can put a
@@ -776,6 +1021,16 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
                         if ga < -0.5 and ga < gb - 0.5:
                             bad[i] = "overlaps_neighbour"
                             break
+            if i in bad:
+                continue
+            # ANYTHING ELSE THAT MOVED OR WAS PRINTED OVER — the same page-
+            # level check the in-place path runs; see _layout_violation.
+            if ref is not None:
+                others = [o["bbox"] for o, _ in items
+                          if o is not sd and o.get("page", 0) == pno]
+                why = _layout_violation(before, edited, sd, others)
+                if why:
+                    bad[i] = why
             if i in bad:
                 continue
             # The redrawn text layer reports NBSP for a space and a soft
@@ -829,11 +1084,13 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
     if try_inplace:
         (pdf_bytes, in_place_count, replacements,
          inplace_refusals) = _try_inplace_batch(pdf_bytes, replacements)
+        reflowed = getattr(_try_inplace_batch, "reflowed", [])
         if not replacements:
             return pdf_bytes, {"fonts": [], "warnings": [],
                                "in_place": {"count": in_place_count,
                                             "total": in_place_count,
-                                            "refusals": inplace_refusals}}
+                                            "refusals": inplace_refusals,
+                                            "reflowed": reflowed}}
 
     total = in_place_count + len(replacements)
     with _TmpPDF(pdf_bytes) as in_path:
@@ -1030,10 +1287,7 @@ def _font_cache_name(fontname: str) -> str:
     The family is reduced to alphanumerics so a crafted font name can never
     escape the cache directory (path traversal via '/', '..', etc.).
     """
-    fam, weight, style = _pe._parse_font_name(fontname)
-    nospace = re.sub(r"[^A-Za-z0-9]", "", fam)[:64] or "font"
-    style = "italic" if str(style).lower().startswith("ital") else "normal"
-    return f"{nospace}-{int(weight)}-{style}.ttf"
+    return _pe.font_cache_key(fontname)
 
 
 def _font_status(fontname: str) -> dict:
@@ -1061,7 +1315,7 @@ def _font_status(fontname: str) -> dict:
     }
 
 
-def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
+def _ingest_embedded_fonts(pdf_bytes: bytes, user: str = None) -> list:
     """Use a PDF's OWN embedded fonts when their names have been stripped.
 
     Many generators (iText / JasperReports, etc.) embed the *full* real font but
@@ -1085,11 +1339,15 @@ def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
     Returns a list describing what was installed (empty if nothing changed).
     """
     installed: list = []
+    # Everything chosen here is for THIS request only (see pdf_editor
+    # _DOC_FONTS): the signed-in user's own fonts, then this document's.
+    overlay: dict = dict(_user_fonts(user))
+    _pe._DOC_FONTS.set(overlay)
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception:  # noqa: BLE001
         return installed
-    seen, changed = set(), False
+    seen = set()
     try:
         for pno in range(doc.page_count):
             for fo in doc[pno].get_fonts(full=True):
@@ -1100,7 +1358,10 @@ def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
                 cache_name = _font_cache_name(basefont)
                 cache_path = os.path.join(_pe._FONT_CACHE_DIR, cache_name)
 
-                # Already have a complete font under this name → done.
+                # The user's own font for this name wins; so does a complete
+                # SHARED one (system or open-source catalogue).
+                if cache_name in overlay:
+                    continue
                 if os.path.exists(cache_path):
                     with open(cache_path, "rb") as fh:
                         if _font_covers(fh.read()):
@@ -1140,24 +1401,36 @@ def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
                     else:
                         continue
 
-                if os.path.exists(cache_path):
-                    with open(cache_path, "rb") as fh:
-                        if fh.read() == chosen:
-                            continue                                 # already installed
-                with open(cache_path, "wb") as fh:
-                    fh.write(chosen)
-                changed = True
+                overlay[cache_name] = chosen                         # this request only
                 installed.append({"font": basefont.split("+")[-1],
                                   "real_name": real_name,
                                   "via": via,
                                   "installed_as": cache_name})
     finally:
         doc.close()
-    if changed:
-        # Drop the in-memory resolution memo so the next edit picks up the files.
-        _pe._RESOLVED.clear()
-        _pe._FONT_SOURCE.clear()
     return installed
+
+
+def _user_font_dir(user: str) -> str:
+    """Per-user font directory, named by a hash so no id reaches the path."""
+    h = hashlib.sha256(str(user).encode()).hexdigest()[:24]
+    return os.path.join(_pe._FONT_CACHE_DIR, "users", h)
+
+
+def _user_fonts(user: str) -> dict:
+    """{cache file name: bytes} for fonts this user uploaded, or {}."""
+    if not user:
+        return {}
+    d = _user_font_dir(user)
+    out: dict = {}
+    try:
+        for name in os.listdir(d):
+            if name.endswith(".ttf"):
+                with open(os.path.join(d, name), "rb") as fh:
+                    out[name] = fh.read()
+    except OSError:
+        pass
+    return out
 
 
 def parse_table(filename: str, data: bytes) -> tuple:
@@ -1326,7 +1599,7 @@ async def extract(file: UploadFile = File(...), user: str = Depends(optional_use
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
+    _ingest_embedded_fonts(data, user)  # use the PDF's own embedded fonts (no boxes)
     try:
         spans = extract_spans(data)
         pages = page_dims(data)
@@ -1358,7 +1631,7 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
+    _ingest_embedded_fonts(data, user)  # use the PDF's own embedded fonts (no boxes)
     try:
         edit_list = json.loads(edits)
         assert isinstance(edit_list, list)
@@ -1447,7 +1720,7 @@ async def bulk(template: UploadFile = File(...),
     _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
     _check_size("The data file", data_bytes, MAX_DATA_BYTES)
     _check_readable("The template PDF", tmpl_bytes, getattr(template, "filename", ""))
-    _ingest_embedded_fonts(tmpl_bytes)  # use the template's own embedded fonts
+    _ingest_embedded_fonts(tmpl_bytes, user)  # use the template's own embedded fonts
 
     try:
         mp = json.loads(mapping)
@@ -1551,7 +1824,7 @@ async def fonts(file: UploadFile = File(...), user: str = Depends(require_user))
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    auto = _ingest_embedded_fonts(data)  # adopt the PDF's own embedded fonts first
+    auto = _ingest_embedded_fonts(data, user)  # adopt the PDF's own embedded fonts first
     try:
         spans = extract_spans(data)
     except Exception as exc:  # noqa: BLE001
@@ -1578,9 +1851,13 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
         raise HTTPException(400, "That doesn't look like a .ttf or .otf font file.")
 
     name = _font_cache_name(fontname)
-    # Defence in depth: the resolved path must stay inside the font cache dir.
-    path = os.path.abspath(os.path.join(_pe._FONT_CACHE_DIR, name))
-    if os.path.dirname(path) != os.path.abspath(_pe._FONT_CACHE_DIR):
+    # The user's OWN directory. Installing into the shared cache made one
+    # user's upload the font every other user's documents were edited with.
+    udir = os.path.abspath(_user_font_dir(user))
+    os.makedirs(udir, exist_ok=True)
+    # Defence in depth: the resolved path must stay inside that directory.
+    path = os.path.abspath(os.path.join(udir, name))
+    if os.path.dirname(path) != udir:
         raise HTTPException(400, "Invalid font name.")
     try:
         with open(path, "wb") as f:
@@ -1593,10 +1870,7 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
             except OSError: pass
         raise HTTPException(400, f"Couldn't use that font file ({type(exc).__name__}).")
 
-    # Force re-resolution against the freshly installed file on the next edit.
-    _pe._RESOLVED.clear()
-    _pe._FONT_SOURCE.clear()
-
+    _pe._DOC_FONTS.set(_user_fonts(user))
     return {"ok": True, "installed_as": name, "font": _font_status(fontname)}
 
 
@@ -1627,9 +1901,18 @@ def _annex_spans_and_model(pdf_bytes: bytes, template: dict | None = None):
 # edge fixed — lets a longer number (qty 9 → 5000) render full-size instead of
 # tiny. The floor (a safe left edge in the inter-column gap) comes from the
 # template now, so it's correct for whatever annex was scanned — not hardcoded.
-def _relax_numeric(span: dict, col: str | None, template: dict) -> dict:
+def _relax_numeric(span: dict, col: str | None, template: dict,
+                   spans: list = None) -> dict:
     """Return a copy of *span* with its numeric cell widened leftward to the
-    template's floor for *col* (so a longer number renders full-size)."""
+    template's floor for *col* (so a longer number renders full-size).
+
+    The floor comes from column statistics, which know nothing about what is
+    actually on THIS row: the total's floor sat inside its own "Total HT"
+    label, and the widened box, erased on redraw, printed every annex as
+    "Total H"; the quantity floor (x=107) sat inside a label like "Support
+    technique". With *spans* given, the cell never widens past the right
+    edge of the text before it on its own line, plus 4pt.
+    """
     if col == "total":
         floor = template.get("totalFloor")
     else:
@@ -1637,6 +1920,14 @@ def _relax_numeric(span: dict, col: str | None, template: dict) -> dict:
     if floor is None:
         return span
     x0, y0, x1, y1 = span["bbox"]
+    if spans:
+        oy = span["origin"][1]
+        before = [o["bbox"][2] for o in spans
+                  if o is not span and abs(o["origin"][1] - oy) <= 1.0
+                  and o["bbox"][2] <= x0 + 0.5 and o.get("page", 0) == span.get("page", 0)
+                  and o["text"].strip()]
+        if before:
+            floor = max(floor, max(before) + 4.0)
     if x0 <= floor:
         return span
     widened = dict(span)
@@ -1744,7 +2035,7 @@ async def annex_model(file: UploadFile = File(...), template: str = Form(None),
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    _ingest_embedded_fonts(data)
+    _ingest_embedded_fonts(data, user)
     tmpl_in = None
     if template:
         try:
@@ -1818,7 +2109,7 @@ async def annex_generate(template: UploadFile = File(...),
     _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
     _check_size("The data file", data_bytes, MAX_DATA_BYTES)
     _check_readable("The template PDF", tmpl_bytes, getattr(template, "filename", ""))
-    _ingest_embedded_fonts(tmpl_bytes)
+    _ingest_embedded_fonts(tmpl_bytes, user)
 
     try:
         mp = json.loads(mapping)
@@ -1876,7 +2167,7 @@ async def annex_generate(template: UploadFile = File(...),
                     continue
                 qv = parse_num(str(row.get(col, "")))
                 spec[idx] = {"remove": True} if not qv else {"qty": qv}
-            reps = [(_relax_numeric(spans[sid], colmap.get(sid), prof) if txt else spans[sid], txt)
+            reps = [(_relax_numeric(spans[sid], colmap.get(sid), prof, spans) if txt else spans[sid], txt)
                     for sid, txt in plan_edits(model, spec)
                     if 0 <= sid < len(spans)]
             removed_items = {idx for idx, a in spec.items() if a.get("remove")}

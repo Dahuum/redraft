@@ -86,6 +86,34 @@ export default function SplitField({
     );
   }
 
+  // Right-to-left text arrives from extraction in DRAWING order, which for
+  // Arabic or Hebrew is the reverse of reading order — the editor would be
+  // showing the user their own document backwards. Placing it again would
+  // need shaping the engine does not do, so the field is shown as read-only
+  // with the reason rather than as an input that cannot work.
+  if (span.rtl) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant">
+          <span className="truncate">{label}</span>
+          <span className="material-symbols-outlined text-[16px] shrink-0" title="Right-to-left text">
+            lock
+          </span>
+        </div>
+        <div className="rounded-lg border border-outline-variant/50 bg-surface-container-high/40 px-3 py-2">
+          <p dir="rtl" className="text-sm text-on-surface-variant/70 truncate" title={span.text}>
+            {span.text}
+          </p>
+          <p className="mt-1 text-caption text-on-surface-variant">
+            Right-to-left text can't be edited yet — Arabic and Hebrew need letter
+            shaping Redraft doesn't do, and this document stores the text reversed.
+            You can still add new text on top of it.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-1.5 group">
       <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant group-focus-within:text-secondary-container transition-colors">
