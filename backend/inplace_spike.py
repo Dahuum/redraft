@@ -3273,6 +3273,110 @@ def _shift_field_object(doc, page, base_ys, x0, x1, dx, tol: float = 0.6) -> int
     return 1
 
 
+_TW_OP = re.compile(rb"(?<![\w.])(-?\d*\.?\d+)\s+Tw\b")
+_TF_OP = re.compile(rb"/[^\s/\[\]()<>]+\s+(-?\d*\.?\d+)\s+Tf\b")
+
+
+def _justified_margin(page, target, tol: float = 0.3):
+    """The right margin the field's line is JUSTIFIED to, or None.
+
+    Justified means: the line ends exactly where another line of the same
+    paragraph ends — same left edge, a line or two away. A ragged line, or a
+    paragraph's last line, has no such partner."""
+    y, size = target["origin"][1], target["size"]
+    lines = {}
+    for b in page.get_text("dict")["blocks"]:
+        for l in b.get("lines", []):
+            if l.get("dir", (1, 0)) != (1, 0) or not l["spans"]:
+                continue
+            key = round(l["spans"][0]["origin"][1], 1)
+            x0, x1 = l["bbox"][0], l["bbox"][2]
+            if key in lines:
+                x0, x1 = min(x0, lines[key][0]), max(x1, lines[key][1])
+            lines[key] = (x0, x1)
+    mine = next((v for k, v in lines.items() if abs(k - y) <= 1.0), None)
+    if mine is None:
+        return None
+    for k, (x0, x1) in lines.items():
+        if abs(k - y) <= 1.0 or abs(k - y) > 3.5 * size:
+            continue
+        if abs(x0 - mine[0]) <= 0.6 and abs(x1 - mine[1]) <= tol:
+            return mine[1]
+    return None
+
+
+def _rejustify(doc, page, base_y_pdf: float, field_x0: float, delta: float,
+               max_shrink_em: float, max_grow_em: float, size: float,
+               tol: float = 0.6):
+    """Re-justify the one text object drawing the field's line so its end
+    moves back by *delta* page points, the way the producer would: the word
+    spacing (Tw) or, where Tw cannot apply (two-byte CID codes), the TJ
+    adjustment before every space. Returns True when written."""
+    objs = []
+    for st in _content_streams(doc, page):
+        for obj in _text_objects(st["data"]):
+            pos = obj["positions"]
+            if pos is None or abs(obj["y"] - base_y_pdf) > tol:
+                continue
+            if any(abs(q[1] - base_y_pdf) > tol for q in pos):
+                continue
+            objs.append((st, obj))
+    if len(objs) != 1:
+        return False            # the line is drawn by several objects: decline
+    st, obj = objs[0]
+    if obj["x"] > field_x0 + tol or not obj["x_scale"]:
+        return False
+    data = st["data"]
+    region = data[obj["bt"]:obj["et"]]
+    tfm = list(_TF_OP.finditer(data[:obj["et"]]))
+    if not tfm:
+        return False
+    tfs = float(tfm[-1].group(1))
+    xs = obj["x_scale"]
+    tws = list(_TW_OP.finditer(region))
+    runs = [r for r in _text_runs(data) if obj["bt"] <= r["full_start"] < obj["et"]]
+    if len(tws) == 1:
+        # Word spacing applies to every byte 32 of a simple font's strings.
+        n = sum(t["raw"].count(b" ") for r in runs for t in r["str_toks"])
+        if n == 0:
+            return False
+        old = float(tws[0].group(1))
+        new = old - delta / (n * xs)
+        if not (-max_shrink_em * size <= new * xs <= max_grow_em * size):
+            return False
+        a, b = obj["bt"] + tws[0].start(1), obj["bt"] + tws[0].end(1)
+        doc.update_stream(st["xref"], data[:a] + f"{new:.5f}".encode() + data[b:])
+        return True
+    # TJ: the adjustment before each string that starts with a space.
+    writes = []
+    for r in runs:
+        if r["op"] != "TJ":
+            continue
+        for t in r["str_toks"]:
+            raw = t["raw"]
+            if t.get("gap_before") is not None and (raw[:2] == b"\x00 " or raw[:1] == b" "):
+                writes.append(t)
+    if not writes:
+        return False
+    gaps = {round(t["gap_before"], 2) for t in writes}
+    if len(gaps) != 1:
+        return False            # not uniform: kerning, not justification
+    n = len(writes)
+    step = delta * 1000.0 / (n * tfs * xs)
+    new_gap = next(iter(gaps)) + step
+    if not (-max_grow_em * 1000.0 <= new_gap <= max_shrink_em * 1000.0):
+        return False
+    out = bytearray(data)
+    for t in sorted(writes, key=lambda t: t["start"], reverse=True):
+        # the number sits just before the string token
+        m = re.search(rb"(-?\d*\.?\d+)\s*$", bytes(out[:t["start"]]))
+        if not m:
+            return False
+        out[m.start(1):m.end(1)] = f"{t['gap_before'] + step:.3f}".encode()
+    doc.update_stream(st["xref"], bytes(out))
+    return True
+
+
 def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
                verify: bool = True, _target=None) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
@@ -3625,6 +3729,8 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # leftward, into the space before it, and pushes nothing.
         right_col = _right_aligned_column(odoc[tpage], target)
         left_x1 = _left_text_x1(odoc[tpage], target) if right_col else None
+        # A JUSTIFIED line re-justifies instead of growing or shrinking.
+        just_margin = None if right_col else _justified_margin(odoc[tpage], target)
     finally:
         odoc.close()
     # How much the value may grow before anything has to move, and how much
@@ -3661,6 +3767,24 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     # either existed — an unmeasurable line is a reason to add nothing, not a
     # reason to throw away a good edit.
     new_x1 = _field_x1()
+    rejustified = False
+    if just_margin is not None and new_x1 not in (None, _TRUNCATED) \
+            and abs(new_x1 - old_x1) > 0.05:
+        # A producer keeps a justified line flush to its margin by respacing
+        # the words; a fixed-spacing edit left fpdf2 and ReportLab paragraphs
+        # ragged inside justified text, every later word off by a growing
+        # amount. Bounded like a typesetter's own justification limits;
+        # beyond them the producer would re-break the line, which this does
+        # not model, so the ordinary fit logic takes over.
+        jdoc = fitz.open(stream=edited, filetype="pdf")
+        try:
+            if _rejustify(jdoc, jdoc[tpage], base_y_pdf, old_x0, new_x1 - old_x1,
+                          max_shrink_em=0.12, max_grow_em=0.6, size=target["size"]):
+                edited = jdoc.tobytes(garbage=4, deflate=True)
+                rejustified = True
+                new_x1 = old_x1
+        finally:
+            jdoc.close()
     if new_x1 is _TRUNCATED:
         return {"ok": False, "reason": "would_overflow",
                 "message": ("The replacement runs past the edge of the page — far enough "
