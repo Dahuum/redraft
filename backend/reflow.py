@@ -296,7 +296,7 @@ def carry_underlines(before: bytes, after: bytes, pno: int, band, field=None,
             if mv is not None:
                 moved.append((f, mv))
         _restore_links(page, links_before, moved)
-        return a.tobytes(garbage=3, deflate=True)
+        return a.tobytes(garbage=1, deflate=True)
     finally:
         b.close()
         a.close()

@@ -381,7 +381,7 @@ def _restore(before, after, pno):
         if tr is None or sorted(tr) != sorted(full) or tr.index(first) != tr.index(pred) + 1:
             doc.update_stream(body_x, body)
             doc.update_stream(sx, stub)
-    out = doc.tobytes(garbage=3, deflate=True)
+    out = doc.tobytes(garbage=1, deflate=True)
     doc.close()
     # Moving where text is drawn must not change a pixel of the page.
     a_, b_ = fitz.open(stream=after, filetype="pdf"), fitz.open(stream=out, filetype="pdf")

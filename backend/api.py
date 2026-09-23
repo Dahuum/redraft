@@ -25,6 +25,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import shutil
 import re
 import sys
 import tempfile
@@ -47,6 +49,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
 import inplace_spike as _spike  # noqa: E402  — true in-place editing, tried before redraw-and-restamp
+import conform as _conform
 import reading_order as _reading_order
 import reflow as _reflow  # noqa: E402  — re-wrap a paragraph when a line no longer fits
 from annex_model import (  # noqa: E402  — annex rules
@@ -1145,9 +1148,110 @@ def _keep_edges(old: str, new: str) -> str:
     return new
 
 
+def _qpdf_linearize(data: bytes):
+    exe = shutil.which("qpdf")
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as td:
+        src, dst = os.path.join(td, "in.pdf"), os.path.join(td, "out.pdf")
+        with open(src, "wb") as f:
+            f.write(data)
+        try:
+            r = subprocess.run([exe, "--linearize", "--object-streams=preserve", src, dst],
+                               capture_output=True, timeout=60)
+        except Exception:  # noqa: BLE001
+            return None
+        # exit 3 = success with warnings
+        if r.returncode not in (0, 3) or not os.path.exists(dst):
+            return None
+        with open(dst, "rb") as f:
+            res = f.read()
+    return res if res.startswith(b"%PDF") else None
+
+
+def _like_input(src: bytes, out: bytes) -> bytes:
+    """*out* serialised the way *src* was. Every edit re-saves the file, and
+    a re-save that drops the object and cross-reference streams an Acrobat,
+    Ghostscript or pdfTeX file was written with (or its linearization) says
+    "another program saved this" to anyone who opens the file's structure.
+    Never fails an edit: on any error *out* is returned as it is."""
+    try:
+        objstm = b"/ObjStm" in src
+        linear = b"/Linearized" in src[:4096]
+        if not objstm and not linear:
+            return out
+        d = fitz.open(stream=out, filetype="pdf")
+        try:
+            kw = {"garbage": 1, "deflate": True}
+            if objstm:
+                kw["use_objstms"] = 1
+            res = d.tobytes(**kw)
+        finally:
+            d.close()
+        if linear:
+            # MuPDF no longer linearizes; qpdf does, keeping object streams
+            # and the trailer /ID. Optional: without it the file stays as is.
+            lin = _qpdf_linearize(res)
+            if lin:
+                res = lin
+        return res
+    except Exception:  # noqa: BLE001
+        return out
+
+
 def apply_replacements(pdf_bytes: bytes, replacements: list,
                        preserve_size: bool = True, try_inplace: bool = False,
                        _known_refusals: list = None) -> tuple:
+    """See _apply_replacements; the result is saved in the input's own
+    container style (_like_input)."""
+    out, rep = _apply_replacements(pdf_bytes, replacements, preserve_size, try_inplace,
+                                   _known_refusals)
+    if out is not pdf_bytes and out != pdf_bytes:
+        out = _conform.conform_names(pdf_bytes, out)
+        out = _id_case_like(pdf_bytes, _like_input(pdf_bytes, out))
+    return out, rep
+
+
+_ID_RE = re.compile(rb"(/ID\s*\[\s*<)([0-9A-Fa-f]+)(>\s*<)([0-9A-Fa-f]+)(>)")
+
+
+def _drop_id(out: bytes) -> bytes:
+    """No /ID where the input had none. MuPDF adds one on save — to a Chrome
+    PDF, which never writes one, an ID is another program's trace."""
+    if not _ID_RE.search(out):
+        return out
+    try:
+        d = fitz.open(stream=out, filetype="pdf")
+        try:
+            d.xref_set_key(-1, "ID", "null")
+            res = d.tobytes(garbage=1, deflate=True, no_new_id=1,
+                            **({"use_objstms": 1} if b"/ObjStm" in out else {}))
+        finally:
+            d.close()
+        return res if not _ID_RE.search(res) else out
+    except Exception:  # noqa: BLE001
+        return out
+
+
+def _id_case_like(src: bytes, out: bytes) -> bytes:
+    """The trailer /ID written in the input's hex case. Acrobat writes it in
+    upper case, MuPDF in lower: a lower-case ID in an Acrobat file is another
+    program's signature. Same length, so no offset moves."""
+    ms = list(_ID_RE.finditer(src))
+    if not ms:
+        return _drop_id(out)
+    m = ms[-1]                     # the effective trailer is the last one
+    h = m.group(2) + m.group(4)
+    if not any(c in b"ABCDEFabcdef" for c in h):
+        return out                 # all digits: no case to match
+    case = bytes.upper if h == h.upper() else bytes.lower
+    return _ID_RE.sub(lambda k: k.group(1) + case(k.group(2)) + k.group(3)
+                      + case(k.group(4)) + k.group(5), out)
+
+
+def _apply_replacements(pdf_bytes: bytes, replacements: list,
+                        preserve_size: bool = True, try_inplace: bool = False,
+                        _known_refusals: list = None) -> tuple:
     """Apply [(span_dict, new_text), …] → (edited_bytes, font_report).
 
     `try_inplace` (default False): first attempt every replacement as a true
@@ -1194,7 +1298,7 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
             return pdf_bytes, {"fonts": [], "warnings": [
                 f"{sd['text'][:40]!r} was left unchanged: {_INVISIBLE_MSG}" for sd in invisible],
                 "in_place": {"count": 0, "total": len(invisible), "refusals": refused}}
-        out, rep = apply_replacements(pdf_bytes, replacements, preserve_size, try_inplace,
+        out, rep = _apply_replacements(pdf_bytes, replacements, preserve_size, try_inplace,
                                       _known_refusals)
         rep.setdefault("in_place", {}).setdefault("refusals", []).extend(refused)
         rep["warnings"] = list(rep.get("warnings") or []) + [
@@ -1342,7 +1446,7 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                         [inplace_refusals[i] for i in range(len(replacements))
                          if i not in boxed]
                         if len(inplace_refusals) == len(replacements) else None)
-                    edited, sub = apply_replacements(
+                    edited, sub = _apply_replacements(
                         pdf_bytes, keep, preserve_size=preserve_size,
                         try_inplace=False, _known_refusals=aligned)
                     sub["in_place"] = {"count": in_place_count,
