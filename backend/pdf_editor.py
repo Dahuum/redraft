@@ -384,14 +384,37 @@ _LAST_PATH: dict = {"value": None}
 _REGULAR_SYNONYMS = ("Regular", "Book", "Roman", "Normal")
 
 
+# URW's pre-2017 names for the fonts Ghostscript ships (gsfonts). pdfTeX and
+# a generation of Ghostscript-made PDFs embed them under these names, while
+# the same typefaces are installed today as "Nimbus Roman" etc., so an arXiv
+# paper's NimbusRomNo9L-ReguItal found no genuine donor and every letter its
+# subset lacked was refused. In the Nimbus Roman No9 L family "Medi" (Medium)
+# IS the bold cut — the Times Bold clone — not a 500 weight.
+_URW_LEGACY = {
+    "nimbusromno9l": "Nimbus Roman", "nimbussanl": "Nimbus Sans",
+    "nimbussannarl": "Nimbus Sans Narrow", "nimbusmonl": "Nimbus Mono PS",
+    "urwpalladiol": "P052", "urwbookmanl": "URW Bookman", "urwgothicl": "URW Gothic",
+    "centuryschl": "C059", "urwchanceryl": "Z003",
+    "standardsyml": "Standard Symbols PS", "dingbats": "D050000L",
+}
+_URW_MEDI_IS_BOLD = {"nimbusromno9l", "urwpalladiol", "centuryschl"}
+
+
+def _urw_key(family: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", family.lower())
+
+
 def _family_variants(family: str):
-    """The family as written, plus a CamelCase-split form.
+    """The family as written, plus a CamelCase-split form, plus the modern
+    name of a legacy URW family.
 
     A PDF names the face as it was embedded — "DejaVuSans" — while fontconfig
     knows it as "DejaVu Sans", so an exact query on the embedded spelling
     matches nothing.
     """
     out = [family]
+    if _urw_key(family) in _URW_LEGACY:
+        out.append(_URW_LEGACY[_urw_key(family)])
     spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", family)
     if spaced != family:
         out.append(spaced)
@@ -444,6 +467,8 @@ def _find_system_font(family: str, weight: int, style: str) -> bytes | None:
 
     Returns the raw font bytes if a matching font is found, else None.
     """
+    if weight == 500 and _urw_key(family) in _URW_MEDI_IS_BOLD:
+        weight = 700
     base = _weight_name(weight)
     styles = list(_REGULAR_SYNONYMS) if base == "Regular" else [base]
     if style == "italic":
