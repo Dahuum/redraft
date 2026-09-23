@@ -137,15 +137,33 @@ def _name_key(name: str) -> str:
     return "".join(c for c in name.lower() if c.isalnum())
 
 
+# Words that name the REGULAR cut and nothing else. The PDF structure calls a
+# PyMuPDF-embedded font "DejaVu Sans Book" while extraction calls it
+# "DejaVuSans"; with no way to connect the two, the space glyph (known only
+# from what the page draws) went missing and every edit on such a document —
+# 16 of 16, shortening included — was refused as "unmappable".
+_REGULAR_WORDS = ("book", "regular", "roman", "normal", "plain")
+
+
+def _regular_key(key: str) -> str:
+    for w in _REGULAR_WORDS:
+        if key.endswith(w) and len(key) > len(w) + 2:
+            return key[:-len(w)]
+    return key
+
+
 def _lookup_by_name(mapping: dict, name: str):
-    """mapping[name], falling back to a match on _name_key."""
+    """mapping[name], falling back to a match on _name_key, then on the key
+    with a regular-style word dropped — accepted only when unambiguous."""
     if name in mapping:
         return mapping[name]
     want = _name_key(name)
     for k, v in mapping.items():
         if _name_key(k) == want:
             return v
-    return None
+    want_r = _regular_key(want)
+    hits = [v for k, v in mapping.items() if _regular_key(_name_key(k)) == want_r]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _gid_maps(doc):
