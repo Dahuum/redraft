@@ -631,7 +631,15 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
     def same(v, w):
         return v[4] == w[4] and abs(v[0] - w[0]) <= tol and abs(v[1] - w[1]) <= tol
 
-    pool = list(wa)
+    # Indexed by text: a match needs identical text anyway, and comparing
+    # every word with every word was 1.2 million comparisons on an IRS 1040.
+    from collections import defaultdict
+    by_text_a, by_text_b = defaultdict(list), defaultdict(list)
+    for i, v in enumerate(wa):
+        by_text_a[v[4]].append(i)
+    for w in wb:
+        by_text_b[w[4]].append(w)
+    used = set()
     for w in wb:
         if on_line(w):
             if w[2] > x0 + tol and w[0] < x1 - tol:
@@ -640,17 +648,18 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
                 continue                                    # prose that flows
         if any(in_box(w, b) for b in other_boxes):
             continue
-        k = next((i for i, v in enumerate(pool) if same(v, w)), None)
+        k = next((i for i in by_text_a.get(w[4], ()) if i not in used and same(wa[i], w)), None)
         if k is None:
             return "moves_column"
-        pool.pop(k)
+        used.add(k)
 
     # Words that are new or moved: the edit's own text and the prose it
     # pushed. None may land on a word that stayed put, unless the original
     # field already overlapped it (some producers draw a comma over the tail
     # of the value before it — that is the document, not the edit).
-    fresh = [v for v in wa if not any(same(v, w) for w in wb)]
-    stayed = [v for v in wa if any(same(v, w) for w in wb)]
+    fresh, stayed = [], []
+    for v in wa:
+        (stayed if any(same(v, w) for w in by_text_b.get(v[4], ())) else fresh).append(v)
     for v in fresh:
         for u in stayed:
             ix = min(v[2], u[2]) - max(v[0], u[0])
