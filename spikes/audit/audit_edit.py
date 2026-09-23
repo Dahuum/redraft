@@ -28,7 +28,21 @@ def shapes(old):
         ("longer", old + " Wxqzkj"),
         ("much-longer", old + " " + "Wxqzkj " * 5),
         ("accents", "Zoé Ångström-Ñuñez " + old[:10]),
+        # What people actually do: change ONE word and keep the rest of the
+        # line. Every other shape rewrites the whole span, so the commonest
+        # edit of all went unmeasured.
+        ("one-word", _one_word(old)),
     )
+
+
+def _one_word(old):
+    words = old.split(" ")
+    if len(words) < 2:
+        return old[:max(1, len(old) // 2)] + "Qz"
+    i = max(range(len(words)), key=lambda k: len(words[k]))
+    w = words[i]
+    words[i] = ("Wxqzkjmb" * 4)[:max(2, len(w))]
+    return " ".join(words)
 
 
 tot = {"n": 0, "inplace": 0, "redrawn": 0, "refused": 0, "defects": 0, "crash": 0}
