@@ -141,20 +141,58 @@ def _paragraph(lines, target_bbox):
 
 
 class _Metrics:
-    """Advance widths in points, from the document's own fonts."""
+    """Advance widths in points, from the document's own fonts — simple fonts
+    through /Widths, CID fonts (Chrome, Skia, Google Docs) through /W — and
+    the producer's kerning, when it kerns (see kerning.py)."""
 
-    def __init__(self, doc):
+    def __init__(self, doc, page=None):
         self.doc = doc
+        self.page = page
         self.cache: dict = {}
+
+    def _type0_xref(self, name):
+        for pno in range(self.doc.page_count):
+            for f in self.doc[pno].get_fonts(full=True):
+                if f[3].split("+")[-1] == name and f[2] == "Type0":
+                    return f[0]
+        return None
 
     def font(self, name):
         if name not in self.cache:
-            refs = S._simple_font_refs(self.doc, name, require_truetype=False)
-            parsed = S._parse_widths_array(self.doc, refs) if refs else None
-            cm = S._lookup_by_name(S._simple_font_code_maps(self.doc), name)
-            enc = S._lookup_by_name(S._simple_font_encodings(self.doc), name)
-            self.cache[name] = {"refs": refs, "widths": parsed, "cm": cm, "enc": enc}
+            t0 = self._type0_xref(name)
+            if t0:
+                refs = S._font_stream_refs(self.doc, t0)
+                wmap, dw = {}, 1000.0
+                if isinstance(refs, dict):
+                    wmap = S._cid_widths_map(self.doc, refs["cid_xref"])
+                    kind, val = self.doc.xref_get_key(refs["cid_xref"], "DW")
+                    if kind in ("int", "float") and val:
+                        dw = float(val)
+                cm = S._lookup_by_name(S._cid_code_maps(self.doc), name)
+                f = {"cid": True, "refs": refs, "wmap": wmap, "dw": dw, "cm": cm}
+            else:
+                refs = S._simple_font_refs(self.doc, name, require_truetype=False)
+                parsed = S._parse_widths_array(self.doc, refs) if refs else None
+                cm = S._lookup_by_name(S._simple_font_code_maps(self.doc), name)
+                enc = S._lookup_by_name(S._simple_font_encodings(self.doc), name)
+                f = {"cid": False, "refs": refs, "widths": parsed, "cm": cm, "enc": enc}
+            f["kern"] = self._kerning(name)
+            self.cache[name] = f
         return self.cache[name]
+
+    def _kerning(self, name):
+        if self.page is None:
+            return None
+        try:
+            import kerning
+            from pdf_editor import resolve_full_font
+            k = kerning.font_kern(resolve_full_font(name))
+            if k and kerning.producer_kerns(self.page, name, k,
+                                            self.doc.metadata.get("producer", "")):
+                return k
+        except Exception:  # noqa: BLE001 — no kerning is the safe default
+            pass
+        return None
 
     def reset(self):
         self.cache.clear()
@@ -165,6 +203,8 @@ class _Metrics:
             codes = S._encode_simple_text(ch, f["cm"]["rev"], f["cm"]["max_len"])
             if codes:
                 return codes[0]
+        if f["cid"]:
+            return None
         # A private-code font (no /Encoding) has no standard byte for
         # anything: Latin-1 would name 'M' as 77, which in this font is
         # nothing at all, or some other glyph.
@@ -177,12 +217,29 @@ class _Metrics:
         f = self.font(name)
         if code is None:
             code = self.code(name, ch)
-        if code is None or not f["widths"]:
+        if code is None:
+            return None
+        if f["cid"]:
+            return f["wmap"].get(code, f["dw"]) * size / 1000.0
+        if not f["widths"]:
             return None
         first, ws = f["widths"]
         if not 0 <= code - first < len(ws):
             return None
         return ws[code - first] * size / 1000.0
+
+    def kern(self, a, b):
+        """Kerning (points) between units *a* and *b*, if the producer kerns."""
+        if a["font"] != b["font"] or not a["t"] or not b["t"]:
+            return 0.0
+        k = self.font(a["font"])["kern"]
+        if k is None:
+            return 0.0
+        return k.char_pair(a["t"][-1], b["t"][0]) * a["size"] / k.upem
+
+
+_LIGATURES = {"ff": "\ufb00", "fi": "\ufb01", "fl": "\ufb02", "ffi": "\ufb03",
+              "ffl": "\ufb04", "st": "\ufb06"}
 
 
 def _units(chars, m):
@@ -205,21 +262,32 @@ def _units(chars, m):
         cm = f["cm"]
         took = None
         if cm:
-            for L in range(min(cm["max_len"], len(chars) - i), 1, -1):
+            for L in range(min(max(cm["max_len"], 3), len(chars) - i), 1, -1):
                 seg = chars[i:i + L]
                 if any(x["font"] != c["font"] or abs(x["size"] - c["size"]) > 0.01 * c["size"]
                        for x in seg):
                     continue
-                code = cm["rev"].get("".join(x["c"] for x in seg))
+                txt = "".join(x["c"] for x in seg)
+                # The ligature may be named by its letters ("fi", LibreOffice)
+                # or by its own codepoint (U+FB01, Chrome) — which extraction
+                # expands back into 'f' and a zero-width 'i'.
+                code = cm["rev"].get(txt)
+                actual = None
+                if code is None and txt in _LIGATURES:
+                    code = cm["rev"].get(_LIGATURES[txt])
+                    actual = txt
                 if code is not None:
-                    took = (L, code)
+                    took = (L, code, actual)
                     break
         if took is None:
-            took = (1, m.code(c["font"], c["c"]))
-        L, code = took
+            took = (1, m.code(c["font"], c["c"]), None)
+        L, code, actual = took
+        # `actual`: the glyph's /ToUnicode names a ligature CODEPOINT, so the
+        # producer wrapped it in /ActualText to make it extract as letters;
+        # the emitted line must do the same or "certifie" reads "certiﬁe".
         out.append({"t": "".join(x["c"] for x in chars[i:i + L]), "code": code,
                     "font": c["font"], "size": c["size"], "color": c["color"],
-                    "ox": c.get("ox"), "oy": c.get("oy")})
+                    "ox": c.get("ox"), "oy": c.get("oy"), "actual": actual})
         i += L
     return out
 
@@ -282,15 +350,17 @@ def _reflow(doc, span, new_text):
     para, lead = _paragraph(lines, span["bbox"])
     if not para:
         return _refuse("no_paragraph", "The field's line could not be found.")
-    m = _Metrics(doc)
+    m = _Metrics(doc, page)
 
     def width(units):
         tot = 0.0
-        for u in units:
+        for i, u in enumerate(units):
             a = m.advance(u["font"], u["size"], u["t"], u["code"])
             if a is None:
                 raise KeyError(u["t"])
             tot += a
+            if i + 1 < len(units):
+                tot += m.kern(u, units[i + 1])
         return tot
 
     # The stream of the whole paragraph, lines joined. A line that does not
@@ -362,13 +432,16 @@ def _reflow(doc, span, new_text):
     # And every original glyph must sit where the model puts it.
     for l in para:
         x = x0
-        for u in _units(l["chars"], m):
+        us = _units(l["chars"], m)
+        for i, u in enumerate(us):
             if abs(u["ox"] - x) > _POS_TOL:
                 return _refuse("unknown_layout",
                                "This paragraph's glyph positions don't follow the font's "
                                "own advances (kerning or justification), so it can't be "
                                "re-set exactly.")
             x += m.advance(u["font"], u["size"], u["t"], u["code"])
+            if i + 1 < len(us):
+                x += m.kern(u, us[i + 1])
 
     # ── the edit, in the stream ──
     old = span["text"]
@@ -395,8 +468,14 @@ def _reflow(doc, span, new_text):
         return _refuse("missing_glyph", "A font here has no space character.")
     for fname, chars in need.items():
         chars = sorted(set(chars))
-        refs = S._simple_font_refs(doc, fname)
         f = m.font(fname)
+        if f["cid"]:
+            gids, why = S._try_extend(doc, fname, chars)
+            if gids is None:
+                return _refuse("missing_glyph", f"Couldn't add {chars}: {why}.")
+            m.reset()
+            continue
+        refs = S._simple_font_refs(doc, fname)
         if not refs or not f["cm"] or not S._private_code_font(doc, refs):
             return _refuse("missing_glyph", f"The font lacks {chars} and can't be extended here.")
         alloc = S._allocate_private_codes(doc, refs, f["cm"]["rev"], chars)
@@ -412,6 +491,16 @@ def _reflow(doc, span, new_text):
     except KeyError as e:
         return _refuse("unmeasurable", f"No width for {e.args[0]!r}.")
 
+    # Whether a wrapped line DRAWS its final space is the producer's own
+    # convention: LibreOffice draws it, Chrome does not. Learned from the
+    # paragraph's own wrapped lines (or kept, with nothing to learn from).
+    if len(para) >= 2 and not any(l["chars"][-1]["c"] == " " for l in para[:-1]):
+        for nl in new_lines[:-1]:
+            while nl and nl[-1] and nl[-1][-1]["t"] == " ":
+                nl[-1] = nl[-1][:-1]
+                if not nl[-1]:
+                    nl.pop()
+
     grow = len(new_lines) - len(para)
     if grow < 0:
         grow = 0          # a shorter paragraph leaves its last line(s) empty
@@ -420,6 +509,14 @@ def _reflow(doc, span, new_text):
     # ── what the page must not have below the cut, if anything moves ──
     cut = para[-1]["bbox"].y1 + 0.5
     if dy:
+        # Only a single-column flow can be pushed down wholesale. Text below
+        # the paragraph outside its column (x0..limit) belongs to another
+        # column, which a word processor would not move.
+        for l in lines:
+            if l["bbox"].y0 >= cut and (l["bbox"].x0 > limit + 1.0 or l["bbox"].x1 < x0 - 1.0):
+                return _refuse("multi_column",
+                               "Re-wrapping adds a line, and the page has another column "
+                               "beside this one that must not move.")
         if any(fitz.Rect(lk["from"]).y0 > cut - 1 for lk in page.get_links()):
             return _refuse("links_below", "Links below this paragraph would have to move.")
         if any(True for _ in page.widgets()):
@@ -474,19 +571,45 @@ def _reflow(doc, span, new_text):
             if res is None:
                 raise KeyError(f)
             rgb = ((color >> 16) & 255, (color >> 8) & 255, color & 255)
-            hexs = "".join("%02X" % cd for cd in run[1])
-            ops.append("BT /%s %.4g Tf %.4g %.4g %.4g rg 1 0 0 1 %.3f %.3f Tm <%s> Tj ET"
+            fmt = "%04X" if m.font(f)["cid"] else "%02X"
+            shows, parts, cur, lead = [], [], "", None
+            for cd, adj, act in zip(run[1], run[2], run[3]):
+                if act:
+                    if cur:
+                        parts.append("<%s>" % cur)
+                        cur = ""
+                    if parts:
+                        shows.append("[%s] TJ" % " ".join(parts))
+                        parts = []
+                    shows.append("/Span <</ActualText (%s)>> BDC <%s> Tj EMC" % (act, fmt % cd))
+                    if adj:
+                        parts.append("%g" % adj)
+                    continue
+                cur += fmt % cd
+                if adj:
+                    parts.append("<%s> %g" % (cur, adj))
+                    cur = ""
+            if cur:
+                parts.append("<%s>" % cur)
+            if parts:
+                shows.append("[%s] TJ" % " ".join(parts))
+            ops.append("BT /%s %.4g Tf %.4g %.4g %.4g rg 1 0 0 1 %.3f %.3f Tm %s ET"
                        % (res, size, rgb[0] / 255, rgb[1] / 255, rgb[2] / 255,
-                          run[0], page.rect.height - y, hexs))
+                          run[0], page.rect.height - y, " ".join(shows)))
 
-        for c in chars:
+        for i, c in enumerate(chars):
             st = (c["font"], c["size"], c["color"])
             if st != run_style:
                 flush()
-                run = [x, []]
+                run = [x, [], [], []]
                 run_style = st
             run[1].append(c["code"])
             x += m.advance(c["font"], c["size"], c["t"], c["code"])
+            kp = m.kern(c, chars[i + 1]) if i + 1 < len(chars) else 0.0
+            x += kp
+            # TJ units: thousandths of the font size, positive moves left.
+            run[2].append(round(-kp / c["size"] * 1000.0, 3) if kp else 0)
+            run[3].append(c.get("actual"))
         flush()
     data = ("q " + " ".join(ops) + " Q").encode("latin-1")
 

@@ -1378,6 +1378,20 @@ def _try_extend(doc, font_display_name, missing_chars):
         return None, "no_stream_refs"
     subset_bytes = doc.xref_stream(refs["ff_xref"])
 
+    # The GENUINE typeface at this weight, when it is installed or in the
+    # open-source catalogue, before anything else: it is exact. Only failing
+    # that is another cut synthesised or a lookalike measured. A Chrome
+    # letter's bold 'M' came out 11.16pt wide — neither Regular (10.35) nor
+    # Bold (11.94) — synthesised from the Regular cut in the document while
+    # the real DejaVu Sans Bold sat installed on the machine.
+    try:
+        g_raw, g_kind = font_extend.resolve_donor_detailed(font_display_name)
+        if g_raw and g_kind == "family":
+            result = font_extend.extend_font(subset_bytes, g_raw, missing_chars)
+            return _finish_cid_extend(doc, refs, result, missing_chars)
+    except Exception:  # noqa: BLE001 — fall through to the other donors
+        pass
+
     # The family's own other cut, already embedded in this document, before
     # anything downloadable. Without this the CID path takes whatever
     # resolve_donor offers — which for a commercial family is a lookalike, so
@@ -1809,17 +1823,27 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
 
     result = None
     provenance = None
-    # 1. The family's own other cut, already in this document.
+    # 0. The genuine typeface at this weight, installed or open-source: exact.
+    #    (See the same step in _try_extend.)
     try:
-        import font_donors
-        import glyph_synth
-        donor = font_donors.find_in_document_donor(
-            doc, font_display_name, missing_chars)
-        if donor:
-            result = glyph_synth.inject_into_font(subset_bytes, donor["glyphs"])
-            provenance = donor["provenance"]
-    except Exception:  # noqa: BLE001 — fall through to the network donor
+        g_raw, g_kind = font_extend.resolve_donor_detailed(font_display_name)
+        if g_raw and g_kind == "family":
+            result = font_extend.extend_font(subset_bytes, g_raw, missing_chars)
+            provenance = "the genuine family"
+    except Exception:  # noqa: BLE001
         result = None
+    # 1. The family's own other cut, already in this document.
+    if result is None:
+        try:
+            import font_donors
+            import glyph_synth
+            donor = font_donors.find_in_document_donor(
+                doc, font_display_name, missing_chars)
+            if donor:
+                result = glyph_synth.inject_into_font(subset_bytes, donor["glyphs"])
+                provenance = donor["provenance"]
+        except Exception:  # noqa: BLE001 — fall through to the network donor
+            result = None
 
     # 2. An open-source donor — through the same measured transform, so its
     #    own proportions do not come across unchanged.

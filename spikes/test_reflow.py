@@ -126,6 +126,46 @@ if shutil.which("libreoffice") and os.path.exists(os.path.join(SRC, "letter.html
 else:
     print("SKIP - LibreOffice twin")
 
+# ── the same edit on a Chrome print: CID fonts, kerning, ligature ActualText ──
+CHROME = shutil.which("google-chrome-stable") or shutil.which("chromium")
+if CHROME and os.path.exists(os.path.join(SRC, "letter.html")):
+    work = os.path.join(os.path.dirname(CORPUS), "twin", "reflow-chrome")
+    os.makedirs(work, exist_ok=True)
+
+    def cprint(text, name):
+        h, o = os.path.join(work, name + ".html"), os.path.join(work, name + ".pdf")
+        open(h, "w", encoding="utf-8").write(text)
+        subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-pdf-header-footer",
+                        "--print-to-pdf=" + o, "file://" + h],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+        return open(o, "rb").read()
+    src = open(os.path.join(SRC, "letter.html"), encoding="utf-8").read()
+    corig = cprint(src, "orig")
+    ctwin = cprint(src.replace("Karim El Amrani", NEW), "twin")
+    csd = next(s for s in api.extract_spans(corig) if "Karim El Amrani" in s["text"])
+    cr = reflow.reflow(corig, csd, csd["text"].replace("Karim El Amrani", NEW))
+    check("Chrome: the paragraph re-wraps (CID fonts, measured kerning)", cr.get("ok"),
+          str({k: v for k, v in cr.items() if k != "pdf"}))
+    if cr.get("ok"):
+        check("Chrome: the ligature still extracts as letters (ActualText)",
+              "certifie" in lines_of(cr["pdf"])[2])
+
+        def g2(pdf):
+            d = fitz.open(stream=pdf, filetype="pdf")
+            g = sorted((round(c["origin"][1], 1), c["c"], c["origin"][0])
+                       for b in d[0].get_text("rawdict")["blocks"] for l in b.get("lines", [])
+                       for s in l["spans"] for c in s["chars"])
+            d.close()
+            return g
+        a, b = g2(cr["pdf"]), g2(ctwin)
+        same = len(a) == len(b) and all(x[:2] == y[:2] for x, y in zip(a, b))
+        check("Chrome twin: same glyphs on the same lines as Chrome's own re-print", same,
+              f"{len(a)} vs {len(b)}")
+        if same:
+            worst = max(abs(x[2] - y[2]) for x, y in zip(a, b))
+            check("Chrome twin: every glyph within 0.1pt of Chrome's position", worst < 0.1,
+                  f"worst {worst:.3f}pt")
+
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not FAIL else f"{len(FAIL)} FAILED -> {FAIL}")
 sys.exit(1 if FAIL else 0)
