@@ -46,6 +46,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
 import inplace_spike as _spike  # noqa: E402  — true in-place editing, tried before redraw-and-restamp
+import reflow as _reflow  # noqa: E402  — re-wrap a paragraph when a line no longer fits
 from annex_model import (  # noqa: E402  — annex rules
     build_model, plan_edits, plan_header_edits, parse_num, detect_template,
 )
@@ -689,6 +690,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     in_place_count = 0
     still_needed = []
     refusals = []
+    reflowed = []
     for sd, new_text in replacements:
         try:
             r = _spike.edit(current, sd["text"], new_text,
@@ -708,13 +710,39 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             else:
                 current = cand
                 in_place_count += 1
+        if not r.get("ok") and r.get("reason") in _REFLOW_REASONS:
+            # Too long for its line: re-wrap the paragraph the way its
+            # producer would, if that can be proven (see reflow.py). Not when
+            # another field of this batch sits lower on the page — a re-wrap
+            # can move everything below it, and that field's position would
+            # then be stale.
+            later = any(o is not sd and o.get("page", 0) == sd.get("page", 0)
+                        and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in replacements)
+            if not later:
+                try:
+                    rr = _reflow.reflow(current, sd, new_text)
+                except Exception:  # noqa: BLE001 — a crash is a refusal
+                    rr = {"ok": False}
+                if rr.get("ok"):
+                    current = rr["pdf"]
+                    in_place_count += 1
+                    reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
+                                     "top": sd["bbox"][1], "lines": list(rr["lines"]),
+                                     "shift": rr["shift"], "cut": rr.get("cut")})
+                    r = {"ok": True}
         if r.get("ok"):
             pass
         else:
             still_needed.append((sd, new_text))
             refusals.append({"text": sd["text"][:60], "reason": r.get("reason"),
                              "message": r.get("message")})
+    _try_inplace_batch.reflowed = reflowed
     return current, in_place_count, still_needed, refusals
+
+
+# Refusals that mean "the text no longer fits its line" — the ones a
+# paragraph re-wrap can answer.
+_REFLOW_REASONS = {"would_overflow", "overlaps_neighbour"}
 
 
 # Codepoints a font commonly maps to the SAME glyph as their canonical form,
@@ -997,11 +1025,13 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
     if try_inplace:
         (pdf_bytes, in_place_count, replacements,
          inplace_refusals) = _try_inplace_batch(pdf_bytes, replacements)
+        reflowed = getattr(_try_inplace_batch, "reflowed", [])
         if not replacements:
             return pdf_bytes, {"fonts": [], "warnings": [],
                                "in_place": {"count": in_place_count,
                                             "total": in_place_count,
-                                            "refusals": inplace_refusals}}
+                                            "refusals": inplace_refusals,
+                                            "reflowed": reflowed}}
 
     total = in_place_count + len(replacements)
     with _TmpPDF(pdf_bytes) as in_path:

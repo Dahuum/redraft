@@ -76,7 +76,10 @@ for label, path in corpus_docs():
                 tot["inplace"] += 1
             else:
                 tot["redrawn"] += 1
-            bad = output_defects(out, page, new, base) + moved_text(data, out, page, sd)
+            rf = next((r for r in (rep["in_place"].get("reflowed") or [])), None)
+            bad = output_defects(out, page, new, base) + moved_text(data, out, page, sd, reflowed=rf)
+            if rf:
+                tot["reflowed"] = tot.get("reflowed", 0) + 1
             if bad:
                 tot["defects"] += 1
                 d0["defects"] += 1
@@ -102,7 +105,8 @@ print("-" * 74)
 print("TOTAL %d   clean %d (%.1f%%)   refused %d (%.1f%%)   DEFECTS %d   crashes %d"
       % (tot["n"], clean, 100.0 * clean / n, tot["refused"], 100.0 * tot["refused"] / n,
          tot["defects"], tot["crash"]))
-print("  in place %d   redrawn %d" % (tot["inplace"], tot["redrawn"]))
+print("  in place %d   redrawn %d   (of the in-place, re-wrapped paragraphs: %d)"
+      % (tot["inplace"], tot["redrawn"], tot.get("reflowed", 0)))
 print("  refusal reasons: %s" % reasons)
 print("\n%-14s%5s%8s%10s%9s   why refused" % ("edit shape", "n", "clean", "refused", "defect"))
 for k, v in by_shape.items():

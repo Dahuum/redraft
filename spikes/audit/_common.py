@@ -136,7 +136,7 @@ def output_defects(out_pdf: bytes, page: int, new_text: str, base: dict) -> list
 
 
 def moved_text(before_pdf: bytes, out_pdf: bytes, page: int, span: dict,
-               tol: float = 0.6) -> list:
+               tol: float = 0.6, reflowed: dict = None) -> list:
     """Words the user did not touch that are no longer where they were.
 
     None of the other checks look at text outside the edit, so a table whose
@@ -183,6 +183,26 @@ def moved_text(before_pdf: bytes, out_pdf: bytes, page: int, span: dict,
             pinned_from = w[0]
             break
         cur = max(cur, w[2])
+
+    if reflowed:
+        # A re-wrapped paragraph: its own words may re-flow (the edit's
+        # readback and the engine's verification cover them); everything
+        # below the cut must have moved by EXACTLY the reported shift, and
+        # everything else not at all.
+        top, cut, dy = reflowed["top"], reflowed["cut"], reflowed["shift"]
+        lost = []
+        pool = list(wa)
+        for w in wb:
+            if top - tol <= w[1] < cut:
+                continue                               # the paragraph's own band
+            ty = w[1] + (dy if w[1] >= cut else 0.0)
+            k = next((i for i, v in enumerate(pool) if v[4] == w[4]
+                      and abs(v[0] - w[0]) <= tol and abs(v[1] - ty) <= tol), None)
+            if k is None:
+                lost.append(w)
+            else:
+                pool.pop(k)
+        return [f"{w[4][:14]!r}@{w[0]:.0f},{w[1]:.0f} moved/lost (reflow)" for w in lost[:3]]
 
     must = []
     for w in wb:
