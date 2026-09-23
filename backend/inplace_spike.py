@@ -953,7 +953,48 @@ def _locate(runs, refmap, font_name, old_codes, is_cid, which=None,
 
 
 # ── apply (mutating — given a successful locate result) ─────────────────────
-def _apply(doc, runs, loc_result, new_codes, is_cid):
+def _kerned_array(codes, kern, is_cid) -> bytes:
+    """TJ array elements for *codes* with *kern* (TJ units between each pair).
+
+    kern[i] sits between codes[i] and codes[i+1]; a zero splits nothing, so a
+    run the producer would not have kerned comes out as one string."""
+    out, cur = [], []
+    for i, c in enumerate(codes):
+        cur.append(c)
+        k = kern[i] if kern and i < len(kern) else 0
+        if k:
+            out.append(b"<" + _codes_to_bytes(cur, is_cid) + b">")
+            out.append(("%g" % k).encode())
+            cur = []
+    if cur:
+        out.append(b"<" + _codes_to_bytes(cur, is_cid) + b">")
+    return b" ".join(out)
+
+
+def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
+    """Splice *new_codes* in. *kern* (optional, len(new_codes) - 1) carries the
+    producer's kerning between consecutive new glyphs, in TJ units; see
+    kerning.py. Where it is non-zero a Tj becomes a TJ so it can be written."""
+    if kern and not any(kern):
+        kern = None
+    if loc_result["case"] == "single_token" and kern:
+        run = runs[loc_result["run"]]
+        xref, data = run["xref"], run["data"]
+        tok = run["str_toks"][loc_result["tok"]]
+        ci0, ci1 = loc_result["code_lo"], loc_result["code_hi"]
+        pre, post = tok["codes"][:ci0], tok["codes"][ci1 + 1:]
+        merged = pre + new_codes + post
+        full_kern = [0] * max(0, len(pre) - 1) + ([0] if pre else []) + list(kern) + \
+            ([0] if post else []) + [0] * max(0, len(post) - 1)
+        body = _kerned_array(merged, full_kern, is_cid)
+        if run["op"] == "TJ":
+            new_data = data[:tok["start"]] + body + data[tok["end"]:]
+        elif run["op"] == "Tj":
+            new_data = data[:run["full_start"]] + b"[" + body + b"]TJ" + data[run["full_end"]:]
+        else:
+            return _apply(doc, runs, loc_result, new_codes, is_cid, None)
+        doc.update_stream(xref, new_data)
+        return
     if loc_result["case"] == "single_token":
         run = runs[loc_result["run"]]
         xref, data = run["xref"], run["data"]
@@ -972,7 +1013,8 @@ def _apply(doc, runs, loc_result, new_codes, is_cid):
         xref, data = run["xref"], run["data"]
         start = run["str_toks"][loc_result["tok_lo"]]["start"]
         end = run["str_toks"][loc_result["tok_hi"]]["end"]
-        new_hex = b"<" + _codes_to_bytes(new_codes, is_cid) + b">"
+        new_hex = _kerned_array(new_codes, kern, is_cid) if kern else \
+            b"<" + _codes_to_bytes(new_codes, is_cid) + b">"
         new_data = data[:start] + new_hex + data[end:]
     else:
         touched = list(loc_result["touched"])
@@ -998,10 +1040,11 @@ def _apply(doc, runs, loc_result, new_codes, is_cid):
         if keep:
             touched = touched[keep:]
             new_codes = new_codes[used:]
+            if kern:
+                kern = kern[used:]
         r_first = touched[0]
         xref, data = runs[r_first]["xref"], runs[r_first]["data"]
-        new_hex = _codes_to_bytes(new_codes, is_cid)
-        first_repl = b"[<" + new_hex + b">]TJ"
+        first_repl = b"[" + _kerned_array(new_codes, kern, is_cid) + b"]TJ"
         edits = [(runs[r_first]["full_start"], runs[r_first]["full_end"], first_repl)]
         for ri in touched[1:]:
             rr = runs[ri]
@@ -2765,6 +2808,32 @@ def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
     return total * size / 1000.0
 
 
+def _producer_kerning(doc, tpage, font_name, new_text, new_codes):
+    """TJ adjustments between the new glyphs, if this page's producer kerns.
+
+    Only where codes and characters correspond one to one (a ligature would
+    shift the pairing), and only from the family's complete font — a subset
+    rarely keeps its kerning tables. None means: set it unkerned, as before.
+    """
+    if len(new_codes) != len(new_text) or len(new_text) < 2:
+        return None
+    try:
+        import kerning
+        from pdf_editor import resolve_full_font
+        full = resolve_full_font(font_name)
+        k = kerning.font_kern(full)
+        if k is None:
+            return None
+        if not kerning.producer_kerns(doc[tpage], font_name, k,
+                                      doc.metadata.get("producer", "")):
+            return None
+        adj = [-round(k.char_pair(a, b) * 1000.0 / k.upem, 3)
+               for a, b in zip(new_text, new_text[1:])]
+        return adj if any(adj) else None
+    except Exception:  # noqa: BLE001 — kerning is refinement, never a reason to fail
+        return None
+
+
 def _finish_prepare(doc, tpage, nm, is_cid, old_codes, new_codes,
                     extended_chars, which):
     """Tokenise the page and locate the splice for already-encoded codes."""
@@ -3129,7 +3198,9 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
                 if which >= res["loc"].get("n_occurrences", 1):
                     adoc.close()
                     break
-                _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid)
+                res["kern"] = _producer_kerning(doc, tpage, cand_nm, new, res["new_codes"])
+                _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid,
+                       kern=res["kern"])
                 cand_bytes = adoc.tobytes(garbage=0)
                 adoc.close()
                 if _hits_target(cand_bytes):
@@ -3219,7 +3290,12 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         try:
             w = _run_width_pt(d, nm, new_codes, target["size"], is_cid)
             if w >= 0:
-                return old_x0 + w + track * len(new_codes)
+                # The producer's kerning, as written into the TJ (see
+                # _producer_kerning) — without it everything this edit pushes
+                # along the line landed one kern pair too far (0.65pt after
+                # "Fès" on a Chrome print).
+                kern_pt = -sum(prep.get("kern") or []) / 1000.0 * target["size"]
+                return old_x0 + w + kern_pt + track * len(new_codes)
             texts = [_norm(s2["text"]) for s2 in _spans(d[tpage])]
             for s2, t in zip(_spans(d[tpage]), texts):
                 if new_n and new_n in t:
