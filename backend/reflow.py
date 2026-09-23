@@ -346,7 +346,7 @@ def _text(line):
     return "".join(c["t"] for w in line for c in w)
 
 
-def reflow(pdf_bytes: bytes, span: dict, new_text: str) -> dict:
+def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = False) -> dict:
     """Replace *span*'s text with *new_text*, re-wrapping its paragraph.
 
     Returns {"ok": True, "pdf": bytes, "lines": n_before -> n_after} or a
@@ -357,12 +357,12 @@ def reflow(pdf_bytes: bytes, span: dict, new_text: str) -> dict:
     except Exception:  # noqa: BLE001
         return _refuse("unreadable", "The PDF could not be opened.")
     try:
-        return _reflow(doc, span, new_text)
+        return _reflow(doc, span, new_text, multiline_only)
     finally:
         doc.close()
 
 
-def _reflow(doc, span, new_text):
+def _reflow(doc, span, new_text, multiline_only=False):
     pno = span.get("page", 0)
     page = doc[pno]
     if page.rotation or page.mediabox.x0 or page.mediabox.y0 \
@@ -372,6 +372,12 @@ def _reflow(doc, span, new_text):
     para, lead = _paragraph(lines, span["bbox"])
     if not para:
         return _refuse("no_paragraph", "The field's line could not be found.")
+    if multiline_only and len(para) < 2:
+        # Asked only whether a re-wrap would CHANGE an edit that already fit:
+        # a one-line paragraph whose new text fit its line has nothing to
+        # re-break. Answering it the long way (searching the page for a
+        # margin to borrow) made every IRS 1040 edit five times slower.
+        return _refuse("single_line", "One line: nothing to re-break.")
     m = _Metrics(doc, page)
 
     def width(units):

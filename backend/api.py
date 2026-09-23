@@ -719,7 +719,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             # line short that the producer would have filled; a justified
             # line respaced where the producer moved a word). Prefer it then.
             try:
-                rr = _reflow.reflow(before_this, sd, new_text)
+                rr = _reflow.reflow(before_this, sd, new_text, multiline_only=True)
             except Exception:  # noqa: BLE001
                 rr = {"ok": False}
             # A justified paragraph too: the re-wrap re-justifies every line
