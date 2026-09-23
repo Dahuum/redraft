@@ -3064,7 +3064,105 @@ def _spans_multiple_fonts(doc, tpage, old_n, old_codes_by_cid) -> bool:
     return 3 <= best < len(old_n)
 
 
-def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, verify: bool = True) -> dict:
+# Refusals about the SHAPE of the span rather than the new text: the line
+# contains something the engine cannot splice through (a glyph drawn by a
+# second font object, a run boundary mid-word, spacing it can't rebuild).
+# When the change itself sits clear of that, editing only the changed words
+# succeeds where the whole line cannot.
+_NARROWABLE = {"spans_multiple_fonts", "ragged_multirun_boundary",
+               "kerning_split_within_run", "sequence_not_found", "unmappable",
+               "cannot_reflow"}
+
+
+def _changed_words(old: str, new: str):
+    """(start, old_mid, new_mid): the smallest WHOLE-word stretch that differs.
+
+    Word-aligned so the splice never cuts through a ligature or a kerned pair
+    inside a word, and so the stretch is specific enough to find again."""
+    p = 0
+    while p < min(len(old), len(new)) and old[p] == new[p]:
+        p += 1
+    q = 0
+    while q < min(len(old), len(new)) - p and old[-1 - q] == new[-1 - q]:
+        q += 1
+    while p > 0 and not old[p - 1].isspace():
+        p -= 1
+    end = len(old) - q
+    while end < len(old) and not old[end].isspace():
+        end += 1
+    q = len(old) - end
+    return p, old[p:end], new[p:len(new) - q]
+
+
+def _sub_target(page, target, start, length):
+    """A span dict for characters [start, start+length) of *target*."""
+    tb = fitz.Rect(target["bbox"])
+    for b in page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
+        for l in b.get("lines", []):
+            for sp in l["spans"]:
+                if abs(sp["origin"][1] - target["origin"][1]) > 0.5 or \
+                        abs(sp["bbox"][0] - tb.x0) > 0.5:
+                    continue
+                chars = sp["chars"]
+                txt = "".join(c["c"] for c in chars)
+                if txt != target["text"] or start + length > len(chars) or length <= 0:
+                    return None
+                seg = chars[start:start + length]
+                r = fitz.Rect(seg[0]["bbox"])
+                for c in seg[1:]:
+                    r |= fitz.Rect(c["bbox"])
+                sub = dict(target)
+                sub["text"] = txt[start:start + length]
+                sub["bbox"] = tuple(r)
+                sub["origin"] = seg[0]["origin"]
+                return sub
+    return None
+
+
+def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
+         verify: bool = True) -> dict:
+    """In-place edit of `old` -> `new` (see _edit_core). When the whole span
+    can't be spliced for a structural reason, the changed words alone are
+    tried: a Word line whose apostrophes are drawn by a second font object
+    refused "programmation" -> "informatique" three words away from them."""
+    r = _edit_core(pdf_bytes, old, new, page, bbox, verify)
+    if r.get("ok") or r.get("reason") not in _NARROWABLE or old == new:
+        return r
+    start, old_mid, new_mid = _changed_words(old, new)
+    if not old_mid.strip() or old_mid == old:
+        return r
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return r
+    try:
+        found = None
+        pages = [page] if page is not None else range(doc.page_count)
+        for pno in pages:
+            for sp in _spans(doc[pno]):
+                if sp["text"] == old and (bbox is None or
+                                          fitz.Rect(sp["bbox"]).intersects(fitz.Rect(bbox))):
+                    found = (pno, sp)
+                    break
+            if found:
+                break
+        if not found:
+            return r
+        sub = _sub_target(doc[found[0]], found[1], start, len(old_mid))
+    finally:
+        doc.close()
+    if sub is None:
+        return r
+    r2 = _edit_core(pdf_bytes, old_mid, new_mid, found[0], sub["bbox"], verify,
+                    _target=(found[0], sub))
+    if r2.get("ok"):
+        r2["narrowed"] = {"from": old[:60], "to": old_mid}
+        return r2
+    return r
+
+
+def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
+               verify: bool = True, _target=None) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof.
 
@@ -3101,6 +3199,10 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         for s in _spans(doc[pno]):
             if old_n in _norm(s["text"]):
                 candidates.append((pno, s))
+    if _target is not None:
+        # A narrowed edit: the caller has already resolved exactly which
+        # characters of which span are meant (see edit()).
+        candidates = [_target]
     if not candidates:
         doc.close()
         return {"ok": False, "reason": "not_found", "message": _REASON_MSG["not_found"]}
