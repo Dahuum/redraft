@@ -555,6 +555,106 @@ def page_dims(pdf_bytes: bytes) -> list:
     return dims
 
 
+def _layout_violation(before: bytes, after: bytes, sd: dict,
+                      other_boxes=()) -> str | None:
+    """Did editing *sd* disturb anything the user did not touch?
+
+    The engine's own checks look at the edited line. This looks at the PAGE,
+    the way a reader would, comparing words before and after:
+
+    MOVED. Every word must be where it was, except the prose that directly
+    follows the field on its line — the chain of words each within two em of
+    the last, which a word processor would push along. Past a wider gutter
+    the text belongs to something else: on a Chrome-printed Wikipedia page a
+    lengthened sentence pushed a figure caption's "Python 3", 85pt across the
+    column gutter, out to the edge of the paper.
+
+    OVERPRINTED. No word of the new text may cover a word it did not already
+    cover. The same edit ran straight through the caption beside it; a check
+    that only knows about its own baseline cannot see a caption 5pt lower.
+
+    *other_boxes* are fields changed in the same batch, whose words are
+    allowed to differ. Returns "moves_column" / "overlaps_neighbour" / None.
+    """
+    pno = sd.get("page", 0)
+    try:
+        db = fitz.open(stream=before, filetype="pdf")
+        da = fitz.open(stream=after, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if pno >= db.page_count or pno >= da.page_count:
+            return None
+        # Boxes from the glyph OUTLINES, not the font's ascender/descender:
+        # a substitute font with a tall ascender reported the IRS 1040 title
+        # "overlapping" the line above it, 3pt clear of any ink.
+        acc = getattr(fitz, "TEXT_ACCURATE_BBOXES", 0)
+        wb = db[pno].get_text("words", flags=acc)
+        wa = da[pno].get_text("words", flags=acc)
+    finally:
+        db.close()
+        da.close()
+    x0, y0, x1, y1 = sd["bbox"]
+    em2 = 2.0 * float(sd.get("size") or 10.0)
+    tol = 0.6
+
+    def on_line(w):
+        ov = min(w[3], y1) - max(w[1], y0)
+        return ov > 0.5 * min(w[3] - w[1], y1 - y0)
+
+    def in_box(w, b):
+        return (b[0] - tol <= w[0] and w[2] <= b[2] + tol
+                and min(w[3], b[3]) - max(w[1], b[1]) > 0)
+
+    follow = sorted((w for w in wb if on_line(w) and w[0] >= x1 - tol),
+                    key=lambda w: w[0])
+    pinned_from, cur = None, x1
+    for w in follow:
+        if w[0] - cur > em2:
+            pinned_from = w[0]
+            break
+        cur = max(cur, w[2])
+
+    def same(v, w):
+        return v[4] == w[4] and abs(v[0] - w[0]) <= tol and abs(v[1] - w[1]) <= tol
+
+    pool = list(wa)
+    for w in wb:
+        if on_line(w):
+            if w[2] > x0 + tol and w[0] < x1 - tol:
+                continue                                    # the field itself
+            if w[0] >= x1 - tol and (pinned_from is None or w[0] < pinned_from - tol):
+                continue                                    # prose that flows
+        if any(in_box(w, b) for b in other_boxes):
+            continue
+        k = next((i for i, v in enumerate(pool) if same(v, w)), None)
+        if k is None:
+            return "moves_column"
+        pool.pop(k)
+
+    # Words that are new or moved: the edit's own text and the prose it
+    # pushed. None may land on a word that stayed put, unless the original
+    # field already overlapped it (some producers draw a comma over the tail
+    # of the value before it — that is the document, not the edit).
+    fresh = [v for v in wa if not any(same(v, w) for w in wb)]
+    stayed = [v for v in wa if any(same(v, w) for w in wb)]
+    for v in fresh:
+        for u in stayed:
+            ix = min(v[2], u[2]) - max(v[0], u[0])
+            iy = min(v[3], u[3]) - max(v[1], u[1])
+            if ix <= 0 or iy <= 0:
+                continue
+            small = min((v[2] - v[0]) * (v[3] - v[1]), (u[2] - u[0]) * (u[3] - u[1])) or 1.0
+            if ix * iy < 0.15 * small:
+                continue
+            if (min(u[2], x1) - max(u[0], x0)) > 0 and (min(u[3], y1) - max(u[1], y0)) > 0:
+                continue                                    # overlapped already
+            if any(in_box(u, b) for b in other_boxes):
+                continue
+            return "overlaps_neighbour"
+    return None
+
+
 def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     """Attempt every (span_dict, new_text) as a true in-place edit — same
     font/size/weight/position guaranteed byte-for-byte, not just visually
@@ -585,8 +685,20 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
         except Exception:  # noqa: BLE001
             r = {"ok": False, "reason": "engine_error"}
         if r.get("ok"):
-            current = base64.b64decode(r["pdf_b64"])
-            in_place_count += 1
+            cand = base64.b64decode(r["pdf_b64"])
+            others = [o["bbox"] for o, _ in replacements
+                      if o is not sd and o.get("page", 0) == sd.get("page", 0)]
+            bad = _layout_violation(current, cand, sd, others)
+            if bad:
+                # The engine placed it, and placing it disturbed the page.
+                # Not accepted here; the redraw gets its own chance, under
+                # the same check.
+                r = {"ok": False, "reason": bad, "message": _UNSHIPPABLE_MSG[bad]}
+            else:
+                current = cand
+                in_place_count += 1
+        if r.get("ok"):
+            pass
         else:
             still_needed.append((sd, new_text))
             refusals.append({"text": sd["text"][:60], "reason": r.get("reason"),
@@ -683,6 +795,10 @@ _UNSHIPPABLE_MSG = {
         "This value is longer than the space it sits in, and redrawing it "
         "would print it over the text beside it. The field was left as it "
         "was — shorten the value, or give it a line of its own."),
+    "moves_column": (
+        "This value is longer than its table cell, and making room for it "
+        "would push the rest of the row out of line with the columns above "
+        "and below it. The field was left as it was — shorten the value."),
     "runs_off_the_page": (
         "This value is too long for the space it sits in: even shrunk as far "
         "as is reasonable it would run past the edge of the paper, where the "
@@ -807,6 +923,16 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
                         if ga < -0.5 and ga < gb - 0.5:
                             bad[i] = "overlaps_neighbour"
                             break
+            if i in bad:
+                continue
+            # ANYTHING ELSE THAT MOVED OR WAS PRINTED OVER — the same page-
+            # level check the in-place path runs; see _layout_violation.
+            if ref is not None:
+                others = [o["bbox"] for o, _ in items
+                          if o is not sd and o.get("page", 0) == pno]
+                why = _layout_violation(before, edited, sd, others)
+                if why:
+                    bad[i] = why
             if i in bad:
                 continue
             # The redrawn text layer reports NBSP for a space and a soft
@@ -1658,9 +1784,18 @@ def _annex_spans_and_model(pdf_bytes: bytes, template: dict | None = None):
 # edge fixed — lets a longer number (qty 9 → 5000) render full-size instead of
 # tiny. The floor (a safe left edge in the inter-column gap) comes from the
 # template now, so it's correct for whatever annex was scanned — not hardcoded.
-def _relax_numeric(span: dict, col: str | None, template: dict) -> dict:
+def _relax_numeric(span: dict, col: str | None, template: dict,
+                   spans: list = None) -> dict:
     """Return a copy of *span* with its numeric cell widened leftward to the
-    template's floor for *col* (so a longer number renders full-size)."""
+    template's floor for *col* (so a longer number renders full-size).
+
+    The floor comes from column statistics, which know nothing about what is
+    actually on THIS row: the total's floor sat inside its own "Total HT"
+    label, and the widened box, erased on redraw, printed every annex as
+    "Total H"; the quantity floor (x=107) sat inside a label like "Support
+    technique". With *spans* given, the cell never widens past the right
+    edge of the text before it on its own line, plus 4pt.
+    """
     if col == "total":
         floor = template.get("totalFloor")
     else:
@@ -1668,6 +1803,14 @@ def _relax_numeric(span: dict, col: str | None, template: dict) -> dict:
     if floor is None:
         return span
     x0, y0, x1, y1 = span["bbox"]
+    if spans:
+        oy = span["origin"][1]
+        before = [o["bbox"][2] for o in spans
+                  if o is not span and abs(o["origin"][1] - oy) <= 1.0
+                  and o["bbox"][2] <= x0 + 0.5 and o.get("page", 0) == span.get("page", 0)
+                  and o["text"].strip()]
+        if before:
+            floor = max(floor, max(before) + 4.0)
     if x0 <= floor:
         return span
     widened = dict(span)
@@ -1907,7 +2050,7 @@ async def annex_generate(template: UploadFile = File(...),
                     continue
                 qv = parse_num(str(row.get(col, "")))
                 spec[idx] = {"remove": True} if not qv else {"qty": qv}
-            reps = [(_relax_numeric(spans[sid], colmap.get(sid), prof) if txt else spans[sid], txt)
+            reps = [(_relax_numeric(spans[sid], colmap.get(sid), prof, spans) if txt else spans[sid], txt)
                     for sid, txt in plan_edits(model, spec)
                     if 0 <= sid < len(spans)]
             removed_items = {idx for idx, a in spec.items() if a.get("remove")}

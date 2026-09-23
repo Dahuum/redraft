@@ -886,10 +886,27 @@ def _sample_bg(pix: fitz.Pixmap, rect: fitz.Rect) -> tuple:
     _grab(x0,     y_mid)
     _grab(x1 - 1, y_mid)
 
+    # Just outside both ends of the text, at mid-height: clear of the line's
+    # own glyphs and, unlike the strips above and below, of its neighbours'.
+    for dx in (2, 4):
+        _grab(x0 - dx, y_mid)
+        _grab(x1 - 1 + dx, y_mid)
+
     if not samples:
         return (1.0, 1.0, 1.0)
-    samples.sort(key=lambda t: t[0] + t[1] + t[2])
-    m = samples[len(samples) // 2]
+    # The MODE, not the median. A background is one exact colour repeated;
+    # ink and antialiasing are scattered values. On tight leading the strips
+    # above and below run through the neighbouring lines' glyphs, and the
+    # median of an IRS 1040 header cell came back (176,204,200) — a grey
+    # patch on a (220,255,250) cell, visible at a glance.
+    from collections import Counter
+    counts = Counter(samples)
+    best, n_best = max(counts.items(), key=lambda kv: (kv[1], sum(kv[0])))
+    if n_best >= 3:
+        m = best
+    else:
+        samples.sort(key=lambda t: t[0] + t[1] + t[2])
+        m = samples[len(samples) // 2]
     return (m[0] / 255.0, m[1] / 255.0, m[2] / 255.0)
 
 
@@ -959,7 +976,11 @@ def _detect_alignments(spans: list) -> dict:
     a one-off coincidence exceedingly unlikely while still catching every
     genuine column pattern (which has more than one row by definition).
     """
-    X1_TOL   = 3.0   # pt — right-edge tolerance for right-alignment
+    X1_TOL   = 1.0   # pt — right-edge tolerance for right-alignment. Was 3:
+                     # ragged-right prose ends anywhere within a few points
+                     # of the margin, and six unrelated paragraph lines on the
+                     # IRS 1040 voted a left-aligned header "right". A real
+                     # right-aligned column is set to the exact point.
     CX_TOL   = 3.0   # pt — midpoint tolerance for centering
     X0_MIN   = 3.0   # pt — minimum x0 difference to distinguish from same-text
     MIN_MATES = 2    # other spans required to corroborate a column, not just one
@@ -1003,6 +1024,20 @@ def _detect_alignments(spans: list) -> dict:
             result[key] = "left"
             continue
 
+        # ── Left is evidence too, not only the fallback. Text stacked at one
+        # left edge ("Credit for / other / dependents" on the IRS 1040) was
+        # outvoted by two unrelated fields elsewhere on the page that happen
+        # to end near the same x, read as right-aligned, and a longer value
+        # was drawn leftward over the checkbox beside it. Left edges set by
+        # software coincide exactly, so the tolerance is tight, and a tie
+        # goes to left: it is the one reading that leaves x0 where it was.
+        left_mates = sum(
+            1 for j in range(n)
+            if j != i
+            and abs(x0s[j] - x0_i) <= 0.5
+            and abs(x1s[j] - x1_i) > X0_MIN
+        )
+
         # ── Right: shares x1, different x0 — needs >= 2 corroborating mates ─
         right_mates = sum(
             1 for j in range(n)
@@ -1010,7 +1045,7 @@ def _detect_alignments(spans: list) -> dict:
             and abs(x1s[j] - x1_i) <= X1_TOL
             and abs(x0s[j] - x0_i) > X0_MIN
         )
-        if right_mates >= MIN_MATES:
+        if right_mates >= MIN_MATES and right_mates > left_mates:
             result[key] = "right"
             continue
 
@@ -1022,7 +1057,7 @@ def _detect_alignments(spans: list) -> dict:
             and abs(x0s[j] - x0_i) > X0_MIN
             and abs(x1s[j] - x1_i) > X0_MIN
         )
-        if center_mates >= MIN_MATES:
+        if center_mates >= MIN_MATES and center_mates > left_mates:
             result[key] = "center"
             continue
 
@@ -1179,7 +1214,20 @@ class PDFEditor:
             # can't know whether a trailing span needs to move out of the way
             # until you know how wide the replacement actually turned out.
             draw_ops = []        # (ox, oy, fontname_to_use, fontsize, draw_text, color)
-            edited_ids = {id(span) for span, _ in items}
+            # `all_spans` is a fresh extraction, so its dicts are never the
+            # caller's: an id() test matched nothing, and every edited cell
+            # after a widening edit on the same line was taken for an
+            # untouched neighbour — pushed right and redrawn with its OLD
+            # text beside the new one (an annex row read "1,0000000").
+            # Match by origin and text instead; not by bbox, which callers
+            # widen on purpose (see api._relax_numeric).
+            def _same_span(a, b):
+                return (a["text"].strip() == b["text"].strip()
+                        and abs(a["origin"][0] - b["origin"][0]) <= 0.5
+                        and abs(a["origin"][1] - b["origin"][1]) <= 0.5)
+            edited_ids = {id(s) for s in all_spans
+                          if any(_same_span(s, span) for span, _ in items)}
+            edited_ids |= {id(span) for span, _ in items}
             overflowing = []     # (span, new_x1, oy) — left-aligned edits that overran their box
 
             for span, new_text in items:
@@ -1362,7 +1410,12 @@ class PDFEditor:
                     cursor = new_x1
                     prev_orig_x1 = orig_x1
                     for f in followers:
-                        gap = max(0.0, f["bbox"].x0 - prev_orig_x1)
+                        # A word gap is kept exactly; a table gutter only
+                        # needs two em — otherwise a qty going 1 -> 10 moves
+                        # every column after it (same rule as the in-place
+                        # engine's _would_tear_line).
+                        gap = min(max(0.0, f["bbox"].x0 - prev_orig_x1),
+                                  2.0 * edited_span["size"])
                         needed_x0 = cursor + gap
                         dx = needed_x0 - f["bbox"].x0
                         if dx > 0.1:
@@ -1378,15 +1431,61 @@ class PDFEditor:
             # out of the way. See the (unchanged) note on TRUE redaction
             # above `apply_redactions`: this removes the underlying text
             # operators, not just a cosmetic paint-over.
-            for span, _ in items:
-                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
-                                      cross_out=False)
-            for span in shifted_spans:
-                page.add_redact_annot(span["bbox"], fill=_sample_bg(pix, span["bbox"]),
-                                      cross_out=False)
+            # Clipped against the lines above and below: on tightly leaded
+            # type the boxes overlap (7pt on 6pt leading on the IRS 1040),
+            # and erasing a header's full box removed "other" from the line
+            # under it. Stopping at our own baseline for a line below, and at
+            # theirs for a line above, still removes every glyph of ours.
+            def _erase_rect(span):
+                r = fitz.Rect(span["bbox"])
+                oy = span["origin"][1]
+                gap = 0.5 * span["size"]
+                # An underline sits just under the descenders — Chrome draws
+                # it 0.4pt below the text box — so the box reaches a little
+                # further down, unless a line below clips it back.
+                r.y1 += 0.15 * span["size"]
+                for o in all_spans:
+                    ob = o["bbox"]
+                    if ob.x1 <= r.x0 or ob.x0 >= r.x1:
+                        continue
+                    ooy = o["origin"][1]
+                    # Clear of the neighbour's glyph BOX, not just its
+                    # baseline: MuPDF deletes a character whose box the
+                    # redaction overlaps by as little as ~16%, and stopping
+                    # at our own baseline still took "other" off the line
+                    # below on 7pt type at 6pt leading. Too small a box to
+                    # delete our own glyphs is caught below and covered.
+                    if ooy > oy + gap and ob.y0 < r.y1:
+                        r.y1 = max(min(r.y1, ob.y0), r.y0 + 0.3 * span["size"])
+                    elif ooy < oy - gap and ob.y1 > r.y0:
+                        r.y0 = min(max(r.y0, ob.y1), r.y1 - 0.3 * span["size"])
+                return r
+            # Nothing is PAINTED. The redaction deletes the old glyphs from
+            # the content stream, so a background-coloured rectangle on top
+            # hid nothing — it only destroyed what lay under the text: the
+            # underline of a link (gone from "reflection" on a Wikipedia
+            # page), a table rule crossing the cell, a gradient or scanned
+            # background it could only approximate with one flat colour.
+            erase = [_erase_rect(sp_) for sp_, _ in items] + \
+                    [_erase_rect(sp_) for sp_ in shifted_spans]
+            # A decoration lying ENTIRELY inside the field's box — a link's
+            # underline, a strike-through — belongs to the old glyphs and goes
+            # with them; kept, it was left stranded under whatever words the
+            # redraw put there. Anything reaching outside the box (a table
+            # rule, a cell's shading) belongs to the page and is untouched.
+            for er in erase:
+                page.add_redact_annot(er, cross_out=False, fill=False)
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
-                                  graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                  graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
                                   text=fitz.PDF_REDACT_TEXT_REMOVE)
+            # Unless deletion failed: then, and only there, cover it the old
+            # way. Text still readable inside an erased box is the evidence.
+            for (sp_, er) in zip([x for x, _ in items] + shifted_spans, erase):
+                left_over = page.get_text("text", clip=er).strip()
+                if left_over and any(ch in left_over for ch in sp_["text"].strip()[:40]
+                                     if not ch.isspace()):
+                    page.draw_rect(er, color=None, overlay=True,
+                                   fill=_sample_bg(pix, fitz.Rect(sp_["bbox"])))
 
             # ── Draw the measured edits, then the shifted (unchanged-text)
             # neighbors at their new position, in their own original font.

@@ -1435,7 +1435,7 @@ def _simple_font_refs(doc, font_display_name: str, require_truetype: bool = True
     return None
 
 
-def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
+def _set_simple_widths(doc, refs, code_to_width: dict, extend: bool = False) -> bool:
     """Write real advance widths into the font's /Widths array.
 
     Not optional. A subsetter that drops a glyph also zeroes its width, and
@@ -1465,6 +1465,14 @@ def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
     if len(widths) != (last - first + 1):
         return False   # unexpected shape — refuse rather than misalign the table
 
+    grow_to = max(code_to_width) if (extend and code_to_width) else last
+    if grow_to > last:
+        # Only for codes this engine itself allocated past /LastChar (see
+        # _allocate_private_codes): nothing in the document can be drawn
+        # with them yet, so widening the table moves nothing that exists.
+        if grow_to > 255:
+            return False
+        widths += [0.0] * (grow_to - last)
     for code, w in code_to_width.items():
         idx = code - first
         if 0 <= idx < len(widths):
@@ -1472,6 +1480,9 @@ def _set_simple_widths(doc, refs, code_to_width: dict) -> bool:
         else:
             return False   # outside the declared range; extending it is a
                            # bigger change than this path should make silently
+    if grow_to > last:
+        doc.xref_set_key(refs["font_xref"], "LastChar", str(grow_to))
+        refs["last_char"] = grow_to
     body = "[" + " ".join(f"{int(round(w))}" for w in widths) + "]"
     if w_xref is not None:
         doc.update_object(w_xref, body)
@@ -1596,6 +1607,89 @@ def _try_extend_simple_cff(doc, font_display_name, missing_chars, code_for=None)
     return result["names"], None
 
 
+def _private_code_font(doc, refs) -> bool:
+    """A simple TrueType font whose codes are the producer's own invention.
+
+    LibreOffice, Chrome/Skia and most subsetting producers number glyphs
+    1, 2, 3... in the order they were first used and declare no /Encoding;
+    the font program's own (1,0) or (3,0) cmap is what maps code to glyph.
+    Such a font has no code at all for a character the document never used,
+    so the encoder refused every edit introducing one — on a LibreOffice
+    sales sheet, "Widget A" could become "Widget Al" but never "Widget Ap".
+    """
+    if not refs or not refs.get("ff_xref"):
+        return False
+    obj = doc.xref_object(refs["font_xref"], compressed=True)
+    return "/Encoding" not in obj
+
+
+def _allocate_private_codes(doc, refs, rev: dict, chars) -> dict:
+    """{char: code} for *chars*, from codes nothing in the document uses.
+
+    Taken strictly above /LastChar, so no existing code — declared, mapped,
+    or merely reserved in /Widths — is ever reused, and never 32: PDF applies
+    word spacing (Tw) to byte 32 in a simple font, so a letter there would
+    stretch whenever the line is justified. Returns {} if there is no room.
+    """
+    last = refs.get("last_char")
+    if last is None:
+        return {}
+    used = set(rev.values()) | set(range(0, last + 1))
+    out, code = {}, max(last + 1, 33)
+    for ch in chars:
+        while code in used or code == 32:
+            code += 1
+        if code > 255:
+            return {}
+        out[ch] = code
+        used.add(code)
+    return out
+
+
+def _map_private_codes(original: bytes, extended: bytes, code_gid: dict) -> bytes:
+    """*extended* with its cmap restored to *original*'s, plus code -> gid.
+
+    The injectors key new glyphs by Unicode codepoint (cmap[ord(ch)]), which
+    is right for an encoded font and wrong for a private one, where code 112
+    ('p' in Unicode) may already draw some other letter. Every original entry
+    is put back and only the allocated codes are added: (1,0) by the code
+    itself, (3,0) at both the code and 0xF000 + code, the two places a viewer
+    looks for a symbolic font. A byte-sized (format 0) table that cannot hold
+    a glyph id above 255 is rebuilt as format 6, which can.
+    """
+    from fontTools.ttLib import TTFont
+    from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
+    src = TTFont(io.BytesIO(original))
+    dst = TTFont(io.BytesIO(extended))
+    order = dst.getGlyphOrder()
+    orig_tables = {(t.platformID, t.platEncID): dict(t.cmap) for t in src["cmap"].tables} \
+        if "cmap" in src else {}
+    if "cmap" not in dst:
+        return extended
+    new_tables = []
+    for t in dst["cmap"].tables:
+        key = (t.platformID, t.platEncID)
+        m = dict(orig_tables.get(key, t.cmap))
+        if key in ((1, 0), (3, 0)):
+            for code, gid in code_gid.items():
+                m[code] = order[gid]
+                if key == (3, 0):
+                    m[0xF000 + code] = order[gid]
+        fmt = t.format
+        if fmt == 0 and (any(dst.getGlyphID(n) > 255 for n in m.values())
+                         or any(c > 255 for c in m)):
+            fmt = 6 if key[0] == 1 else 4
+        nt = CmapSubtable.newSubtable(fmt)
+        nt.platformID, nt.platEncID, nt.language = t.platformID, t.platEncID, \
+            getattr(t, "language", 0)
+        nt.cmap = m
+        new_tables.append(nt)
+    dst["cmap"].tables = new_tables
+    buf = io.BytesIO()
+    dst.save(buf)
+    return buf.getvalue()
+
+
 def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
     """Inject `missing_chars` into a SIMPLE font's embedded subset, in place.
 
@@ -1678,12 +1772,22 @@ def _try_extend_simple(doc, font_display_name, missing_chars, code_for=None):
         except Exception:  # noqa: BLE001
             return None, "inject_failed"
 
+    private = _private_code_font(doc, refs)
     if not _set_simple_widths(doc, refs,
                               {code_for.get(ch, ord(ch)): result["width_1000"][ch]
-                               for ch in missing_chars}):
+                               for ch in missing_chars},
+                              extend=private):
         return None, "bad_widths"
 
-    doc.update_stream(refs["ff_xref"], result["font_bytes"])
+    font_bytes = result["font_bytes"]
+    if private:
+        try:
+            font_bytes = _map_private_codes(
+                subset_bytes, font_bytes,
+                {code_for[ch]: result["gid"][ch] for ch in missing_chars})
+        except Exception:  # noqa: BLE001 — unmapped glyphs would draw nothing
+            return None, "inject_failed"
+    doc.update_stream(refs["ff_xref"], font_bytes)
     # A simple font's /ToUnicode is keyed by character CODE, not by glyph id.
     _add_tounicode_entries(doc, refs.get("tu_xref"),
                            {code_for.get(ch, ord(ch)): ord(ch) for ch in missing_chars},
@@ -2025,13 +2129,17 @@ def _reflow_same_line(doc, page, base_ys, from_x: float, dx: float,
 
     Returns the number of items shifted, or None if reflow isn't safe here.
     """
-    if abs(dx) < 0.01:
+    grows = field is not None and abs(field[3] - field[1]) >= 0.01
+    if abs(dx) < 0.01 and not grows:
         return 0
     edits, shifted = [], 0
     for st in _content_streams(doc, page):
         data = st["data"]
         hits = []
-        for obj in _text_objects(data):
+        # With nothing to push (a field changing width in front of a column)
+        # only the field's own rules are rewritten; no text object moves, so
+        # none needs to be proven movable.
+        for obj in (_text_objects(data) if abs(dx) >= 0.01 else ()):
             pos = obj["positions"]
             if pos is None:
                 # Where this object draws cannot be worked out from its
@@ -2296,6 +2404,44 @@ def _next_text_x0(page, target_bbox):
             continue              # the field itself, or text before it
         best = span["bbox"][0] if best is None else min(best, span["bbox"][0])
     return best
+
+
+def _is_column_cell(page, target_bbox, x: float,
+                    gutter_em: float = 0.6, tol: float = 0.5, need: int = 2) -> bool:
+    """Is the text starting at *x* on the field's line a TABLE CELL?
+
+    Gap width alone cannot tell a table from prose. A spreadsheet row
+    "Widget A | North | 1420" has a 9pt gutter before "North" at 10pt type —
+    under two em, so it was taken for prose, and shortening "Widget A" pulled
+    the whole row 9.4pt out of its columns. What a reader's eye actually uses
+    is alignment: a cell sits after a gutter AND lines up, at its left or
+    right edge, with gutter-separated words on other rows.
+
+    Measured over the 26-document corpus: every prose document (two arXiv
+    papers, letters, contracts, a report) scores zero such words — justified
+    text lines up at the margins, but its words are not preceded by a gutter
+    — while the IRS 1040 scores 342, the sales table 10, the leader-dot form
+    20.
+    """
+    y0, y1 = fitz.Rect(target_bbox).y0, fitz.Rect(target_bbox).y1
+    rows: dict = {}
+    for w in page.get_text("words"):
+        rows.setdefault(round((w[1] + w[3]) / 2), []).append(w)
+    gut = []                                        # (word, row key)
+    for key, ws in rows.items():
+        ws.sort()
+        for j in range(1, len(ws)):
+            h = ws[j][3] - ws[j][1]
+            if ws[j][0] - ws[j - 1][2] > gutter_em * h:
+                gut.append((ws[j], key))
+    me = next((w for w, _ in gut
+               if abs(w[0] - x) <= 1.0 and min(w[3], y1) - max(w[1], y0) > 0), None)
+    if me is None:
+        return False
+    lines = {k for w, k in gut
+             if abs(w[1] - me[1]) >= 2.0
+             and (abs(w[0] - me[0]) <= tol or abs(w[2] - me[2]) <= tol)}
+    return len(lines) >= need
 
 
 def _pinned_at(positions, x: float, tol: float = 1.5) -> bool:
@@ -2662,6 +2808,22 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             old_codes = _encode_fallback(old_n, enc_name)
             if old_codes is None:
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
+        alloc_missing = []
+        if new_codes is None and cm:
+            # Characters this private-code font has never drawn get codes of
+            # their own; the glyphs themselves are injected below, under
+            # exactly those codes. See _private_code_font.
+            prefs = _simple_font_refs(doc, nm)
+            if _private_code_font(doc, prefs):
+                need = [ch for ch in dict.fromkeys(new)
+                        if ch not in cm["rev"] and not ch.isspace()]
+                alloc = _allocate_private_codes(doc, prefs, cm["rev"], need)
+                if alloc:
+                    rev2 = dict(cm["rev"]); rev2.update(alloc)
+                    new_codes = _encode_simple_text(new, rev2, max(cm["max_len"], 1))
+                    # Missing by construction, whatever the coverage reader
+                    # can or cannot tell about this font.
+                    alloc_missing = sorted(alloc)
         if new_codes is None:
             new_codes = _encode_fallback(new, enc_name)
             if new_codes is None:
@@ -2681,8 +2843,10 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             # arXiv paper accordingly shipped .notdef boxes for 'é', 'Å',
             # 'Ñ' and 'ñ' with every text-level check passing.
             coverage = _simple_font_glyph_coverage(doc, nm)
-            if coverage is not None:
-                missing = sorted({ch for ch in new if not ch.isspace() and ch not in coverage})
+            if coverage is not None or alloc_missing:
+                missing = sorted(set(alloc_missing) | (
+                    {ch for ch in new if not ch.isspace() and ch not in coverage}
+                    if coverage is not None else set()))
                 if missing:
                     # Try to give the ORIGINAL font the glyphs it lacks rather
                     # than refusing. Refusing here is not neutral: the caller
@@ -3087,6 +3251,9 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         seen = _positions_on_baseline(odoc, odoc[tpage], line_ys)
         next_pinned = next_x0 is not None and (
             not seen or _pinned_at(seen, next_x0))
+        # A table cell after the field never moves, in either direction:
+        # moving one row's cell out of its column is visible at a glance.
+        next_cell = next_pinned and _is_column_cell(odoc[tpage], target["bbox"], next_x0)
     finally:
         odoc.close()
     # How much the value may grow before anything has to move, and how much
@@ -3112,6 +3279,10 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     slack = 0.0
     if next_pinned and next_x0 is not None:
         slack = max(0.0, (next_x0 - old_x1) - _gap_keep)
+    if next_cell:
+        # Up to half an em short of the next cell and no further; past that
+        # the tightening levers below, then an honest refusal.
+        slack = max(0.0, (next_x0 - old_x1) - 0.5 * target["size"])
     trailing = max(0.0, (line_end_old or old_x1) - old_x1)
 
     # When the extent can't be established at all, the overflow check and the
@@ -3128,7 +3299,8 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
         # The value has to end by the margin, and whatever it pushes has to
         # end there too — after absorbing the slack.
         avail = min(right_limit,
-                    old_x1 + slack + max(0.0, right_limit - old_x1 - trailing)
+                    old_x1 + slack + (0.0 if next_cell else
+                                      max(0.0, right_limit - old_x1 - trailing))
                     ) - old_x0
         base_w = new_x1 - old_x0
         if base_w - avail > 0.05:
@@ -3197,8 +3369,21 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None, veri
     try:
         # Only the growth that the slack could not absorb has to be pushed.
         _dx = new_x1 - old_x1 if new_x1 is not None else 0.0
-        _push = _dx - slack if _dx > 0 else _dx
-        if new_x1 is not None and abs(_push) > 0.05:
+        # A neighbour beyond two em is a column, and a column never moves
+        # for growth the gutter absorbed, nor closes up when the field
+        # shrinks. This was `_dx - slack` unclamped: a qty going 1 -> 10
+        # (+5.6pt against 44pt of slack) pulled the price and amount
+        # columns 38.9pt LEFT, and 10 -> 1 pulled them 5.6pt.
+        if next_cell:
+            _push = 0.0
+        elif _dx > 0:
+            _push = max(0.0, _dx - slack)
+        else:
+            _push = 0.0 if slack > 0 else _dx
+        # Called even when nothing is pushed: the field's own underline still
+        # has to take its new width (a link shortened in front of a column
+        # kept a 34pt rule trailing into empty space).
+        if new_x1 is not None and (abs(_push) > 0.05 or abs(_dx) > 0.05):
             reflow_from = min(old_x1, next_x0) if next_x0 is not None else old_x1
             n = _reflow_same_line(rdoc, rdoc[tpage], line_ys,
                                   reflow_from, _push,
