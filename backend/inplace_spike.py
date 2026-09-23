@@ -3307,7 +3307,7 @@ def _justified_margin(page, target, tol: float = 0.3):
 
 def _rejustify(doc, page, base_y_pdf: float, field_x0: float, delta: float,
                max_shrink_em: float, max_grow_em: float, size: float,
-               tol: float = 0.6):
+               tol: float = 0.6, need_spacing: bool = False):
     """Re-justify the one text object drawing the field's line so its end
     moves back by *delta* page points, the way the producer would: the word
     spacing (Tw) or, where Tw cannot apply (two-byte CID codes), the TJ
@@ -3341,6 +3341,8 @@ def _rejustify(doc, page, base_y_pdf: float, field_x0: float, delta: float,
         if n == 0:
             return False
         old = float(tws[0].group(1))
+        if need_spacing and abs(old) < 1e-6:
+            return False        # no margin partner and no word spacing: ragged
         new = old - delta / (n * xs)
         if not (-max_shrink_em * size <= new * xs <= max_grow_em * size):
             return False
@@ -3361,6 +3363,8 @@ def _rejustify(doc, page, base_y_pdf: float, field_x0: float, delta: float,
     gaps = {round(t["gap_before"], 2) for t in writes}
     if len(gaps) != 1:
         return False            # not uniform: kerning, not justification
+    if need_spacing and abs(next(iter(gaps))) < 1e-6:
+        return False
     n = len(writes)
     step = delta * 1000.0 / (n * tfs * xs)
     new_gap = next(iter(gaps)) + step
@@ -3768,7 +3772,12 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     # reason to throw away a good edit.
     new_x1 = _field_x1()
     rejustified = False
-    if just_margin is not None and new_x1 not in (None, _TRUNCATED) \
+    # Justified if another line of the paragraph shares its margin — or, on a
+    # paragraph with one full line, if the producer wrote explicit word
+    # spacing on it: nothing sets Tw for ragged text. Without the second
+    # route a two-line fpdf2 paragraph was never re-justified, and the fit
+    # logic squeezed its letters (Tc) instead — every word visibly tighter.
+    if not right_col and new_x1 not in (None, _TRUNCATED) \
             and abs(new_x1 - old_x1) > 0.05:
         # A producer keeps a justified line flush to its margin by respacing
         # the words; a fixed-spacing edit left fpdf2 and ReportLab paragraphs
@@ -3779,7 +3788,8 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         jdoc = fitz.open(stream=edited, filetype="pdf")
         try:
             if _rejustify(jdoc, jdoc[tpage], base_y_pdf, old_x0, new_x1 - old_x1,
-                          max_shrink_em=0.12, max_grow_em=0.6, size=target["size"]):
+                          max_shrink_em=0.12, max_grow_em=0.6, size=target["size"],
+                          need_spacing=just_margin is None):
                 edited = jdoc.tobytes(garbage=4, deflate=True)
                 rejustified = True
                 new_x1 = old_x1
