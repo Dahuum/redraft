@@ -21,6 +21,7 @@ Design notes
 
 import base64
 import csv
+import hashlib
 import io
 import json
 import os
@@ -1228,10 +1229,7 @@ def _font_cache_name(fontname: str) -> str:
     The family is reduced to alphanumerics so a crafted font name can never
     escape the cache directory (path traversal via '/', '..', etc.).
     """
-    fam, weight, style = _pe._parse_font_name(fontname)
-    nospace = re.sub(r"[^A-Za-z0-9]", "", fam)[:64] or "font"
-    style = "italic" if str(style).lower().startswith("ital") else "normal"
-    return f"{nospace}-{int(weight)}-{style}.ttf"
+    return _pe.font_cache_key(fontname)
 
 
 def _font_status(fontname: str) -> dict:
@@ -1259,7 +1257,7 @@ def _font_status(fontname: str) -> dict:
     }
 
 
-def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
+def _ingest_embedded_fonts(pdf_bytes: bytes, user: str = None) -> list:
     """Use a PDF's OWN embedded fonts when their names have been stripped.
 
     Many generators (iText / JasperReports, etc.) embed the *full* real font but
@@ -1283,11 +1281,15 @@ def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
     Returns a list describing what was installed (empty if nothing changed).
     """
     installed: list = []
+    # Everything chosen here is for THIS request only (see pdf_editor
+    # _DOC_FONTS): the signed-in user's own fonts, then this document's.
+    overlay: dict = dict(_user_fonts(user))
+    _pe._DOC_FONTS.set(overlay)
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception:  # noqa: BLE001
         return installed
-    seen, changed = set(), False
+    seen = set()
     try:
         for pno in range(doc.page_count):
             for fo in doc[pno].get_fonts(full=True):
@@ -1298,7 +1300,10 @@ def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
                 cache_name = _font_cache_name(basefont)
                 cache_path = os.path.join(_pe._FONT_CACHE_DIR, cache_name)
 
-                # Already have a complete font under this name → done.
+                # The user's own font for this name wins; so does a complete
+                # SHARED one (system or open-source catalogue).
+                if cache_name in overlay:
+                    continue
                 if os.path.exists(cache_path):
                     with open(cache_path, "rb") as fh:
                         if _font_covers(fh.read()):
@@ -1338,24 +1343,36 @@ def _ingest_embedded_fonts(pdf_bytes: bytes) -> list:
                     else:
                         continue
 
-                if os.path.exists(cache_path):
-                    with open(cache_path, "rb") as fh:
-                        if fh.read() == chosen:
-                            continue                                 # already installed
-                with open(cache_path, "wb") as fh:
-                    fh.write(chosen)
-                changed = True
+                overlay[cache_name] = chosen                         # this request only
                 installed.append({"font": basefont.split("+")[-1],
                                   "real_name": real_name,
                                   "via": via,
                                   "installed_as": cache_name})
     finally:
         doc.close()
-    if changed:
-        # Drop the in-memory resolution memo so the next edit picks up the files.
-        _pe._RESOLVED.clear()
-        _pe._FONT_SOURCE.clear()
     return installed
+
+
+def _user_font_dir(user: str) -> str:
+    """Per-user font directory, named by a hash so no id reaches the path."""
+    h = hashlib.sha256(str(user).encode()).hexdigest()[:24]
+    return os.path.join(_pe._FONT_CACHE_DIR, "users", h)
+
+
+def _user_fonts(user: str) -> dict:
+    """{cache file name: bytes} for fonts this user uploaded, or {}."""
+    if not user:
+        return {}
+    d = _user_font_dir(user)
+    out: dict = {}
+    try:
+        for name in os.listdir(d):
+            if name.endswith(".ttf"):
+                with open(os.path.join(d, name), "rb") as fh:
+                    out[name] = fh.read()
+    except OSError:
+        pass
+    return out
 
 
 def parse_table(filename: str, data: bytes) -> tuple:
@@ -1524,7 +1541,7 @@ async def extract(file: UploadFile = File(...), user: str = Depends(optional_use
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
+    _ingest_embedded_fonts(data, user)  # use the PDF's own embedded fonts (no boxes)
     try:
         spans = extract_spans(data)
         pages = page_dims(data)
@@ -1556,7 +1573,7 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    _ingest_embedded_fonts(data)  # use the PDF's own embedded fonts (no boxes)
+    _ingest_embedded_fonts(data, user)  # use the PDF's own embedded fonts (no boxes)
     try:
         edit_list = json.loads(edits)
         assert isinstance(edit_list, list)
@@ -1645,7 +1662,7 @@ async def bulk(template: UploadFile = File(...),
     _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
     _check_size("The data file", data_bytes, MAX_DATA_BYTES)
     _check_readable("The template PDF", tmpl_bytes, getattr(template, "filename", ""))
-    _ingest_embedded_fonts(tmpl_bytes)  # use the template's own embedded fonts
+    _ingest_embedded_fonts(tmpl_bytes, user)  # use the template's own embedded fonts
 
     try:
         mp = json.loads(mapping)
@@ -1749,7 +1766,7 @@ async def fonts(file: UploadFile = File(...), user: str = Depends(require_user))
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    auto = _ingest_embedded_fonts(data)  # adopt the PDF's own embedded fonts first
+    auto = _ingest_embedded_fonts(data, user)  # adopt the PDF's own embedded fonts first
     try:
         spans = extract_spans(data)
     except Exception as exc:  # noqa: BLE001
@@ -1776,9 +1793,13 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
         raise HTTPException(400, "That doesn't look like a .ttf or .otf font file.")
 
     name = _font_cache_name(fontname)
-    # Defence in depth: the resolved path must stay inside the font cache dir.
-    path = os.path.abspath(os.path.join(_pe._FONT_CACHE_DIR, name))
-    if os.path.dirname(path) != os.path.abspath(_pe._FONT_CACHE_DIR):
+    # The user's OWN directory. Installing into the shared cache made one
+    # user's upload the font every other user's documents were edited with.
+    udir = os.path.abspath(_user_font_dir(user))
+    os.makedirs(udir, exist_ok=True)
+    # Defence in depth: the resolved path must stay inside that directory.
+    path = os.path.abspath(os.path.join(udir, name))
+    if os.path.dirname(path) != udir:
         raise HTTPException(400, "Invalid font name.")
     try:
         with open(path, "wb") as f:
@@ -1791,10 +1812,7 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
             except OSError: pass
         raise HTTPException(400, f"Couldn't use that font file ({type(exc).__name__}).")
 
-    # Force re-resolution against the freshly installed file on the next edit.
-    _pe._RESOLVED.clear()
-    _pe._FONT_SOURCE.clear()
-
+    _pe._DOC_FONTS.set(_user_fonts(user))
     return {"ok": True, "installed_as": name, "font": _font_status(fontname)}
 
 
@@ -1959,7 +1977,7 @@ async def annex_model(file: UploadFile = File(...), template: str = Form(None),
         raise HTTPException(400, "Empty upload.")
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
-    _ingest_embedded_fonts(data)
+    _ingest_embedded_fonts(data, user)
     tmpl_in = None
     if template:
         try:
@@ -2033,7 +2051,7 @@ async def annex_generate(template: UploadFile = File(...),
     _check_size("The template PDF", tmpl_bytes, MAX_TEMPLATE_BYTES)
     _check_size("The data file", data_bytes, MAX_DATA_BYTES)
     _check_readable("The template PDF", tmpl_bytes, getattr(template, "filename", ""))
-    _ingest_embedded_fonts(tmpl_bytes)
+    _ingest_embedded_fonts(tmpl_bytes, user)
 
     try:
         mp = json.loads(mapping)

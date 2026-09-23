@@ -38,8 +38,31 @@ import fitz  # PyMuPDF >= 1.18
 _FONT_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".font_cache")
 os.makedirs(_FONT_CACHE_DIR, exist_ok=True)
 
-# In-process resolved-font cache: fontname → bytes or None
+# In-process resolved-font cache: fontname → bytes or None. Holds only fonts
+# that are the same for every document and every user: the system's, and the
+# open-source catalogue's. Never a font taken from an upload — see _DOC_FONTS.
 _RESOLVED: dict = {}
+
+# Fonts belonging to ONE request: the uploaded document's own embedded fonts,
+# and fonts the signed-in user supplied. {cache file name: bytes}, consulted
+# before anything shared and never memoised into _RESOLVED.
+#
+# They used to be written into the shared .font_cache directory under the
+# family name, where the first upload to supply "Calibri" or "Arial" became
+# THE Calibri or Arial for every later user's documents — a full commercial
+# font lifted from one customer's file was being served to all of them, and
+# a crafted PDF could plant an "Arial" whose glyphs draw other letters.
+import contextvars as _contextvars
+_DOC_FONTS: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_fonts", default=None)
+
+
+def font_cache_key(fontname: str) -> str:
+    """The cache file name for *fontname* — shared by the disk cache and the
+    per-request overlay, so both are looked up the same way."""
+    fam, weight, style = _parse_font_name(fontname)
+    nospace = re.sub(r"[^A-Za-z0-9]", "", fam)[:64] or "font"
+    style = "italic" if str(style).lower().startswith("ital") else "normal"
+    return f"{nospace}-{int(weight)}-{style}.ttf"
 
 # Where the last resolved font actually came from — keyed by fontname.
 # Value: human-readable source description, e.g.
@@ -781,6 +804,13 @@ def resolve_full_font(fontname: str) -> bytes | None:
     Returns raw font bytes if found, None if all sources fail.
     Logs a clear warning on failure.
     """
+    overlay = _DOC_FONTS.get()
+    if overlay:
+        key = font_cache_key(fontname)
+        if key in overlay:
+            _FONT_SOURCE[fontname] = f"document:{key}"
+            return overlay[key]
+
     if fontname in _RESOLVED:
         return _RESOLVED.get(fontname + ":bytes")
 
