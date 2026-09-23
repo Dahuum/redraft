@@ -56,12 +56,22 @@ body{font-family:'DejaVu Sans',sans-serif;font-size:12pt;line-height:1.6}</style
 <p>Je soussign&eacute;, <b>Karim El Amrani</b>, certifie que Madame <b>Salma Bouzidi</b>,
 n&eacute;e le 03/11/1994 &agrave; Marrakech, CIN <b>BK447120</b>, est employ&eacute;e depuis 2021.</p>
 <p>Son salaire brut mensuel s'&eacute;l&egrave;ve &agrave; 18 500,00 dirhams.</p></body></html>""")
+w("notice.html", """<html><head><meta charset="utf-8"><style>
+body{font-family:'Liberation Serif',serif;font-size:12pt;line-height:1.5}
+p{text-align:justify}</style></head><body>
+<p>Par la présente, la direction certifie que Monsieur Youssef Amrani, titulaire de la carte
+nationale BE447120, a suivi avec assiduité la totalité du programme de formation continue
+organisé du 3 mars au 27 juin 2024, et qu'il a satisfait à l'ensemble des évaluations prévues
+par le règlement pédagogique en vigueur.</p>
+<p>Cette attestation lui est délivrée à sa demande pour servir et valoir ce que de droit.</p>
+</body></html>""")
 w("sales.csv", "Product,Region,Units,Revenue,Margin\nWidget A,North,1420,84200.00,31.5%\n"
                "Widget B,South,980,52100.00,27.2%\nWidget C,East,2310,131700.00,35.8%\n")
 
 try:
     subprocess.run(["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", C,
-                    "invoice.html", "report.html", "form.html", "letter.html", "sales.csv"],
+                    "invoice.html", "report.html", "form.html", "letter.html", "notice.html",
+                    "sales.csv"],
                    cwd=SRC, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=400)
 except Exception as exc:  # noqa: BLE001
     print("  libreoffice unavailable:", type(exc).__name__)

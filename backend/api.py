@@ -728,7 +728,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             if rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified")):
                 current = rr["pdf"]
                 reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
-                                 "top": sd["bbox"][1], "lines": list(rr["lines"]),
+                                 "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
                                  "shift": rr["shift"], "cut": rr.get("cut")})
         if not r.get("ok") and r.get("reason") in _REFLOW_REASONS:
             # Too long for its line: re-wrap the paragraph the way its
@@ -747,7 +747,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                     current = rr["pdf"]
                     in_place_count += 1
                     reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
-                                     "top": sd["bbox"][1], "lines": list(rr["lines"]),
+                                     "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
                                      "shift": rr["shift"], "cut": rr.get("cut")})
                     r = {"ok": True}
         if r.get("ok"):

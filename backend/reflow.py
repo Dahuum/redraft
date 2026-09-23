@@ -442,7 +442,10 @@ def _reflow(doc, span, new_text):
                 nat += m.kern(us[i], us[i + 1])
         actual = us[last]["ox"]
         extra = (actual - nat) / n_inner if n_inner else 0.0
-        if per_space and (max(per_space) - min(per_space)) > 0.03:
+        # Uniform RELATIVE to the gap: LibreOffice justifies with per-space
+        # gaps of 0.77-3.43pt carrying 0.06-0.08pt of its own rounding, while
+        # its ragged letter's "gap" is a few hundredths buried in 0.2pt of it.
+        if per_space and (max(per_space) - min(per_space)) > 0.03 + 0.1 * abs(extra):
             return 0.0, n_inner          # uneven: rounding, not justification
         return extra, n_inner
 
@@ -492,7 +495,22 @@ def _reflow(doc, span, new_text):
             for (e, n) in stretches[:-1]:
                 if n and e < 0:
                     over = max(over, -e * n)
-        cands = ((margin, margin + over + 0.01) if (justified or squeeze) else
+        # LibreOffice draws each justified line's trailing space, and the line
+        # box INCLUDING it ends on the text-area edge; a word fits if it and a
+        # space fit there. Several limits can reproduce the original breaks,
+        # so this structural one goes first when the lines show it: without
+        # it a shorter name pulled one word fewer up than LibreOffice does.
+        struct = []
+        if justified:
+            tails = [l for l in para[:-1] if l["chars"][-1]["c"] == " "]
+            if tails and len(tails) == len(para) - 1:
+                edge = [l["chars"][-1]["x1"] for l in tails]
+                if max(edge) - min(edge) <= 0.3:
+                    sp = tails[0]["chars"][-1]
+                    sw = m.advance(sp["font"], sp["size"], " ")
+                    if sw:
+                        struct = [sum(edge) / len(edge) - sw]
+        cands = ((*struct, margin, margin + over + 0.01) if (justified or squeeze) else
                  (page.rect.width - x0, max(l["chars"][-1]["x1"] for l in lines)))
         for cand in cands:
             if [_text(g).rstrip() for g in _break(ws, x0, cand, width)] == want:
@@ -602,9 +620,11 @@ def _reflow(doc, span, new_text):
                 if not nl[-1]:
                     nl.pop()
 
+    # Lines gained push what follows down; lines LOST pull it up, as the
+    # producer does: a shorter name that took a LibreOffice paragraph from 4
+    # lines to 3 moved the next paragraph up one leading in its own re-print,
+    # where leaving the gap was a visible hole.
     grow = len(new_lines) - len(para)
-    if grow < 0:
-        grow = 0          # a shorter paragraph leaves its last line(s) empty
     dy = grow * lead
 
     # ── what the page must not have below the cut, if anything moves ──
@@ -626,6 +646,23 @@ def _reflow(doc, span, new_text):
             r = dr["rect"]
             if r.y0 < cut < r.y1:
                 return _refuse("crosses_cut", "A rule or box spans the paragraph's end.")
+        if dy < 0:
+            # What follows slides UP into the band the paragraph gave back;
+            # anything else in that band would end up underneath it.
+            band = fitz.Rect(page.rect.x0, cut + dy, page.rect.x1, cut)
+            para_ys = {round(l["y"], 1) for l in para}
+            for l in lines:
+                if round(l["y"], 1) in para_ys and abs(l["x0"] - x0) <= 0.6:
+                    continue
+                if l["bbox"].intersects(band):
+                    return _refuse("band_occupied",
+                                   "The paragraph gets shorter, and something beside it "
+                                   "would be covered when what follows moves up.")
+            for dr in page.get_drawings():
+                if dr["rect"].intersects(band) and dr["rect"].y1 <= cut:
+                    return _refuse("band_occupied",
+                                   "The paragraph gets shorter, and a rule or box beside it "
+                                   "would be covered when what follows moves up.")
         for img in page.get_image_info():
             r = fitz.Rect(img["bbox"])
             if r.y0 < cut < r.y1:
@@ -764,7 +801,7 @@ def _reflow(doc, span, new_text):
     for x in page.get_contents():
         doc.update_stream(x, b"")
     above = fitz.Rect(full.x0, full.y0, full.x1, cut)
-    below = fitz.Rect(full.x0, cut, full.x1, full.y1 - dy)
+    below = fitz.Rect(full.x0, cut, full.x1, min(full.y1, full.y1 - dy))
     page.show_pdf_page(above, snap, 0, clip=above)
     xref = doc.get_new_xref()
     doc.update_object(xref, "<<>>")

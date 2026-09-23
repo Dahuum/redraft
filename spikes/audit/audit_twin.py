@@ -70,6 +70,11 @@ CASES = [
     ("letter", "Karim El Amrani", "Karim Mohammed El Amrani Benjelloun"),
     ("report", "Hana Ouazzani", "Hana Ouazzani-Berrada El Idrissi"),
     ("sales", "Widget A", "Widget Pro X"),
+    # Justified body text — how formal letters and notices are set.
+    ("notice", "Youssef Amrani", "Youssef Ben Amrani El Idrissi"),
+    ("notice", "Youssef Amrani", "Ali Tazi"),
+    ("notice", "BE447120", "BE44712"),
+    ("notice", "3 mars", "12 septembre"),
 ]
 
 DPI = 110
@@ -195,7 +200,7 @@ for producer in PRODUCERS:
                      (f"  e.g. {off[:3]}" if off else "") + (f"  ink box {box}" if box else "")))
 
     # Control: the producer is deterministic — two prints of one source match.
-    for doc in ("invoice", "form", "letter", "report", "sales"):
+    for doc in ("invoice", "form", "letter", "report", "sales", "notice"):
         a1 = producer_twin(doc, "", "", producer)
         a2 = producer_twin(doc, "", "", producer)
         if a1 and a2:
