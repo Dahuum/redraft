@@ -693,6 +693,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     refusals = []
     reflowed = []
     for sd, new_text in replacements:
+        before_this = current
         try:
             r = _spike.edit(current, sd["text"], new_text,
                             page=sd["page"], bbox=sd["bbox"], verify=False)
@@ -711,6 +712,24 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             else:
                 current = cand
                 in_place_count += 1
+        if r.get("ok") and _may_rewrap(replacements, sd):
+            # In place succeeded — but if re-wrapping the paragraph would
+            # change its line breaks, the producer's own re-print has the
+            # re-wrapped layout, not the in-place one (a shorter name leaves a
+            # line short that the producer would have filled; a justified
+            # line respaced where the producer moved a word). Prefer it then.
+            try:
+                rr = _reflow.reflow(before_this, sd, new_text)
+            except Exception:  # noqa: BLE001
+                rr = {"ok": False}
+            # A justified paragraph too: the re-wrap re-justifies every line
+            # exactly as its self-check proved the producer does, where the
+            # in-place splice can only respace the one line it touched.
+            if rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified")):
+                current = rr["pdf"]
+                reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
+                                 "top": sd["bbox"][1], "lines": list(rr["lines"]),
+                                 "shift": rr["shift"], "cut": rr.get("cut")})
         if not r.get("ok") and r.get("reason") in _REFLOW_REASONS:
             # Too long for its line: re-wrap the paragraph the way its
             # producer would, if that can be proven (see reflow.py). Not when
@@ -739,6 +758,13 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                              "message": r.get("message")})
     _try_inplace_batch.reflowed = reflowed
     return current, in_place_count, still_needed, refusals
+
+
+def _may_rewrap(replacements, sd) -> bool:
+    """A re-wrap may replace an in-place edit only when nothing else in the
+    batch sits lower on the same page: a re-wrap can move everything below."""
+    return not any(o is not sd and o.get("page", 0) == sd.get("page", 0)
+                   and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in replacements)
 
 
 # Refusals that mean "the text no longer fits its line" — the ones a

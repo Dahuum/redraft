@@ -175,7 +175,20 @@ class _Metrics:
                 parsed = S._parse_widths_array(self.doc, refs) if refs else None
                 cm = S._lookup_by_name(S._simple_font_code_maps(self.doc), name)
                 enc = S._lookup_by_name(S._simple_font_encodings(self.doc), name)
-                f = {"cid": False, "refs": refs, "widths": parsed, "cm": cm, "enc": enc}
+                f = {"cid": False, "refs": refs, "widths": parsed, "cm": cm, "enc": enc,
+                     "b14": None}
+                if not parsed:
+                    # A standard-14 font (Helvetica, Times, Courier…) is not
+                    # embedded and carries no /Widths: every viewer uses the
+                    # same built-in metrics, and so does this.
+                    try:
+                        from pdf_editor import _base14_builtin
+                        alias = _base14_builtin(name)
+                        if alias:
+                            f["b14"] = fitz.Font(alias)
+                            f["enc"] = f["enc"] or "WinAnsiEncoding"
+                    except Exception:  # noqa: BLE001
+                        pass
             f["kern"] = self._kerning(name)
             self.cache[name] = f
         return self.cache[name]
@@ -229,6 +242,8 @@ class _Metrics:
         if f["cid"]:
             return f["wmap"].get(code, f["dw"]) * size / 1000.0
         if not f["widths"]:
+            if f.get("b14") is not None and len(ch) == 1:
+                return f["b14"].glyph_advance(ord(ch)) * size
             return None
         first, ws = f["widths"]
         if not 0 <= code - first < len(ws):
@@ -398,6 +413,68 @@ def _reflow(doc, span, new_text):
     # whose breaks WERE reproduced — or is refused.
     size0 = stream[0]["size"]
 
+    # ── justified? Measured from the glyphs themselves: each full line's
+    # spaces stretched by one uniform amount, the last line natural. The
+    # stretch is part of the model the self-check below must reproduce.
+    def _stretch(l):
+        """(extra per inner space, number of inner spaces) — or extra 0.0 when
+        the spaces are NOT uniformly changed. Justifying or squeezing changes
+        every space by the same amount; LibreOffice's rounding of glyphs to
+        its grid drifts unevenly by a tenth of a point or two, and reading
+        that noise as a squeeze moved "Madame" to the next line."""
+        us = _units(l["chars"], m)
+        vis = [i for i, u in enumerate(us) if u["t"].strip()]
+        if not vis:
+            return 0.0, 0
+        last = vis[-1]
+        nat, n_inner = l["x0"], 0
+        per_space, prev_dev = [], 0.0
+        for i in range(last + 1):
+            if us[i]["t"].strip():
+                dev = us[i]["ox"] - nat
+                if i and not us[i - 1]["t"].strip():
+                    per_space.append(dev - prev_dev)
+                prev_dev = dev
+            if i < last and not us[i]["t"].strip():
+                n_inner += 1
+            if i < last:
+                nat += m.advance(us[i]["font"], us[i]["size"], us[i]["t"], us[i]["code"])
+                nat += m.kern(us[i], us[i + 1])
+        actual = us[last]["ox"]
+        extra = (actual - nat) / n_inner if n_inner else 0.0
+        if per_space and (max(per_space) - min(per_space)) > 0.03:
+            return 0.0, n_inner          # uneven: rounding, not justification
+        return extra, n_inner
+
+    try:
+        stretches = [_stretch(l) for l in para]
+    except TypeError:
+        return _refuse("unmeasurable", "A glyph's width is not in the font's own table.")
+    # Three behaviours, told apart by the original's own spacing:
+    #   ragged     — every line natural (LibreOffice, Chrome);
+    #   justified  — every full line STRETCHED to the margin (fpdf2);
+    #   squeeze    — lines natural, except one that would overshoot the margin
+    #                is SQUEEZED onto it (ReportLab: -0.087pt a space); a new
+    #                line that fits stays ragged. Stretching those to the margin
+    #                was wrong against ReportLab's own re-print.
+    full = [(e, n) for e, n in stretches[:-1] if n]
+    last_natural = abs(stretches[-1][0]) < 0.05
+    justified = (len(para) >= 2 and full and last_natural
+                 and all(e > 0.02 for e, n in full))
+    squeeze = (len(para) >= 2 and full and last_natural and not justified
+               and all(e <= 0.02 for e, n in full) and any(e < -0.02 for e, n in full))
+    margin = None
+    if justified or squeeze:
+        ends = []
+        for (e, n), l in zip(stretches[:-1], para[:-1]):
+            if justified or e < -0.02:          # squeeze: only the squeezed lines
+                vis = [c for c in l["chars"] if c["c"].strip()]
+                ends.append(vis[-1]["x1"])
+        if not ends or max(ends) - min(ends) > 0.5:
+            justified = squeeze = False
+        else:
+            margin = sum(ends) / len(ends)
+
     def established(p_lines):
         pst = []
         for i, l in enumerate(p_lines):
@@ -406,7 +483,18 @@ def _reflow(doc, span, new_text):
                 pst.append(dict(l["chars"][-1], c=" "))
         want = ["".join(c["c"] for c in l["chars"]).rstrip() for l in p_lines]
         ws = _words(_units(pst, m))
-        for cand in (page.rect.width - x0, max(l["chars"][-1]["x1"] for l in lines)):
+        # A justifying producer may also break a line that overshoots the
+        # margin a little at natural spacing and SQUEEZE it (ReportLab: 1.3pt
+        # over, -0.087pt per space). The largest overshoot the paragraph's own
+        # lines show is a candidate too; the break check below decides.
+        over = 0.0
+        if justified or squeeze:
+            for (e, n) in stretches[:-1]:
+                if n and e < 0:
+                    over = max(over, -e * n)
+        cands = ((margin, margin + over + 0.01) if (justified or squeeze) else
+                 (page.rect.width - x0, max(l["chars"][-1]["x1"] for l in lines)))
+        for cand in cands:
             if [_text(g).rstrip() for g in _break(ws, x0, cand, width)] == want:
                 return cand
         return None
@@ -437,16 +525,22 @@ def _reflow(doc, span, new_text):
                        "alone with nothing to measure against), so it can't be re-wrapped "
                        "without inventing a layout.")
     # And every original glyph must sit where the model puts it.
-    for l in para:
+    for li, l in enumerate(para):
         x = x0
         us = _units(l["chars"], m)
+        extra = stretches[li][0] if (justified or squeeze) and li < len(para) - 1 else 0.0
         for i, u in enumerate(us):
-            if abs(u["ox"] - x) > _POS_TOL:
+            # A space's own origin is not judged: a producer may put the
+            # justification gap before the space glyph (fpdf2) or after it,
+            # and every VISIBLE glyph lands in the same place either way.
+            if u["t"].strip() and abs(u["ox"] - x) > _POS_TOL:
                 return _refuse("unknown_layout",
                                "This paragraph's glyph positions don't follow the font's "
                                "own advances (kerning or justification), so it can't be "
                                "re-set exactly.")
             x += m.advance(u["font"], u["size"], u["t"], u["code"])
+            if not u["t"].strip():
+                x += extra
             if i + 1 < len(us):
                 x += m.kern(u, us[i + 1])
 
@@ -545,6 +639,12 @@ def _reflow(doc, span, new_text):
                            "Re-wrapping adds a line, and the text below would run off the page.")
         del bottom_margin
 
+    # The page's font resources BEFORE anything is deleted: when the
+    # paragraph is the only text in a font, the redaction prunes that font
+    # from /Resources, and there is then nothing to set the new lines in.
+    fonts_before = {f[4]: (f[0], f[3].split("+")[-1]) for f in page.get_fonts(full=True)
+                    if f[4]}
+
     # ── delete the paragraph's glyphs ──
     for l in para:
         r = fitz.Rect(l["bbox"])
@@ -561,7 +661,24 @@ def _reflow(doc, span, new_text):
             return _refuse("delete_failed", "The old text could not be removed cleanly.")
 
     # ── emit the new lines through the page's own font resources ──
-    refmap = {v: k for k, v in S._page_font_refmap(page).items()}
+    have = {f[4] for f in page.get_fonts(full=True)}
+    for res, (xref, _nm) in fonts_before.items():
+        if res in have:
+            continue
+        # /Font may be inline in /Resources, or an indirect object of its own
+        # (fpdf2) — and /Resources itself may be indirect. Restore wherever it
+        # lives; a missing font makes a viewer fall back to StandardEncoding,
+        # which drew "é" as "Ø".
+        kind, val = doc.xref_get_key(page.xref, "Resources")
+        holder = int(val.split()[0]) if kind == "xref" else page.xref
+        prefix = "" if kind == "xref" else "Resources/"
+        fk, fv = doc.xref_get_key(holder, prefix + "Font")
+        if fk == "xref":
+            doc.xref_set_key(int(fv.split()[0]), res, f"{xref} 0 R")
+        else:
+            doc.xref_set_key(holder, f"{prefix}Font/{res}", f"{xref} 0 R")
+    refmap = {nm: res for res, (xref, nm) in fonts_before.items()}
+    refmap.update({v: k for k, v in S._page_font_refmap(page).items()})
     ops = []
     y0 = para[0]["y"]
     for i, line in enumerate(new_lines):
@@ -569,6 +686,19 @@ def _reflow(doc, span, new_text):
         x = x0
         run, run_style = [], None
         chars = [u for w in line for u in w]
+        # A justified paragraph's full lines end on the margin: their inner
+        # spaces take the slack, as the producer set them. The last line,
+        # and every line of a ragged paragraph, is set natural.
+        line_extra = 0.0
+        if (justified or squeeze) and i < len(new_lines) - 1:
+            vis = [k for k, u in enumerate(chars) if u["t"].strip()]
+            if vis:
+                inner = [k for k in range(vis[-1]) if not chars[k]["t"].strip()]
+                if inner:
+                    line_extra = (margin - (x0 + width(chars[:vis[-1] + 1]))) / len(inner)
+                    if squeeze:
+                        line_extra = min(0.0, line_extra)   # only an overshoot
+                    last_vis = vis[-1]
 
         def flush():
             if not run:
@@ -613,6 +743,8 @@ def _reflow(doc, span, new_text):
             run[1].append(c["code"])
             x += m.advance(c["font"], c["size"], c["t"], c["code"])
             kp = m.kern(c, chars[i + 1]) if i + 1 < len(chars) else 0.0
+            if line_extra and not c["t"].strip() and i < last_vis:
+                kp += line_extra
             x += kp
             # TJ units: thousandths of the font size, positive moves left.
             run[2].append(round(-kp / c["size"] * 1000.0, 3) if kp else 0)
@@ -648,8 +780,16 @@ def _reflow(doc, span, new_text):
     ok = _verify(out, pno, para, new_lines, lead, cut, dy, lines)
     if ok is not True:
         return _refuse("verify_failed", ok)
+    # Did the breaks change? If every line but the edited one reads as before,
+    # an in-place edit would have produced the same layout; the caller may
+    # then prefer it. If not, only a re-wrap matches what the producer does.
+    before_lines = ["".join(c["c"] for c in l["chars"]).rstrip() for l in para]
+    old_t, new_t = span["text"], new_text
+    expect = [t.replace(old_t, new_t, 1) if old_t in t else t for t in before_lines]
+    changed = [_text(nl).rstrip() for nl in new_lines] != expect
     return {"ok": True, "pdf": out, "lines": (len(para), len(new_lines)), "shift": dy,
-            "cut": cut, "top": para[0]["bbox"].y0}
+            "cut": cut, "top": para[0]["bbox"].y0, "breaks_changed": changed,
+            "justified": bool(justified or squeeze)}
 
 
 def _verify(out, pno, para, new_lines, lead, cut, dy, lines_before):
