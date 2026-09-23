@@ -135,6 +135,20 @@ def output_defects(out_pdf: bytes, page: int, new_text: str, base: dict) -> list
     return found
 
 
+def stranded(before_pdf: bytes, out_pdf: bytes, page: int, field=None, edit=None) -> list:
+    """Underlines left behind: the words a rule underlined are still on the
+    page but no longer over it (the Wikipedia caption: "Guido" slid left and
+    its link underline stayed, under "o" and blank paper)."""
+    import reflow
+    bad = reflow.stranded_underlines(before_pdf, out_pdf, page, None, field=field, edit=edit)
+    if not bad:
+        return []
+    d = fitz.open(stream=out_pdf, filetype="pdf")
+    txt = d[page].get_text()
+    d.close()
+    return [f"underline left behind {t.strip()!r}" for t, _ in bad if t.strip() and t.strip() in txt]
+
+
 def moved_text(before_pdf: bytes, out_pdf: bytes, page: int, span: dict,
                tol: float = 0.6, reflowed: dict = None) -> list:
     """Words the user did not touch that are no longer where they were.

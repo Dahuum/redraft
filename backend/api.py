@@ -705,8 +705,20 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     still_needed = []
     refusals = []
     reflowed = []
+    done = set()
     for sd, new_text in replacements:
+        if id(sd) in done:
+            continue
         before_this = current
+        rr = _joint_rewrap(current, replacements, sd, new_text, done, reflowed)
+        if rr:
+            current = rr["pdf"]
+            in_place_count += len(rr["members"])
+            done.update(id(o) for o, _ in rr["members"])
+            reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
+                             "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
+                             "shift": rr["shift"], "cut": rr.get("cut")})
+            continue
         try:
             r = _spike.edit(current, sd["text"], new_text,
                             page=sd["page"], bbox=sd["bbox"], verify=False)
@@ -723,6 +735,17 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                 # the same check.
                 r = {"ok": False, "reason": bad, "message": _UNSHIPPABLE_MSG[bad]}
             else:
+                # Words the edit pushed along the line take their underlines
+                # (and links) with them; a rule left where "Guido" used to be
+                # sat under "o" and blank paper.
+                try:
+                    pg = sd.get("page", 0)
+                    cand = _reflow.carry_underlines(current, cand, pg,
+                                                    (sd["bbox"][1] - 1, sd["bbox"][3] + 3),
+                                                    field=sd["bbox"],
+                                                    edit=(sd["text"], new_text))
+                except Exception:  # noqa: BLE001 — a failure keeps the edit as it was
+                    pass
                 current = cand
                 in_place_count += 1
         if r.get("ok") and _may_rewrap(replacements, sd):
@@ -771,6 +794,45 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                              "message": r.get("message")})
     _try_inplace_batch.reflowed = reflowed
     return current, in_place_count, still_needed, refusals
+
+
+def _joint_rewrap(current, replacements, sd, new_text, done, reflowed):
+    """Several edits of ONE paragraph, re-wrapped together.
+
+    A phrase that wraps ("…issued by Atlas Consulting / SARL for…") is changed
+    by editing both lines. Each line alone fits in place, and neither alone may
+    re-wrap (the other edit sits lower on the page), so the producer's
+    re-print — "…by Atlas Group for / the period…" — was never reached: the
+    shortened first line stayed short, and ReportLab's squeeze stayed on it.
+    One re-wrap over every edit of the paragraph is exactly the re-print.
+    Only when nothing else in the batch sits lower on the page and no earlier
+    re-wrap has moved this page."""
+    page = sd.get("page", 0)
+    if any(r["page"] == page for r in reflowed):
+        return None
+    rest = [(o, nt) for o, nt in replacements
+            if o is not sd and id(o) not in done and o.get("page", 0) == page]
+    if not rest:
+        return None
+    try:
+        mates = _reflow.same_paragraph(current, sd, [o for o, _ in rest])
+    except Exception:  # noqa: BLE001
+        return None
+    if not mates:
+        return None
+    members = [(sd, new_text)] + [(o, nt) for o, nt in rest if any(o is m for m in mates)]
+    ids = {id(o) for o, _ in members}
+    if any(id(o) not in ids and o.get("page", 0) == page and o["bbox"][1] >= sd["bbox"][1] - 0.5
+           for o, _ in replacements):
+        return None
+    try:
+        rr = _reflow.reflow(current, sd, new_text, multiline_only=True, also=members[1:])
+    except Exception:  # noqa: BLE001
+        return None
+    if not (rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified"))):
+        return None
+    rr["members"] = members
+    return rr
 
 
 def _may_rewrap(replacements, sd) -> bool:
@@ -1216,6 +1278,15 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
 
             with open(out_path, "rb") as f:
                 edited = f.read()
+            # The redraw pushes what follows a lengthened field along its
+            # line; underlines and links over those words go with them.
+            for sd, _nt in replacements:
+                try:
+                    edited = _reflow.carry_underlines(pdf_bytes, edited, sd.get("page", 0),
+                                                      (sd["bbox"][1] - 1, sd["bbox"][3] + 3),
+                                                      field=sd["bbox"], edit=(sd["text"], _nt))
+                except Exception:  # noqa: BLE001 — a failure keeps the edit as it was
+                    pass
             # The redraw's own font can record a different character than the
             # one it drew; see _canonicalise_text_layer.
             edited = _canonicalise_text_layer(edited, [nt for _, nt in replacements])
