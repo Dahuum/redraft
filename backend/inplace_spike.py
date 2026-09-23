@@ -1260,11 +1260,45 @@ _EXTEND_FAIL_MSG = {
 }
 
 
+def _cidtogid_stream(doc, refs):
+    """The xref of a CIDFont's /CIDToGIDMap STREAM, or None when the map is
+    Identity (or absent, which means Identity)."""
+    obj = doc.xref_object(refs["cid_xref"], compressed=True) or ""
+    m = re.search(r"/CIDToGIDMap\s*(\d+)\s+0\s+R", obj)
+    return int(m.group(1)) if m else None
+
+
 def _finish_cid_extend(doc, refs, result, missing_chars):
     """Write an extended CID font back: /W widths, the font program,
-    and /ToUnicode. Shared by both donor sources."""
+    and /ToUnicode. Shared by both donor sources.
+
+    Returns {char: CODE}. With an Identity map the code is the new glyph id.
+    With a /CIDToGIDMap STREAM — fpdf2 subsets this way, CID 36 drawing
+    glyph 20 — the new glyphs get fresh CIDs above every one in use, and the
+    map is extended to point them at the new glyph ids. Writing glyph ids as
+    codes there (the old behaviour) made every edit on an fpdf2 document
+    unlocatable, and it was redrawn."""
+    code_of = dict(result["gid"])
+    map_xref = _cidtogid_stream(doc, refs)
+    if map_xref is not None:
+        table = bytearray(doc.xref_stream(map_xref) or b"")
+        used = [i // 2 for i in range(0, len(table) - 1, 2)
+                if table[i] or table[i + 1]]
+        widths = _cid_widths_map(doc, refs["cid_xref"])
+        nxt = max(used + list(widths) + [0]) + 1
+        for ch in missing_chars:
+            cid = nxt
+            nxt += 1
+            if cid > 0xFFFF:
+                return None, "cid_space_full"
+            need = 2 * (cid + 1)
+            if len(table) < need:
+                table.extend(b"\x00" * (need - len(table)))
+            table[2 * cid:2 * cid + 2] = int(result["gid"][ch]).to_bytes(2, "big")
+            code_of[ch] = cid
+        doc.update_stream(map_xref, bytes(table))
     kind, val = doc.xref_get_key(refs["cid_xref"], "W")
-    additions = "".join(f" {result['gid'][ch]}[{result['width_1000'][ch]}]" for ch in missing_chars)
+    additions = "".join(f" {code_of[ch]}[{result['width_1000'][ch]}]" for ch in missing_chars)
     if kind == "array" and val and val.endswith("]"):
         # /W stored inline on the CIDFontType2 dict itself.
         doc.xref_set_key(refs["cid_xref"], "W", val[:-1] + additions + "]")
@@ -1285,8 +1319,8 @@ def _finish_cid_extend(doc, refs, result, missing_chars):
         return None, "bad_width_array"  # unexpected /W shape — refuse rather than risk it
     doc.update_stream(refs["ff_xref"], result["font_bytes"])
     _add_tounicode_entries(doc, refs.get("tu_xref"),
-                           {result["gid"][ch]: ord(ch) for ch in missing_chars})
-    return result["gid"], None
+                           {code_of[ch]: ord(ch) for ch in missing_chars})
+    return code_of, None
 
 
 _CID_PROGRAM_GIDS: dict = {}
@@ -2930,6 +2964,14 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
         # the code that actually renders.
         fm = {**_cid_program_gid_map(doc, nm),
               **(_lookup_by_name(_gid_maps(doc), nm) or {})}
+        # With a /CIDToGIDMap stream, CIDs are not glyph ids: the codes must
+        # come from the font's own /ToUnicode, never from the glyph maps.
+        _t0 = next((f[0] for p_ in range(doc.page_count)
+                    for f in doc[p_].get_fonts(full=True)
+                    if f[3].split("+")[-1] == nm and f[2] == "Type0"), None)
+        _refs = _font_stream_refs(doc, _t0) if _t0 else None
+        if isinstance(_refs, dict) and _cidtogid_stream(doc, _refs) is not None:
+            fm = {_norm(k): v for k, v in (cidmap or {}).get("rev", {}).items() if len(k) == 1}
         missing = sorted({ch for ch in new if not ch.isspace() and _norm(ch) not in fm})
         if missing:
             new_gids, fail_reason = _try_extend(doc, nm, missing)
@@ -3159,6 +3201,76 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
         r2["narrowed"] = {"from": old[:60], "to": old_mid}
         return r2
     return r
+
+
+_NUMERIC_RE = re.compile(r"^[\s$€£]*[-+]?\d[\d\s.,']*\d(?:[.,]\d{1,3})?\s*(?:%|MAD|EUR|USD|€|\$)?\s*$|^[\s$€£]*\d\s*$")
+
+
+def _right_aligned_column(page, target) -> bool:
+    """Is *target* a number in a RIGHT-aligned column?
+
+    Only on column evidence: two or more other numbers on the page share its
+    right edge exactly while starting elsewhere. Guessing from the text alone
+    was measured and rejected — an "anchor looks round" rule flagged 225 of
+    940 numbers in the corpus, LibreOffice's left-aligned invoice amounts and
+    arXiv page numbers among them — and a wrong guess MOVES a value that was
+    placed correctly. With no evidence the left edge is kept, as before.
+    """
+    t = (target.get("text") or "").strip()
+    if not t or not _NUMERIC_RE.match(t):
+        return False
+    x0, x1, y = target["origin"][0], target["bbox"][2], target["origin"][1]
+    mates = 0
+    for s in _spans(page):
+        st = s["text"].strip()
+        if not st or not _NUMERIC_RE.match(st):
+            continue
+        if abs(s["origin"][1] - y) <= 2.0:
+            continue
+        if abs(s["bbox"][2] - x1) < 0.1 and abs(s["origin"][0] - x0) > 1.0:
+            mates += 1
+    return mates >= 2
+
+
+def _left_text_x1(page, target) -> float:
+    """Right edge of the nearest text on the field's line to its LEFT, or the
+    page's left margin: how far a right-aligned value may grow."""
+    x0, y = target["origin"][0], target["origin"][1]
+    best = None
+    for s in _spans(page):
+        if abs(s["origin"][1] - y) > 1.0 or s["bbox"][2] > x0 + 0.5:
+            continue
+        best = s["bbox"][2] if best is None else max(best, s["bbox"][2])
+    return best if best is not None else 18.0
+
+
+def _shift_field_object(doc, page, base_ys, x0, x1, dx, tol: float = 0.6) -> int:
+    """Move the text object that draws the field — and ONLY the field — by
+    *dx* page points. Returns 1, or 0 when no such object can be isolated."""
+    if abs(dx) < 0.01:
+        return 0
+    found = []
+    for st in _content_streams(doc, page):
+        for obj in _text_objects(st["data"]):
+            pos = obj["positions"]
+            if not pos:
+                continue
+            on = [q for q in pos if any(abs(q[1] - by) <= tol for by in base_ys)]
+            if not on or len(on) != len(pos):
+                continue
+            if abs(on[0][0] - x0) > tol or any(q[0] > x1 + tol for q in on):
+                continue
+            if not obj["rigid"] or not obj["x_scale"]:
+                return 0
+            found.append((st, obj))
+    if len(found) != 1:
+        return 0
+    st, obj = found[0]
+    data = st["data"]
+    a, b = obj["x_at"]
+    new = data[:a] + f"{float(data[a:b]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b:]
+    doc.update_stream(st["xref"], new)
+    return 1
 
 
 def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
@@ -3509,6 +3621,10 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # A table cell after the field never moves, in either direction:
         # moving one row's cell out of its column is visible at a glance.
         next_cell = next_pinned and _is_column_cell(odoc[tpage], target["bbox"], next_x0)
+        # A number in a right-aligned column keeps its RIGHT edge: it grows
+        # leftward, into the space before it, and pushes nothing.
+        right_col = _right_aligned_column(odoc[tpage], target)
+        left_x1 = _left_text_x1(odoc[tpage], target) if right_col else None
     finally:
         odoc.close()
     # How much the value may grow before anything has to move, and how much
@@ -3557,6 +3673,8 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                     old_x1 + slack + (0.0 if next_cell else
                                       max(0.0, right_limit - old_x1 - trailing))
                     ) - old_x0
+        if right_col:
+            avail = old_x1 - (left_x1 + 0.5 * target["size"])
         base_w = new_x1 - old_x0
         if base_w - avail > 0.05:
             # Spend the elastic levers a typesetter would, in order of how
@@ -3619,6 +3737,19 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                             f"line, and this text object's layout can't be tightened to "
                             f"absorb it — it can't be fitted here without changing the "
                             f"text or its size.")}
+
+    right_shifted = False
+    if right_col and new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
+        sdoc = fitz.open(stream=edited, filetype="pdf")
+        try:
+            if _shift_field_object(sdoc, sdoc[tpage], line_ys, old_x0, new_x1,
+                                   -(new_x1 - old_x1)):
+                edited = sdoc.tobytes(garbage=4, deflate=True)
+                right_shifted = True
+        finally:
+            sdoc.close()
+        if right_shifted:
+            new_x1 = old_x1          # the right edge stays on the column line
 
     rdoc = fitz.open(stream=edited, filetype="pdf")
     try:

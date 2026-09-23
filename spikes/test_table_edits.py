@@ -154,6 +154,46 @@ if os.path.exists(sales):
 else:
     print("SKIP - sales.pdf not in the audit corpus (run spikes/audit/build_corpus.py)")
 
+# ── right-aligned number columns keep their right edge; left ones their left ──
+def column_pdf(right):
+    d = fitz.open()
+    pg = d.new_page(width=400, height=300)
+    fnt = fitz.Font("helv")
+    for i, v in enumerate(("850.00", "1,020.00", "12,400.00", "96.50")):
+        x = 300 - fnt.text_length(v, 10) if right else 200
+        pg.insert_text((x, 100 + 18 * i), v, fontsize=10, fontname="helv")
+        pg.insert_text((40, 100 + 18 * i), f"Line {i + 1}", fontsize=10, fontname="helv")
+    return d.tobytes()
+
+
+for right in (True, False):
+    col = column_pdf(right)
+    cs = api.extract_spans(col)
+    tgt = next(s for s in cs if s["text"].strip() == "850.00")
+    out, rep = api.apply_replacements(col, [(tgt, "9,850.00")], try_inplace=True)
+    w = next(x for x in fitz.open(stream=out, filetype="pdf")[0].get_text("words")
+             if x[4] == "9,850.00")
+    if right:
+        check("right-aligned column: a longer amount keeps its right edge",
+              rep["in_place"]["count"] == 1 and abs(w[2] - tgt["bbox"][2]) < 0.1,
+              f"x1 {tgt['bbox'][2]:.2f} -> {w[2]:.2f}")
+    else:
+        check("left-aligned column: the amount keeps its LEFT edge (no guessing)",
+              rep["in_place"]["count"] == 1 and abs(w[0] - tgt["bbox"][0]) < 0.1,
+              f"x0 {tgt['bbox'][0]:.2f} -> {w[0]:.2f}")
+
+w4 = os.path.expanduser("~/.cache/redraft-audit/corpus/irs-w4.pdf")
+if os.path.exists(w4):
+    raw4 = open(w4, "rb").read()
+    t4 = next(s for s in api.extract_spans(raw4) if s["text"].strip() == "$850")
+    out, rep = api.apply_replacements(raw4, [(t4, t4["text"].replace("$850", "$12,850"))],
+                                      try_inplace=True)
+    d4 = fitz.open(stream=out, filetype="pdf")
+    w = next(x for x in d4[t4.get("page", 0)].get_text("words")
+             if x[4] == "$12,850" and abs(x[1] - t4["bbox"][1]) < 2)
+    check("IRS W-4 table: '$850' -> '$12,850' stays flush right in its cell",
+          abs(w[2] - t4["bbox"][2]) < 0.1, f"{w[2]:.2f} vs {t4['bbox'][2]:.2f}")
+
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not FAIL else f"{len(FAIL)} FAILED -> {FAIL}")
 sys.exit(1 if FAIL else 0)

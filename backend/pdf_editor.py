@@ -190,6 +190,15 @@ _FONT_SUBSTITUTES: dict = {
     "BrittanySignature": ("DancingScript", "Signature-style script"),
     "Mistrully":      ("Pacifico",      "Playful signature-style script"),
     "MistrullyRegular": ("Pacifico",   "Playful signature-style script"),
+    # Metric-compatible open clones (Chrome OS "Croscore" + Crosextra): drawn
+    # to the commercial fonts' exact advance widths, so a substituted run
+    # keeps every line break and column of the original.
+    "TimesNewRoman":  ("Tinos",         "Metrically compatible Times New Roman substitute"),
+    "TimesNewRomanPS": ("Tinos",        "Metrically compatible Times New Roman substitute"),
+    "CourierNew":     ("Cousine",       "Metrically compatible Courier New substitute"),
+    "CourierNewPS":   ("Cousine",       "Metrically compatible Courier New substitute"),
+    "Calibri":        ("Carlito",       "Metrically compatible Calibri substitute"),
+    "Cambria":        ("Caladea",       "Metrically compatible Cambria substitute"),
     # Arial variants → Arimo (metrically identical, open-source)
     "Arial":          ("Arimo",         "Metrically compatible Arial substitute"),
     "ArialMT":        ("Arimo",         "Metrically compatible Arial substitute"),
@@ -264,11 +273,31 @@ _WEIGHT_MAP = {
     # "Regu"/"Medi" instead of "Regular"/"Medium". See the italic-detection
     # comment above for why this family matters.
     "Regu": 400, "Medi": 500,
+    # Glued onto the family by generators that write no separator: fpdf2
+    # names its subsets "DejaVuSansBook" / "DejaVuSansBold". "Book" was not
+    # a weight here, so the family stayed "DejaVuSansBook", no donor was
+    # found, and every fpdf2 edit needing a new letter fell to the redraw.
+    "Book": 400, "Semibold": 600, "Demi": 600, "DemiBold": 600,
+    "Heavy": 800, "UltraLight": 200, "Hairline": 100,
 }
 _WEIGHT_NAME = {v: k for k, v in _WEIGHT_MAP.items()}
 _WEIGHT_NAME[400] = "Regular"
 _WEIGHT_NAME[500] = "Medium"  # keep the reverse map on the canonical Google
                               # Fonts filename word, not the URW "Medi" abbreviation
+_WEIGHT_NAME[600] = "SemiBold"
+_WEIGHT_NAME[800] = "ExtraBold"
+_WEIGHT_NAME[200] = "ExtraLight"
+_WEIGHT_NAME[100] = "Thin"
+
+# Abbreviated style suffixes, recognised ONLY after a hyphen — "-Bd", "-It"
+# on Adobe's HelveticaNeueLTStd, "-Roman" for the regular cut. Never glued:
+# "TimesNewRoman" must not become "TimesNew" in a Roman weight.
+_HYPHEN_STYLES = {
+    "Bd": "Bold", "BdIt": "BoldItalic", "It": "Italic", "Md": "Medium",
+    "MdIt": "MediumItalic", "Lt": "Light", "LtIt": "LightItalic", "Blk": "Black",
+    "Hv": "Heavy", "Th": "Thin", "Rg": "Regular", "Roman": "Regular",
+    "SmBd": "SemiBold", "XBd": "ExtraBold", "Obl": "Oblique",
+}
 
 
 def _weight_name(w: int) -> str:
@@ -286,6 +315,12 @@ def _parse_font_name(fontname: str) -> tuple:
     'ariitaft'            → ('Arial', 400, 'normal')   ← truncated alias
     """
     bare = fontname.split("+")[-1]
+    # Foundry suffixes carry no style: "Arial-BoldMT", "TimesNewRomanPSMT".
+    bare = re.sub(r"(?<=[a-z])(PSMT|MT)$", "", bare) if bare not in _WEIGHT_OVERRIDES else bare
+    if "-" in bare:
+        head, _, tail = bare.rpartition("-")
+        if tail in _HYPHEN_STYLES:
+            bare = head + "-" + _HYPHEN_STYLES[tail]
 
     # Apply weight override before any parsing
     if bare in _WEIGHT_OVERRIDES:
@@ -312,6 +347,10 @@ def _parse_font_name(fontname: str) -> tuple:
             weight = wval
             family = re.sub(r"-?" + wname + "$", "", name)
             break
+
+    # "TimesNewRomanPS-BoldMT": the PS left on the family after the weight.
+    if " " not in family:
+        family = re.sub(r"(?<=[a-z])PS$", "", family)
 
     # Apply family alias (e.g. 'Inter18pt' → 'Inter')
     family = _FAMILY_ALIASES.get(family, family)
@@ -472,7 +511,10 @@ def _find_system_font(family: str, weight: int, style: str) -> bytes | None:
     base = _weight_name(weight)
     styles = list(_REGULAR_SYNONYMS) if base == "Regular" else [base]
     if style == "italic":
-        styles = [(f"{s} Italic" if s != "Regular" else "Italic") for s in styles]
+        # "Oblique" too: DejaVu and Nimbus Sans slant rather than italicise,
+        # and name the cut accordingly.
+        styles = [(f"{s} {sl}" if s != "Regular" else sl)
+                  for s in styles for sl in ("Italic", "Oblique")]
 
     for fam in _family_variants(family):
         for style_str in styles:
