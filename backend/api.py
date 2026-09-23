@@ -847,6 +847,28 @@ _UNSHIPPABLE_MSG = {
 }
 
 
+def _is_box_char(ch: str) -> bool:
+    """A character that extracts as a notdef: U+FFFD or a C0 control."""
+    return ch == "\ufffd" or (bool(ch) and ord(ch) < 32 and ch not in " \t\n\r")
+
+
+def _box_chars_near(ref, pno: int, span: dict) -> int:
+    """Notdef-like characters the UNEDITED page has in the run at *span*'s
+    place — the most any edited run there may carry without blame."""
+    if ref is None or pno >= ref.page_count:
+        return 0
+    best = 0
+    for blk in ref[pno].get_text("rawdict")["blocks"]:
+        for line in blk.get("lines", []):
+            for sp_ in line.get("spans", []):
+                if abs(sp_["origin"][1] - span["origin"][1]) > 1.0:
+                    continue
+                if min(sp_["bbox"][2], span["bbox"][2]) - max(sp_["bbox"][0], span["bbox"][0]) <= 0:
+                    continue
+                best = max(best, sum(1 for c in sp_["chars"] if _is_box_char(c["c"])))
+    return best
+
+
 def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dict:
     """{index: reason} for *items* whose redraw produced something no user
     should be handed.
@@ -931,12 +953,13 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
                     for sp_ in line.get("spans", []):
                         if abs(sp_["origin"][1] - oy) > 1.0:
                             continue
-                        for c in sp_["chars"]:
-                            ch = c["c"]
-                            if ch == "\ufffd" or (ch and ord(ch) < 32
-                                                  and ch not in " \t\n\r"):
-                                bad[i] = "cannot_render"
-                                break
+                        n_bad_after = sum(1 for c in sp_["chars"] if _is_box_char(c["c"]))
+                        # A DELTA against the unedited line: Ghostscript's
+                        # /ebook output already carries a 0x19 where the "fi"
+                        # of "certifie" was, and every edit on that line was
+                        # refused over a character the edit never touched.
+                        if n_bad_after and n_bad_after > _box_chars_near(ref, pno, sp_):
+                            bad[i] = "cannot_render"
                         if i in bad:
                             break
                         # Both edges. The redraw's alignment pass can put a

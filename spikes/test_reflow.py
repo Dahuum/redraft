@@ -77,6 +77,22 @@ check("no font was added to the document",
 d0.close()
 d1.close()
 
+# ── a Ghostscript redistill of the same letter: its "fi" ligature has no
+# /ToUnicode entry and extracts as a raw 0x19 — it must still be measured and
+# carried over as the same glyph, not block the paragraph.
+gs = os.path.join(CORPUS, "letter-gs-ebook.pdf")
+if os.path.exists(gs):
+    g0 = open(gs, "rb").read()
+    gsd = next(s for s in api.extract_spans(g0) if "Karim El Amrani" in s["text"])
+    gr = reflow.reflow(g0, gsd, gsd["text"].replace("Karim El Amrani", NEW))
+    check("Ghostscript redistill: re-wraps despite an unmapped ligature",
+          gr.get("ok") and gr.get("lines") == (2, 3), str({k: v for k, v in gr.items() if k != "pdf"}))
+    if gr.get("ok"):
+        gl = lines_of(gr["pdf"])
+        check("  ...with the same breaks as the original producer, ligature carried over",
+              gl[2].startswith("Je soussigné, Karim Mohammed El Amrani Benjelloun, certi\x19e")
+              and gl[4] == "depuis 2021.", str(gl[2:5]))
+
 # ── refusals: nothing to measure a margin against, or a layout it can't model ──
 for doc, txt in (("irs-1040.pdf", "Line 3a"), ("nasa-tm.pdf", "CALIF.,")):
     p = os.path.join(CORPUS, doc)

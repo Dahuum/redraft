@@ -205,6 +205,13 @@ class _Metrics:
                 return codes[0]
         if f["cid"]:
             return None
+        # A code with no /ToUnicode entry extracts as ITSELF: MuPDF passes the
+        # raw byte through as a C0 control. Ghostscript's /ebook redistill
+        # leaves the "fi" of "certifie" as exactly that (0x19), and the
+        # paragraph could not be measured or re-set. The code is the byte;
+        # re-emitting it draws the same glyph and extracts the same way.
+        if len(ch) == 1 and ord(ch) < 32 and ch not in " \t\n\r":
+            return ord(ch)
         # A private-code font (no /Encoding) has no standard byte for
         # anything: Latin-1 would name 'M' as 77, which in this font is
         # nothing at all, or some other glyph.
