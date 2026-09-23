@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
 import inplace_spike as _spike  # noqa: E402  — true in-place editing, tried before redraw-and-restamp
+import reading_order as _reading_order
 import reflow as _reflow  # noqa: E402  — re-wrap a paragraph when a line no longer fits
 from annex_model import (  # noqa: E402  — annex rules
     build_model, plan_edits, plan_header_edits, parse_num, detect_template,
@@ -654,6 +655,14 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
             continue
         k = next((i for i in by_text_a.get(w[4], ()) if i not in used and same(wa[i], w)), None)
         if k is None:
+            # Unmoved, but extracted as part of a longer word: MuPDF joins
+            # glyphs drawn consecutively on a baseline with no space glyph
+            # between them ("compensation." + "If" -> "compensation.If")
+            # however far apart they sit. Same place, same leading text.
+            k = next((i for i, v in enumerate(wa) if i not in used
+                      and abs(v[0] - w[0]) <= tol and abs(v[1] - w[1]) <= tol
+                      and v[4].startswith(w[4])), None)
+        if k is None:
             return "moves_column"
         used.add(k)
 
@@ -1123,6 +1132,19 @@ _INVISIBLE_MSG = (
     "it was. To change what the page shows, add new text over it instead.")
 
 
+def _keep_edges(old: str, new: str) -> str:
+    """*new* with *old*'s leading/trailing whitespace where *new* has none."""
+    if not new or not new.strip():
+        return new
+    lead = old[:len(old) - len(old.lstrip())]
+    tail = old[len(old.rstrip()):]
+    if lead and new[:1] == new.lstrip()[:1]:
+        new = lead + new
+    if tail and new[-1:] == new.rstrip()[-1:]:
+        new = new + tail
+    return new
+
+
 def apply_replacements(pdf_bytes: bytes, replacements: list,
                        preserve_size: bool = True, try_inplace: bool = False,
                        _known_refusals: list = None) -> tuple:
@@ -1153,6 +1175,12 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
     # the W-9, a field that alone resized 8.0pt -> 5.6pt and reported
     # "resized_to_fit" came back at full size, overflowing, with the response
     # saying nothing at all.
+    # A field's edge whitespace is invisible in the editor, so retyping the
+    # whole field drops it without anyone choosing to: " If your total
+    # income…" came back as "If your…", and with the text drawn back in its
+    # place the text layer read "compensation.If" — two words glued into one
+    # for copy, search and screen readers. Keep the edges the field had.
+    replacements = [(sd, _keep_edges(sd.get("text", ""), nt)) for sd, nt in replacements]
     # An OCR layer over a scan. "Editing" it reported success while the page
     # the user sees stayed exactly as it was (0 pixels changed) and its text
     # layer started contradicting its image; redrawing instead would print
@@ -1278,6 +1306,12 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
 
             with open(out_path, "rb") as f:
                 edited = f.read()
+            # The redraw draws its text from a stream appended to the page,
+            # so every text layer (MuPDF, Chrome, Firefox) read the edited
+            # words LAST — after their line, or below the signature. Put
+            # each back where the old text was drawn (pixel-identical).
+            for pn in sorted({sd.get("page", 0) for sd, _nt in replacements}):
+                edited = _reading_order.restore_order(pdf_bytes, edited, pn)
             # The redraw pushes what follows a lengthened field along its
             # line; underlines and links over those words go with them.
             for sd, _nt in replacements:

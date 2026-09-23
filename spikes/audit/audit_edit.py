@@ -12,8 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _common  # noqa: E402
-from _common import (HARD, corpus_docs, moved_text, output_defects, page_facts,  # noqa: E402
-                     stranded)
+from _common import (HARD, corpus_docs, line_reads, moved_text, output_defects,  # noqa: E402
+                     page_facts, stranded)
 from api import extract_spans, apply_replacements  # noqa: E402
 
 import warnings  # noqa: E402
@@ -94,6 +94,8 @@ for label, path in corpus_docs():
             rf = next((r for r in (rep["in_place"].get("reflowed") or [])), None)
             bad = output_defects(out, page, new, base) + moved_text(data, out, page, sd, reflowed=rf)
             bad += stranded(data, out, page, field=sd["bbox"], edit=(sd["text"], new))
+            if not rf:
+                bad += line_reads(data, out, page, sd, new)
             if rf:
                 tot["reflowed"] = tot.get("reflowed", 0) + 1
             if bad:

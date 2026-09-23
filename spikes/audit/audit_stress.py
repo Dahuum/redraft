@@ -93,11 +93,15 @@ if sd is not None:
                                             preserve_size=True, try_inplace=True)[0],
                   filetype="pdf")
     after_draw = len(d[0].get_drawings())
+    # the payload's 500x500 rectangle, if it were executed
+    painted = any(dr["rect"].width > 400 and dr["rect"].height > 400 for dr in d[0].get_drawings())
     d.close()
     check("no adversarial input crashes the engine", not crashed, str(crashed[:3]))
     check("every output still opens and renders", not broken, str(broken[:3]))
     check("the injection payload is drawn as text, never executed", not injected, str(injected))
-    check("an injected 're f' paints no rectangle", after_draw == base_draw,
+    # No drawing ADDED. One may go: when the payload is redrawn, the field's
+    # own link underline goes with the text it underlined.
+    check("an injected 're f' paints no rectangle", after_draw <= base_draw and not painted,
           "%d -> %d drawings" % (base_draw, after_draw))
 
 # ── successive edits to the same field ──────────────────────────────────────
