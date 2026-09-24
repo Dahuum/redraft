@@ -147,6 +147,28 @@ GENS = {"reportlab/std": lambda d: reportlab_pdf(d, False),
         "fpdf2/std": lambda d: fpdf_pdf(d, False),
         "fpdf2/ttf": lambda d: fpdf_pdf(d, True)}
 
+def cross_line(spans, old, new):
+    """The (span, new_text) pair that changes *old* where it wraps from the
+    end of one line to the start of the next, split at a word boundary."""
+    ws = old.split()
+    for k in range(1, len(ws)):
+        head, tail = " ".join(ws[:k]), " ".join(ws[k:])
+        for a in spans:
+            ta = a["text"].rstrip()
+            if not ta.endswith(head) or (len(ta) > len(head) and ta[-len(head) - 1] != " "):
+                continue
+            below = [b for b in spans if b.get("page", 0) == a.get("page", 0)
+                     and 5 < b["origin"][1] - a["origin"][1] < 3 * a["size"]
+                     and abs(b["origin"][0] - a["bbox"][0]) < 1.0]
+            below.sort(key=lambda b: b["origin"][1])
+            if below and below[0]["text"].startswith(tail + " "):
+                b = below[0]
+                return [(a, a["text"].rstrip()[:-len(head)] + new
+                         + a["text"][len(a["text"].rstrip()):]),
+                        (b, b["text"][len(tail) + 1:])]
+    return None
+
+
 tally = {}
 print(f"{'producer':15} {'field':8} {'new':20} {'engine':9} {'off':>4} {'ink':>8}  verdict")
 for gname, gen in GENS.items():
@@ -177,6 +199,17 @@ for gname, gen in GENS.items():
             engines.append("reflow" if ip.get("reflowed") else
                            "in-place" if ip["count"] else
                            ("refused" if out2 == out else "redraw"))
+            out = out2
+        # An occurrence that WRAPS ("…by Atlas Consulting / SARL for…") sits
+        # in no single span. A user changes it by editing both lines, in one
+        # request; do the same.
+        pair = cross_line(extract_spans(out), old, new)
+        if pair:
+            out2, rep = apply_replacements(out, pair, preserve_size=True, try_inplace=True)
+            ip = rep["in_place"]
+            engines.append("2-line " + ("reflow" if ip.get("reflowed") else
+                                        "in-place" if ip["count"] else
+                                        ("refused" if out2 == out else "redraw")))
             out = out2
         off, frac = compare(out, twin)
         if "refused" in engines:

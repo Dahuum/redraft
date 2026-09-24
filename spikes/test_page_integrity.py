@@ -16,6 +16,16 @@ looking only at the edited text:
     column's caption, and the caption's next line was pushed off the page.
   * ANNEX LABEL. The total's widened cell reached into its own "Total HT"
     label, and every generated annex printed "Total H".
+  * A SPACE LEFT BEHIND. A redraw pushes the words after a longer field
+    along; a whitespace-only span (Word's trailing space) was no field, so it
+    stayed — inside the pushed email — and the line extracted as
+    "https://\n \nZoé…": copy and search read the edit.
+  * DRAWN LAST. The redraw draws its text from a stream appended to the
+    page, and MuPDF, Chrome and Firefox extract text in DRAWING order: the
+    edited sentence read at the end of the page, below the signature.
+  * INVISIBLE OCR TEXT. On a scan the text is a picture; the searchable layer
+    over it is drawn invisibly. Editing it reported success, changed no pixel,
+    and left the text layer contradicting the image. It is refused now.
 """
 import os
 import sys
@@ -36,6 +46,29 @@ def check(name, cond, detail=""):
     print(("PASS" if cond else "FAIL"), "-", name, ("  " + detail if detail and not cond else ""))
     if not cond:
         FAIL.append(name)
+
+
+def _reading_order_off(pdf, sd):
+    """The same edit with the reading-order repair disabled: the pixels it
+    must reproduce exactly."""
+    import reading_order
+    keep = reading_order.restore_order
+    reading_order.restore_order = lambda b, a, p: a
+    try:
+        return api.apply_replacements(pdf, [(sd, "Est inscrit(e) dans notre éco")],
+                                      preserve_size=True, try_inplace=True)[0]
+    finally:
+        reading_order.restore_order = keep
+
+
+def _no_reorder(pdf, sd, new):
+    import reading_order
+    keep = reading_order.restore_order
+    reading_order.restore_order = lambda b, a, p: a
+    try:
+        return api.apply_replacements(pdf, [(sd, new)], try_inplace=False)[0]
+    finally:
+        reading_order.restore_order = keep
 
 
 def words(pdf, pno=0):
@@ -166,6 +199,71 @@ check("annex: the 'Total HT' label survives a longer total", "Total HT" in txt, 
 check("annex: the recomputed total is printed", want in txt, want)
 check("annex: no field was dropped", not [w for w in rep.get("warnings", []) if "left unchanged" in w],
       str([w[:80] for w in rep.get("warnings", []) if "left unchanged" in w]))
+
+# --- invisible OCR layer over a scanned page ---------------------------------
+pic = fitz.open()
+pp = pic.new_page(width=300, height=120)
+pp.insert_text((20, 60), "Nom : Sara Idrissi", fontsize=14)
+img = pp.get_pixmap(dpi=100).tobytes("png")
+scan = fitz.open()
+sp_ = scan.new_page(width=300, height=120)
+sp_.insert_image(sp_.rect, stream=img)
+sp_.insert_text((20, 60), "Nom : Sara Idrissi", fontsize=14, render_mode=3)
+scan_b = scan.tobytes()
+ss = [s for s in api.extract_spans(scan_b) if "Sara" in s["text"]]
+check("scan: the OCR layer is marked invisible", ss and ss[0].get("invisible"), str(ss[:1]))
+out, rep = api.apply_replacements(scan_b, [(ss[0], "Nom : Salma B")], try_inplace=True)
+check("scan: editing invisible text is refused, bytes untouched", out == scan_b)
+check("scan: the refusal says why",
+      [r["reason"] for r in rep["in_place"]["refusals"]] == ["invisible_text"], str(rep["in_place"]))
+
+# --- a redraw's push takes the line's whitespace-only spans with it ----------
+demo = open(os.path.join(HERE, "..", "examples", "attestation-demo.pdf"), "rb").read()
+wsd = next(s for s in api.extract_spans(demo) if s["text"].startswith("www.1337.ma"))
+out, rep = api.apply_replacements(demo, [(wsd, "Zoé Ångström-Ñuñez " + wsd["text"])],
+                                  preserve_size=True, try_inplace=True)
+row = fitz.Rect(0, wsd["bbox"][1] + 1, 595, wsd["bbox"][3] - 1)
+got = fitz.open(stream=out, filetype="pdf")[0].get_text(clip=row).strip()
+check("pushed line: still reads as ONE line, in order",
+      got == "IF : 26055313, Site web : https://Zoé Ångström-Ñuñez www.1337.ma , email : "
+             "contact@1337.ma", repr(got))
+
+# --- a redrawn field is read where it was, not at the end of the page --------
+esd = next(s for s in api.extract_spans(demo) if s["text"].startswith("Est inscrit(e) dans"))
+out, rep = api.apply_replacements(demo, [(esd, "Est inscrit(e) dans notre éco")],
+                                  preserve_size=True, try_inplace=True)
+full = fitz.open(stream=out, filetype="pdf")[0].get_text()
+i_cin, i_new, i_form = full.find("SI125678"), full.find("Est inscrit(e) dans notre éco"), full.find("formation")
+check("redrawn field (two fonts): the edit went through the redraw", rep["in_place"]["count"] == 0)
+check("redrawn field: the page reads it in its place, not after the signature",
+      0 <= i_cin < i_new < i_form, f"CIN at {i_cin}, edit at {i_new}, next line at {i_form}")
+check("redrawn field: moving it changed no pixel of the page",
+      fitz.open(stream=out, filetype="pdf")[0].get_pixmap(dpi=96).samples
+      == fitz.open(stream=_reading_order_off(demo, esd), filetype="pdf")[0].get_pixmap(dpi=96).samples)
+
+# --- mid-line, in a page drawn as ONE text object (pdfTeX) -------------------
+tex = fitz.open()
+tp = tex.new_page(width=400, height=200)
+tp.insert_text((0, 0), " ", fontname="helv", fontsize=1)       # font resources
+tp.insert_text((0, 0), " ", fontname="tiro", fontsize=1)
+fn = {f[3]: f[4] for f in tp.get_fonts(full=True)}
+he, ti = fn["Helvetica"], fn["Times-Roman"]
+# "search" in a second font: its own span, in the MIDDLE of the line
+tex.update_stream(tp.get_contents()[0], (
+    "BT /%s 11 Tf 40 150 Td [(To)-278(complete)-278(our)-278] TJ /%s 11 Tf (search) Tj "
+    "/%s 11 Tf [-278(algorithm,)-278(we)] TJ 0 -14 Td [(need)-278(to)-278(describe)-278(it.)] TJ ET"
+    % (he, ti, he)).encode())
+texb = tex.tobytes()
+tsd = next(s for s in api.extract_spans(texb) if s["text"].strip() == "search")
+out, rep = api.apply_replacements(texb, [(tsd, tsd["text"].replace("search", "sea"))],
+                                  try_inplace=False)
+got = " ".join(fitz.open(stream=out, filetype="pdf")[0].get_text().split())
+check("one-text-object page: a mid-line redraw reads in its place",
+      got == "To complete our sea algorithm, we need to describe it.", repr(got))
+check("one-text-object page: the reorder moved no pixel",
+      fitz.open(stream=out, filetype="pdf")[0].get_pixmap(dpi=96).samples
+      == fitz.open(stream=_no_reorder(texb, tsd, tsd["text"].replace("search", "sea")),
+                   filetype="pdf")[0].get_pixmap(dpi=96).samples)
 
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not FAIL else f"{len(FAIL)} FAILED -> {FAIL}")

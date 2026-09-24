@@ -19,7 +19,7 @@ CORPUS = os.environ.get(
 EXAMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples")
 API = os.environ.get("RD_API", "http://localhost:8000")
 HARD = ("cannot_render", "runs_off_the_page", "cannot_place", "overlaps_neighbour",
-        "moves_column")
+        "moves_column", "invisible_text")
 
 # The composer sets real ligatures, and PDFs are full of typographic
 # lookalikes. Comparing raw characters calls correct output "lost text".
@@ -133,6 +133,50 @@ def output_defects(out_pdf: bytes, page: int, new_text: str, base: dict) -> list
     finally:
         d.close()
     return found
+
+
+def stranded(before_pdf: bytes, out_pdf: bytes, page: int, field=None, edit=None) -> list:
+    """Underlines left behind: the words a rule underlined are still on the
+    page but no longer over it (the Wikipedia caption: "Guido" slid left and
+    its link underline stayed, under "o" and blank paper)."""
+    import reflow
+    bad = reflow.stranded_underlines(before_pdf, out_pdf, page, None, field=field, edit=edit)
+    if not bad:
+        return []
+    d = fitz.open(stream=out_pdf, filetype="pdf")
+    txt = d[page].get_text()
+    d.close()
+    return [f"underline left behind {t.strip()!r}" for t, _ in bad if t.strip() and t.strip() in txt]
+
+
+def line_reads(before_pdf: bytes, out_pdf: bytes, page: int, span: dict, new: str) -> list:
+    """The edited line must extract as the original line with only the
+    replacement made — in order, on one line. A redraw that left a space
+    glyph inside the pushed words read "https://\n \nZoé…": invisible on
+    screen, plain to copy, search and anything that reads the text layer."""
+    import re as _re
+    x0, y0, x1, y1 = span["bbox"]
+    # The line's own box, 1pt in: a narrower row drops a whitespace span from
+    # the extraction — and with it the very defect (measured on the 1337 line).
+    inset = min(1.0, 0.1 * (y1 - y0))
+    row = fitz.Rect(-1e4, y0 + inset, 1e4, y1 - inset)
+    b = fitz.open(stream=before_pdf, filetype="pdf")
+    a = fitz.open(stream=out_pdf, filetype="pdf")
+    try:
+        norm = lambda t: _re.sub(r"\s+", " ", t).strip()
+        want = norm(b[page].get_text(clip=row).replace(span["text"].strip(), new.strip(), 1))
+        got = norm(a[page].get_text(clip=row))
+        if want == got:
+            return []
+        # the line as a sequence of words is what a reader sees; line breaks
+        # inside it are the defect
+        if "\n" in a[page].get_text(clip=row).strip() and \
+                "\n" not in b[page].get_text(clip=row).strip():
+            return [f"line now extracts broken: {got[:60]!r}"]
+        return []
+    finally:
+        b.close()
+        a.close()
 
 
 def moved_text(before_pdf: bytes, out_pdf: bytes, page: int, span: dict,

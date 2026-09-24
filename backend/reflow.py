@@ -97,6 +97,389 @@ def _lines(page):
     return out
 
 
+def _covered(para, r):
+    """The characters a horizontal mark at *r* sits under or over: on the one
+    line whose glyphs it overlaps vertically, those it overlaps horizontally."""
+    for l in para:
+        size = l["chars"][0]["size"]
+        if not (l["y"] - 0.9 * size <= (r.y0 + r.y1) / 2 <= l["y"] + 0.4 * size):
+            continue
+        run = [c for c in l["chars"] if c["x0"] < r.x1 - 0.3 and c["x1"] > r.x0 + 0.3]
+        if run:          # another column's line may share the height
+            return run
+    return None
+
+
+def underlines(page, band=None):
+    """Every thin horizontal rule on *page* drawn under a run of glyphs —
+    a link or <u> underline — as (rect, run text, drawing). A rule reaching
+    more than 1pt past its run's glyphs (a table border, a signature line)
+    is not an underline of that run and is not listed. *band*: only rules
+    whose vertical middle lies in it."""
+    lines = _lines(page)
+    out = []
+    for dr in page.get_drawings():
+        r = fitz.Rect(dr["rect"])
+        if r.width < 0.5 or r.height > 1.5:
+            continue
+        if not {it[0] for it in dr["items"]} <= {"l", "re", "qu"}:
+            continue
+        ym = (r.y0 + r.y1) / 2
+        if band is not None and not (band[0] <= ym <= band[1]):
+            continue
+        run = _covered(lines, r)
+        if not run or r.x0 < run[0]["x0"] - 1.0 or r.x1 > run[-1]["x1"] + 1.0:
+            continue
+        if ym < run[0]["oy"] - 0.05 * run[0]["size"]:
+            continue        # a strike-through or overline: not handled here
+        out.append((r, "".join(c["c"] for c in run), dr))
+    return out
+
+
+def _link_key(lk):
+    return (lk.get("kind"), lk.get("uri"), lk.get("page"), lk.get("nameddest"),
+            tuple(round(v, 1) for v in fitz.Rect(lk["from"])))
+
+
+def _restore_links(page, before, moved=()):
+    """Put back every link of *before* that a redaction deleted — MuPDF drops
+    link annotations over a redacted area — at its moved rectangle where it
+    followed its words (*moved*: [(old rect, new rect)])."""
+    have = {_link_key(lk) for lk in page.get_links()}
+    for lk in before:
+        f = fitz.Rect(lk["from"])
+        targets = [f]
+        for old, new in moved:
+            if abs(old.x0 - f.x0) < 0.05 and abs(old.y0 - f.y0) < 0.05:
+                targets = [fitz.Rect(q) for q in (new if isinstance(new, list) else [new])]
+                break
+        if targets != [f]:
+            # the original may still be there at its old place: drop it first
+            for cur in page.get_links():
+                if _link_key(cur) == _link_key(lk):
+                    page.delete_link(cur)
+                    break
+        for t in targets:
+            nl = {k: v for k, v in lk.items() if k not in ("xref", "id", "zoom")}
+            nl["from"] = t
+            if _link_key(nl) not in have:
+                page.insert_link(nl)
+
+
+def _find_runs(line, text):
+    """Every run of *line*'s glyphs spelling *text*, compared on visible
+    glyphs only: a stray space a redraw leaves on the line sorts into the
+    middle of "contact@1337.ma" and must not hide it."""
+    vis = [c for c in line["chars"] if c["c"].strip()]
+    want = "".join(ch for ch in text if ch.strip())
+    t = "".join(c["c"] for c in vis)
+    out, k = [], t.find(want) if want else -1
+    while k >= 0:
+        out.append(vis[k:k + len(want)])
+        k = t.find(want, k + 1)
+    return out
+
+
+def _link_shift(lb, la, f):
+    """Where link area *f* goes: re-measured from where the words under it
+    now are (visible glyphs), or None when they can't be found again."""
+    run = [c for c in (_covered(lb, fitz.Rect(f.x0, (f.y0 + f.y1) / 2, f.x1, (f.y0 + f.y1) / 2))
+                       or []) if c["c"].strip() and c["x0"] >= f.x0 - 0.5 and c["x1"] <= f.x1 + 0.5]
+    if not run:
+        return None
+    text = "".join(c["c"] for c in run)
+    best = None
+    for l in la:
+        if abs(l["y"] - run[0]["oy"]) > 2.0 * run[0]["size"]:
+            continue
+        for got in _find_runs(l, text):
+            d_ = abs(got[0]["x0"] - run[0]["x0"]) + abs(got[0]["oy"] - run[0]["oy"])
+            if best is None or d_ < best[0]:
+                best = (d_, got)
+    if best is None:
+        return None
+    g0, gN = best[1][0], best[1][-1]
+    dy = g0["oy"] - run[0]["oy"]
+    return fitz.Rect(g0["x0"] - (run[0]["x0"] - f.x0), f.y0 + dy,
+                     gN["x1"] + (f.x1 - run[-1]["x1"]), f.y1 + dy)
+
+
+def carry_underlines(before: bytes, after: bytes, pno: int, band, field=None,
+                     edit=None) -> bytes:
+    """Put every underline in *band* back under its words after an edit.
+
+    The words may have been pushed along their line (the in-place engine,
+    the redraw) or re-set a little smaller (the redraw's bounded resize).
+    Each rule is re-measured from where its words' glyphs are NOW — the same
+    offsets from their first and last glyph, the same height against their
+    baseline — with any link over them. A rule already there is left; one
+    still at its old place is replaced; one the redraw deleted with its field
+    is drawn again while its words are still on the page (a URL that lost its
+    underline reads as edited). Returns *after* itself when nothing changed.
+    """
+    b = fitz.open(stream=before, filetype="pdf")
+    a = fitz.open(stream=after, filetype="pdf")
+    try:
+        page = a[pno]
+        la = _lines(page)
+        lb = _lines(b[pno])
+        here = [fitz.Rect(d["rect"]) for d in page.get_drawings()]
+        todo = []
+        for r, text, dr in underlines(b[pno], band):
+            if _inside(r, field, text, edit):
+                continue      # the edited field's own decoration goes with it
+            old = [c for c in (_covered(lb, r) or []) if c["c"].strip()]
+            if not old:
+                continue
+            o0, oN = old[0], old[-1]
+            best = None
+            for l in la:
+                if abs(l["y"] - o0["oy"]) > 2.0 * o0["size"]:
+                    continue
+                for run in _find_runs(l, text):
+                    d_ = abs(run[0]["x0"] - o0["x0"]) + abs(run[0]["oy"] - o0["oy"])
+                    if best is None or d_ < best[0]:
+                        best = (d_, run)
+            if best is None:
+                continue                  # its words were edited away
+            run = best[1]
+            c0, cN = run[0], run[-1]
+            dy = c0["oy"] - o0["oy"]
+            q = fitz.Rect(c0["x0"] + (r.x0 - o0["x0"]), r.y0 + dy,
+                          cN["x1"] + (r.x1 - oN["x1"]), r.y1 + dy)
+            if any(abs(h.x0 - q.x0) < 0.3 and abs(h.x1 - q.x1) < 0.3 and abs(h.y0 - q.y0) < 0.3
+                   for h in here):
+                continue                  # already under its words
+            still = any(abs(h.x0 - r.x0) < 0.05 and abs(h.x1 - r.x1) < 0.05
+                        and abs(h.y0 - r.y0) < 0.05 for h in here)
+            todo.append((r, q, dr, still))
+        # Links over this line as they were BEFORE the edit: the redraw's
+        # redaction deletes a link over any text it erases, and the page it
+        # hands back has already lost them.
+        def in_band(lk):
+            f = fitz.Rect(lk["from"])
+            return band is None or (f.y1 >= band[0] - 2 and f.y0 <= band[1] + 2)
+        links_before = [lk for lk in b[pno].get_links() if in_band(lk)]
+        have = {_link_key(lk) for lk in page.get_links()}
+        lost = any(_link_key(lk) not in have for lk in links_before)
+        if not todo and not lost:
+            return after
+        if any(still for _, _, _, still in todo):
+            for r, q, dr, still in todo:
+                if still:
+                    page.add_redact_annot(r + (-0.3, -0.3, 0.3, 0.3), cross_out=False, fill=False)
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                                  graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                                  text=fitz.PDF_REDACT_TEXT_NONE)
+        for r, q, dr, still in todo:
+            if dr.get("fill") is not None:
+                page.draw_rect(q, color=None, fill=dr["fill"], width=0)
+            else:
+                ym = (q.y0 + q.y1) / 2
+                page.draw_line((q.x0, ym), (q.x1, ym), color=dr.get("color") or (0, 0, 0),
+                               width=dr.get("width") or 1.0)
+        moved = []
+        for lk in links_before:
+            f = fitz.Rect(lk["from"])
+            for r, q, dr, still in todo:
+                if f.x0 - 0.5 <= r.x0 and r.x1 <= f.x1 + 0.5 and f.y0 - 2 <= r.y0 <= f.y1 + 2:
+                    moved.append((f, fitz.Rect(q.x0 - (r.x0 - f.x0), f.y0 + (q.y0 - r.y0),
+                                               q.x1 + (f.x1 - r.x1), f.y1 + (q.y0 - r.y0))))
+                    break
+        # A link that did not follow a rule still points at the same words:
+        # it moves as they did, measured the same way.
+        for lk in links_before:
+            f = fitz.Rect(lk["from"])
+            if any(abs(o.x0 - f.x0) < 0.05 and abs(o.y0 - f.y0) < 0.05 for o, _ in moved):
+                continue
+            mv = _link_shift(lb, la, f)
+            if mv is not None:
+                moved.append((f, mv))
+        _restore_links(page, links_before, moved)
+        return a.tobytes(garbage=1, deflate=True)
+    finally:
+        b.close()
+        a.close()
+
+
+def _inside(r, field, text="", edit=None):
+    """Is rule *r* the edited field's own decoration — within its box, over
+    characters the edit rewrote? Over text both versions share at the field's
+    start or end ("Guido" in "The designer of Python, Guido" -> "The des of
+    Python, Guido") the characters are the same ones, pushed along, and their
+    underline follows them."""
+    if field is None:
+        return False
+    f = fitz.Rect(field)
+    if not (f.x0 - 0.5 <= r.x0 and r.x1 <= f.x1 + 0.5 and f.y0 - 1 <= (r.y0 + r.y1) / 2 <= f.y1 + 3):
+        return False
+    if edit:
+        old, new = edit[0].rstrip(), edit[1].rstrip()
+        p = 0
+        while p < min(len(old), len(new)) and old[p] == new[p]:
+            p += 1
+        q = 0
+        while q < min(len(old), len(new)) - p and old[-1 - q] == new[-1 - q]:
+            q += 1
+        t = text.strip()
+        if t and (t in old[:p] or (q and t in old[len(old) - q:])):
+            return False
+    return True
+
+
+def stranded_underlines(before: bytes, after: bytes, pno: int, band, field=None,
+                        edit=None) -> list:
+    """Underlines in *band* of the page whose run of text no longer sits over
+    them after an edit — each (run text, old rect). A detector: shared by the
+    engines' own guard and the audit."""
+    b = fitz.open(stream=before, filetype="pdf")
+    a = fitz.open(stream=after, filetype="pdf")
+    try:
+        la = _lines(a[pno])
+        rules = []
+        for dr in a[pno].get_drawings():
+            q = fitz.Rect(dr["rect"])
+            if q.width >= 0.5 and q.height <= 1.5:
+                rules.append(q)
+        bad = []
+        for r, text, _ in underlines(b[pno], band):
+            if _inside(r, field, text, edit):
+                continue
+            run = _covered(_lines(b[pno]), r)
+            ok = False
+            for dr_q in rules:
+                if abs(dr_q.height - r.height) > 0.2 or abs(dr_q.width - r.width) > 1.0:
+                    continue
+                got = _covered(la, dr_q)
+                if got and "".join(c["c"] for c in got if c["c"].strip()) == \
+                        "".join(ch for ch in text if ch.strip()):
+                    ok = True
+                    break
+            if not ok:
+                # A re-wrap may split the run over two lines, each piece under
+                # its own rule: every word must still be underlined somewhere
+                # near its old place.
+                words = text.split()
+                ok = bool(words)
+                for w in words:
+                    found = False
+                    for l in la:
+                        for cs in _find_runs(l, w):
+                            if found:
+                                break
+                            for q in rules:
+                                # against the run's OWN baseline: a superscript
+                                # "[97]" sits above the line it is merged into
+                                if q.x0 <= cs[0]["x0"] + 1.0 and q.x1 >= cs[-1]["x1"] - 1.0 and \
+                                        cs[0]["oy"] - 0.2 * cs[0]["size"] <= (q.y0 + q.y1) / 2 <= \
+                                        cs[0]["oy"] + 0.4 * cs[0]["size"] and \
+                                        abs(l["y"] - run[0]["oy"]) < 3 * cs[0]["size"]:
+                                    found = True
+                                    break
+                        if found:
+                            break
+                    ok = ok and found
+            if not ok:
+                bad.append((text, r))
+        return bad
+    finally:
+        b.close()
+        a.close()
+
+
+def _decorations(page, para):
+    """Thin rules drawn under runs of the paragraph's characters, each with
+    the run it belongs to. None when anything else is drawn over the words."""
+    boxes = []
+    for l in para:
+        size = l["chars"][0]["size"]
+        boxes.append(fitz.Rect(l["chars"][0]["x0"], l["y"] - 0.8 * size,
+                               l["chars"][-1]["x1"], l["y"] + 0.35 * size))
+    whole = fitz.Rect(boxes[0])
+    for b_ in boxes[1:]:
+        whole |= b_
+    out = []
+    for dr in page.get_drawings():
+        r = fitz.Rect(dr["rect"])
+        if not any(r.intersects(b) or (r.height == 0 and b.y0 <= r.y0 <= b.y1
+                                       and r.x0 < b.x1 and r.x1 > b.x0) for b in boxes):
+            continue
+        if r.contains(whole) and dr.get("fill") is not None:
+            continue    # a panel BEHIND the whole paragraph (a caption's box); the
+            #             re-set lines stay inside it — _verify checks the band
+        size = para[0]["chars"][0]["size"]
+        if r.height > max(0.12 * size, 1.2) or r.width < 0.5:
+            return None
+        kinds = {it[0] for it in dr["items"]}
+        if not kinds <= {"l", "re", "qu"}:
+            return None
+        run = _covered(para, r)
+        if not run or r.x0 < run[0]["x0"] - 1.0 or r.x1 > run[-1]["x1"] + 1.0:
+            return None      # not an underline of one run (a border): can't follow
+        out.append({"rect": r, "run": run, "fill": dr.get("fill"),
+                    "color": dr.get("color") or (0, 0, 0), "width": dr.get("width") or 1.0})
+    return out
+
+
+def _para_links(page, para):
+    """Link areas over the paragraph's text, each with the run it covers."""
+    boxes = [fitz.Rect(l["bbox"]) for l in para]
+    out = []
+    for lk in page.get_links():
+        r = fitz.Rect(lk["from"])
+        if not any(r.intersects(b) for b in boxes):
+            continue
+        run = _covered(para, fitz.Rect(r.x0, (r.y0 + r.y1) / 2, r.x1, (r.y0 + r.y1) / 2))
+        if not run:
+            return None
+        out.append({"link": lk, "rect": r, "run": run})
+    return out
+
+
+def _follow(mark, placed):
+    """Where *mark* (an underline or link over a run of glyphs) goes after the
+    re-wrap: one rectangle per new line its run lands on — a browser draws an
+    underline, and a link its area, line by line — or None when any glyph of
+    the run was edited away. Spaces at a piece's ends are not covered, as a
+    browser does not underline the space a line wraps at."""
+    run, r = mark["run"], mark["rect"]
+    pos, skip = [], 0
+    for c in run:
+        k = (round(c["ox"], 2), round(c["oy"], 2))
+        if k in placed:
+            x, y, n = placed[k]
+            pos.append((c, x, y))
+            skip = n - 1
+        elif skip > 0 and pos:                  # inside a ligature glyph
+            c_, x_, y_ = pos[-1]
+            pos.append((c, x_ + (c["ox"] - c_["ox"]), y_))
+            skip -= 1
+        elif not c["c"].strip():
+            continue                            # the space a line now wraps at
+        else:
+            return None
+    groups = []
+    for c, x, y in pos:
+        if groups and abs(groups[-1][-1][2] - y) < 0.01:
+            groups[-1].append((c, x, y))
+        else:
+            groups.append([(c, x, y)])
+    rects = []
+    for g in groups:
+        g_ = [t for t in g]
+        while g_ and not g_[0][0]["c"].strip():
+            g_.pop(0)
+        while g_ and not g_[-1][0]["c"].strip():
+            g_.pop()
+        if not g_:
+            continue
+        (c0, x0, y0), (c1, x1, _) = g_[0], g_[-1]
+        left = x0 + (c0["x0"] - c0["ox"]) + ((r.x0 - run[0]["x0"]) if c0 is run[0] else 0.0)
+        right = x1 + (c1["x1"] - c1["ox"]) + ((r.x1 - run[-1]["x1"]) if c1 is run[-1] else 0.0)
+        dyl = y0 - c0["oy"]
+        rects.append(fitz.Rect(left, r.y0 + dyl, right, r.y1 + dyl))
+    return rects or None
+
 def _blank(line):
     return not "".join(c["c"] for c in line["chars"]).strip()
 
@@ -346,8 +729,15 @@ def _text(line):
     return "".join(c["t"] for w in line for c in w)
 
 
-def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = False) -> dict:
+def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = False,
+           also=()) -> dict:
     """Replace *span*'s text with *new_text*, re-wrapping its paragraph.
+
+    *also* is more (span, new_text) edits in the SAME paragraph, re-wrapped
+    together: a phrase that wraps ("…by Atlas Consulting / SARL for…") is
+    changed by editing both lines, and only one re-wrap over both edits can
+    pull up the words the producer pulls up. Every one must lie in the
+    paragraph, or the whole call is refused.
 
     Returns {"ok": True, "pdf": bytes, "lines": n_before -> n_after} or a
     refusal dict with a reason.
@@ -357,12 +747,39 @@ def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = F
     except Exception:  # noqa: BLE001
         return _refuse("unreadable", "The PDF could not be opened.")
     try:
-        return _reflow(doc, span, new_text, multiline_only)
+        return _reflow(doc, span, new_text, multiline_only, tuple(also))
     finally:
         doc.close()
 
 
-def _reflow(doc, span, new_text, multiline_only=False):
+def same_paragraph(pdf_bytes: bytes, span: dict, others) -> list:
+    """Which of *others* (span dicts) lie in *span*'s paragraph, as the
+    re-wrap itself reads paragraphs."""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        pno = span.get("page", 0)
+        para, _ = _paragraph(_lines(doc[pno]), span["bbox"])
+        if not para:
+            return []
+        out = []
+        for o in others:
+            if o.get("page", 0) != pno:
+                continue
+            for l in para:
+                c0 = l["chars"][0]
+                if abs(c0["oy"] - o["origin"][1]) <= 0.6 and \
+                        c0["ox"] - 0.6 <= o["origin"][0] <= l["chars"][-1]["ox"] + 0.6:
+                    out.append(o)
+                    break
+        return out
+    finally:
+        doc.close()
+
+
+def _reflow(doc, span, new_text, multiline_only=False, also=()):
     pno = span.get("page", 0)
     page = doc[pno]
     if page.rotation or page.mediabox.x0 or page.mediabox.y0 \
@@ -399,6 +816,7 @@ def _reflow(doc, span, new_text, multiline_only=False):
         if i < len(para) - 1 and l["chars"][-1]["c"] not in (" ", "-", "­"):
             last = dict(l["chars"][-1])
             last["c"] = " "
+            last["ox"] = last["oy"] = None     # drawn by no one: nothing to follow
             stream.append(last)
     # Sizes agree to 1%: Word reports one line of a 14.04pt paragraph as
     # 14.064pt, from a scale folded into its text matrix.
@@ -484,6 +902,8 @@ def _reflow(doc, span, new_text, multiline_only=False):
         else:
             margin = sum(ends) / len(ends)
 
+    band = {}
+
     def established(p_lines):
         pst = []
         for i, l in enumerate(p_lines):
@@ -521,7 +941,38 @@ def _reflow(doc, span, new_text, multiline_only=False):
         for cand in cands:
             if [_text(g).rstrip() for g in _break(ws, x0, cand, width)] == want:
                 return cand
-        return None
+        if justified or squeeze:
+            return None
+        # A ragged paragraph set to a margin that is neither the page's edge
+        # nor any line's end (ReportLab's Frame: 524pt on a 595pt page). The
+        # original's breaks pin that margin to an interval: every line fits
+        # within it, and every break was FORCED — the next word would have
+        # overshot it. Hard line breaks (an address block) leave room for the
+        # next word, so their interval is empty and they are never merged.
+        # Any margin in the interval reproduces the original; the re-wrap is
+        # then accepted only if it comes out the same at BOTH ends of it.
+        groups, cur = [], []
+        for w in ws:
+            cur.append(w)
+            if len(groups) < len(want) and _text(cur).rstrip() == want[len(groups)]:
+                groups.append(cur)
+                cur = []
+        if cur or len(groups) != len(want) or len(groups) < 2:
+            return None
+
+        def strip(w):
+            return w[:-1] if w and w[-1]["t"] == " " else w
+        lo = max(x0 + sum(width(w) for w in g[:-1]) + width(strip(g[-1])) for g in groups)
+        hi = min(x0 + sum(width(w) for w in g) + width(strip(nx[0]))
+                 for g, nx in zip(groups, groups[1:]))
+        a_, b_ = lo - 0.05 + 0.001, hi - 0.05 - 0.001
+        if a_ >= b_:
+            return None
+        for cand in (a_, b_):
+            if [_text(g).rstrip() for g in _break(ws, x0, cand, width)] != want:
+                return None
+        band["hi"] = b_
+        return a_
 
     try:
         limit = None
@@ -568,20 +1019,38 @@ def _reflow(doc, span, new_text, multiline_only=False):
             if i + 1 < len(us):
                 x += m.kern(u, us[i + 1])
 
-    # ── the edit, in the stream ──
-    old = span["text"]
+    # ── the edits, in the stream ──
     joined = "".join(c["c"] for c in stream)
-    at = None
-    for mt in re.finditer(re.escape(old), joined):
-        ch = stream[mt.start()]
-        if abs(ch["ox"] - span["origin"][0]) <= 0.6 and abs(ch["oy"] - span["origin"][1]) <= 0.6:
-            at = mt.start()
-            break
-    if at is None:
-        return _refuse("not_in_paragraph", "The field could not be located in its paragraph.")
-    style = stream[at]
-    new_chars = [dict(style, c=c) for c in new_text]
-    stream2 = stream[:at] + new_chars + stream[at + len(old):]
+    edits = []
+    for sp, nt in ((span, new_text),) + tuple(also):
+        old = sp["text"]
+        at = None
+        for mt in re.finditer(re.escape(old), joined):
+            ch = stream[mt.start()]
+            if abs(ch["ox"] - sp["origin"][0]) <= 0.6 and abs(ch["oy"] - sp["origin"][1]) <= 0.6:
+                at = mt.start()
+                break
+        if at is None:
+            return _refuse("not_in_paragraph", "The field could not be located in its paragraph.")
+        edits.append((at, len(old), nt))
+    edits.sort()
+    if any(a + n > b for (a, n, _), (b, _, _) in zip(edits, edits[1:])):
+        return _refuse("overlapping_edits", "Two edits cover the same text.")
+    stream2 = list(stream)
+    for at, n, nt in reversed(edits):          # right to left: offsets stay valid
+        # Only what differs is new: the unchanged head and tail keep their
+        # own glyphs — their style, and their identity, which an underline or
+        # link over them follows to their new place.
+        ot = "".join(c["c"] for c in stream[at:at + n])
+        p_ = 0
+        while p_ < min(n, len(nt)) and ot[p_] == nt[p_]:
+            p_ += 1
+        q_ = 0
+        while q_ < min(n, len(nt)) - p_ and ot[n - 1 - q_] == nt[len(nt) - 1 - q_]:
+            q_ += 1
+        style = stream[at + min(p_, n - 1)] if n else stream[at]
+        mid = [dict(style, c=c, ox=None, oy=None) for c in nt[p_:len(nt) - q_]]
+        stream2[at:at + n] = stream[at:at + p_] + mid + stream[at + n - q_:at + n]
 
     # Glyphs the fonts lack: inject them into the document's own subsets,
     # exactly as the in-place engine does, under codes it can then encode.
@@ -613,6 +1082,12 @@ def _reflow(doc, span, new_text, multiline_only=False):
         # The ToUnicode map now names the new codes; re-read it.
     try:
         new_lines = _break(_words(_units(stream2, m)), x0, limit, width)
+        if "hi" in band and [_text(g) for g in _break(_words(_units(stream2, m)), x0,
+                                                        band["hi"], width)] != \
+                [_text(g) for g in new_lines]:
+            return _refuse("ambiguous_margin",
+                           "The original's line breaks allow more than one margin, and "
+                           "the new text would wrap differently under them.")
     except KeyError as e:
         return _refuse("unmeasurable", f"No width for {e.args[0]!r}.")
 
@@ -682,11 +1157,29 @@ def _reflow(doc, span, new_text, multiline_only=False):
                            "Re-wrapping adds a line, and the text below would run off the page.")
         del bottom_margin
 
+    # ── decorations drawn over the paragraph's words ──
+    # A link underline is line art, not text: deleting and re-setting the
+    # words left Wikipedia's caption underlines where "Guido", "Rossum" and
+    # "PyCon" USED to be, under the wrong letters. Each thin rule under a run
+    # of characters follows that run to its new place; anything else drawn
+    # over the words (a highlight, a box) — or a rule whose run is edited or
+    # split by the new breaks — and the paragraph is refused.
+    decs = _decorations(page, para)
+    if decs is None:
+        return _refuse("decorated", "Something is drawn over this paragraph's words (a "
+                                    "highlight or box) that can't follow them to new lines.")
+    links = _para_links(page, para)
+    if links is None:
+        return _refuse("decorated", "A link here covers text that can't be followed "
+                                    "to its new place.")
+
     # The page's font resources BEFORE anything is deleted: when the
     # paragraph is the only text in a font, the redaction prunes that font
     # from /Resources, and there is then nothing to set the new lines in.
     fonts_before = {f[4]: (f[0], f[3].split("+")[-1]) for f in page.get_fonts(full=True)
                     if f[4]}
+
+    links_before = page.get_links()
 
     # ── delete the paragraph's glyphs ──
     for l in para:
@@ -702,6 +1195,16 @@ def _reflow(doc, span, new_text, multiline_only=False):
         left = page.get_text("text", clip=l["bbox"]).strip()
         if left:
             return _refuse("delete_failed", "The old text could not be removed cleanly.")
+    if decs:
+        for d_ in decs:
+            page.add_redact_annot(d_["rect"] + (-0.3, -0.3, 0.3, 0.3), cross_out=False, fill=False)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                              graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                              text=fitz.PDF_REDACT_TEXT_NONE)
+        for dr in page.get_drawings():
+            if any(abs(dr["rect"].x0 - d_["rect"].x0) < 0.1 and abs(dr["rect"].y0 - d_["rect"].y0) < 0.1
+                   and abs(dr["rect"].x1 - d_["rect"].x1) < 0.1 for d_ in decs):
+                return _refuse("delete_failed", "An underline could not be removed cleanly.")
 
     # ── emit the new lines through the page's own font resources ──
     have = {f[4] for f in page.get_fonts(full=True)}
@@ -723,6 +1226,7 @@ def _reflow(doc, span, new_text, multiline_only=False):
     refmap = {nm: res for res, (xref, nm) in fonts_before.items()}
     refmap.update({v: k for k, v in S._page_font_refmap(page).items()})
     ops = []
+    placed = {}          # original glyph origin -> (new x, new baseline)
     y0 = para[0]["y"]
     for i, line in enumerate(new_lines):
         y = y0 + i * lead
@@ -784,6 +1288,8 @@ def _reflow(doc, span, new_text, multiline_only=False):
                 run = [x, [], [], []]
                 run_style = st
             run[1].append(c["code"])
+            if c.get("ox") is not None:
+                placed[(round(c["ox"], 2), round(c["oy"], 2))] = (x, y, len(c["t"]))
             x += m.advance(c["font"], c["size"], c["t"], c["code"])
             kp = m.kern(c, chars[i + 1]) if i + 1 < len(chars) else 0.0
             if line_extra and not c["t"].strip() and i < last_vis:
@@ -793,6 +1299,25 @@ def _reflow(doc, span, new_text, multiline_only=False):
             run[2].append(round(-kp / c["size"] * 1000.0, 3) if kp else 0)
             run[3].append(c.get("actual"))
         flush()
+    H = page.rect.height
+    for d_ in decs or ():
+        rs = _follow(d_, placed)
+        if rs is None:
+            return _refuse("decorated", "An underlined phrase would be changed by the re-wrap.")
+        for r in rs:
+            if d_["fill"] is not None:
+                ops.append("q %.4g %.4g %.4g rg %.3f %.3f %.3f %.3f re f Q"
+                           % (*d_["fill"], r.x0, H - r.y1, r.width, r.height))
+            else:
+                ym = H - (r.y0 + r.y1) / 2
+                ops.append("q %.4g %.4g %.4g RG %.3f w %.3f %.3f m %.3f %.3f l S Q"
+                           % (*d_["color"], d_["width"], r.x0, ym, r.x1, ym))
+    moved_links = []
+    for lk in links or ():
+        rs = _follow(lk, placed)
+        if rs is None:
+            return _refuse("decorated", "A linked phrase would be changed by the re-wrap.")
+        moved_links.append((lk["link"], rs))
     data = ("q " + " ".join(ops) + " Q").encode("latin-1")
 
     # ── rebuild the page IN READING ORDER ──
@@ -818,6 +1343,7 @@ def _reflow(doc, span, new_text, multiline_only=False):
     if below.height > 0:
         page.show_pdf_page(below + (0, dy, 0, dy), snap, 0, clip=below)
     snap.close()
+    _restore_links(page, links_before, [(fitz.Rect(lk["from"]), rs) for lk, rs in moved_links])
 
     out = doc.tobytes(garbage=3, deflate=True)
     ok = _verify(out, pno, para, new_lines, lead, cut, dy, lines)
@@ -827,8 +1353,12 @@ def _reflow(doc, span, new_text, multiline_only=False):
     # an in-place edit would have produced the same layout; the caller may
     # then prefer it. If not, only a re-wrap matches what the producer does.
     before_lines = ["".join(c["c"] for c in l["chars"]).rstrip() for l in para]
-    old_t, new_t = span["text"], new_text
-    expect = [t.replace(old_t, new_t, 1) if old_t in t else t for t in before_lines]
+    expect = list(before_lines)
+    for sp, nt in ((span, new_text),) + tuple(also):
+        for i, t in enumerate(expect):
+            if abs(para[i]["chars"][0]["oy"] - sp["origin"][1]) <= 0.6 and sp["text"].rstrip() in t:
+                expect[i] = t.replace(sp["text"].rstrip(), nt.rstrip(), 1)
+                break
     changed = [_text(nl).rstrip() for nl in new_lines] != expect
     return {"ok": True, "pdf": out, "lines": (len(para), len(new_lines)), "shift": dy,
             "cut": cut, "top": para[0]["bbox"].y0, "breaks_changed": changed,

@@ -3229,7 +3229,43 @@ def _right_aligned_column(page, target) -> bool:
             continue
         if abs(s["bbox"][2] - x1) < 0.1 and abs(s["origin"][0] - x0) > 1.0:
             mates += 1
-    return mates >= 2
+    return mates >= 2 or _flush_right_margin(page, target)
+
+
+def _flush_right_margin(page, target) -> bool:
+    """A lone amount set flush against the text block's right margin.
+
+    fpdf2's `cell(0, h, amount, align="R")` beside an item label has no
+    column mates, so the edit kept its left edge and the longer amount ran
+    6pt past where the generator itself puts it. Evidence, all required: the
+    number ends its line, sits at least 3em clear of the text before it, and
+    ends — to 0.3pt — where a full-measure line of the page ends, with no
+    text anywhere further right. Measured on every page of the corpus, twin
+    sources and examples: 0 of 1,383 numbers flagged; the fpdf2 amounts are.
+    A ragged paragraph gives no margin, so ReportLab's drawRightString beside
+    one still keeps its left edge — no evidence, no move.
+    """
+    x0, x1, y = target["origin"][0], target["bbox"][2], target["origin"][1]
+    em = target.get("size") or 10.0
+    left, lines = [], {}
+    for s in _spans(page):
+        if not s["text"].strip() or (abs(s["origin"][0] - x0) < 0.1
+                                     and abs(s["origin"][1] - y) < 0.1):
+            continue
+        if abs(s["origin"][1] - y) <= 1.0:
+            if s["origin"][0] > x0 + 0.5:
+                return False                      # not the last thing on its line
+            left.append(s["bbox"][2])
+            continue
+        k = round(s["origin"][1], 1)
+        a, b = lines.get(k, (1e9, 0.0))
+        lines[k] = (min(a, s["origin"][0]), max(b, s["bbox"][2]))
+    if not left or not lines or x0 - max(left) < 3 * em:
+        return False
+    if max(b for _, b in lines.values()) > x1 + 0.3:
+        return False
+    lm = min(a for a, _ in lines.values())
+    return any(abs(b - x1) <= 0.3 and b - a >= 0.6 * (x1 - lm) for a, b in lines.values())
 
 
 def _left_text_x1(page, target) -> float:

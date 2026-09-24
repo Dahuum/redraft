@@ -25,6 +25,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import shutil
 import re
 import sys
 import tempfile
@@ -47,6 +49,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import pdf_editor as _pe  # noqa: E402  — module state (memo, cache dir) for font upload
 from pdf_editor import PDFEditor, font_source, get_spans, resolve_full_font  # noqa: E402
 import inplace_spike as _spike  # noqa: E402  — true in-place editing, tried before redraw-and-restamp
+import conform as _conform
+import reading_order as _reading_order
 import reflow as _reflow  # noqa: E402  — re-wrap a paragraph when a line no longer fits
 from annex_model import (  # noqa: E402  — annex rules
     build_model, plan_edits, plan_header_edits, parse_num, detect_template,
@@ -544,6 +548,10 @@ def extract_spans(pdf_bytes: bytes) -> list:
                     "bbox":   list(span["bbox"]),     # [x0,y0,x1,y1] in PDF pts
                     "origin": list(span["origin"]),
                     **({"rtl": True} if _is_rtl_text(span["text"]) else {}),
+                    # Invisible text (render mode 3, alpha 0): the OCR layer
+                    # a scanner lays over a PICTURE of the page. Editing it
+                    # changes nothing anyone can see — see _INVISIBLE_MSG.
+                    **({"invisible": True} if span.get("alpha", 255) == 0 else {}),
                 })
         doc.close()
     return result
@@ -650,6 +658,14 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
             continue
         k = next((i for i in by_text_a.get(w[4], ()) if i not in used and same(wa[i], w)), None)
         if k is None:
+            # Unmoved, but extracted as part of a longer word: MuPDF joins
+            # glyphs drawn consecutively on a baseline with no space glyph
+            # between them ("compensation." + "If" -> "compensation.If")
+            # however far apart they sit. Same place, same leading text.
+            k = next((i for i, v in enumerate(wa) if i not in used
+                      and abs(v[0] - w[0]) <= tol and abs(v[1] - w[1]) <= tol
+                      and v[4].startswith(w[4])), None)
+        if k is None:
             return "moves_column"
         used.add(k)
 
@@ -701,8 +717,20 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     still_needed = []
     refusals = []
     reflowed = []
+    done = set()
     for sd, new_text in replacements:
+        if id(sd) in done:
+            continue
         before_this = current
+        rr = _joint_rewrap(current, replacements, sd, new_text, done, reflowed)
+        if rr:
+            current = rr["pdf"]
+            in_place_count += len(rr["members"])
+            done.update(id(o) for o, _ in rr["members"])
+            reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
+                             "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
+                             "shift": rr["shift"], "cut": rr.get("cut")})
+            continue
         try:
             r = _spike.edit(current, sd["text"], new_text,
                             page=sd["page"], bbox=sd["bbox"], verify=False)
@@ -719,6 +747,17 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                 # the same check.
                 r = {"ok": False, "reason": bad, "message": _UNSHIPPABLE_MSG[bad]}
             else:
+                # Words the edit pushed along the line take their underlines
+                # (and links) with them; a rule left where "Guido" used to be
+                # sat under "o" and blank paper.
+                try:
+                    pg = sd.get("page", 0)
+                    cand = _reflow.carry_underlines(current, cand, pg,
+                                                    (sd["bbox"][1] - 1, sd["bbox"][3] + 3),
+                                                    field=sd["bbox"],
+                                                    edit=(sd["text"], new_text))
+                except Exception:  # noqa: BLE001 — a failure keeps the edit as it was
+                    pass
                 current = cand
                 in_place_count += 1
         if r.get("ok") and _may_rewrap(replacements, sd):
@@ -767,6 +806,45 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                              "message": r.get("message")})
     _try_inplace_batch.reflowed = reflowed
     return current, in_place_count, still_needed, refusals
+
+
+def _joint_rewrap(current, replacements, sd, new_text, done, reflowed):
+    """Several edits of ONE paragraph, re-wrapped together.
+
+    A phrase that wraps ("…issued by Atlas Consulting / SARL for…") is changed
+    by editing both lines. Each line alone fits in place, and neither alone may
+    re-wrap (the other edit sits lower on the page), so the producer's
+    re-print — "…by Atlas Group for / the period…" — was never reached: the
+    shortened first line stayed short, and ReportLab's squeeze stayed on it.
+    One re-wrap over every edit of the paragraph is exactly the re-print.
+    Only when nothing else in the batch sits lower on the page and no earlier
+    re-wrap has moved this page."""
+    page = sd.get("page", 0)
+    if any(r["page"] == page for r in reflowed):
+        return None
+    rest = [(o, nt) for o, nt in replacements
+            if o is not sd and id(o) not in done and o.get("page", 0) == page]
+    if not rest:
+        return None
+    try:
+        mates = _reflow.same_paragraph(current, sd, [o for o, _ in rest])
+    except Exception:  # noqa: BLE001
+        return None
+    if not mates:
+        return None
+    members = [(sd, new_text)] + [(o, nt) for o, nt in rest if any(o is m for m in mates)]
+    ids = {id(o) for o, _ in members}
+    if any(id(o) not in ids and o.get("page", 0) == page and o["bbox"][1] >= sd["bbox"][1] - 0.5
+           for o, _ in replacements):
+        return None
+    try:
+        rr = _reflow.reflow(current, sd, new_text, multiline_only=True, also=members[1:])
+    except Exception:  # noqa: BLE001
+        return None
+    if not (rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified"))):
+        return None
+    rr["members"] = members
+    return rr
 
 
 def _may_rewrap(replacements, sd) -> bool:
@@ -1050,9 +1128,130 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
     return bad
 
 
+_INVISIBLE_MSG = (
+    "This text is an invisible layer over a scanned image — what you see on the "
+    "page is a picture of the text, not the text itself. Changing it would change "
+    "nothing visible, only what search and copy return, so the field was left as "
+    "it was. To change what the page shows, add new text over it instead.")
+
+
+def _keep_edges(old: str, new: str) -> str:
+    """*new* with *old*'s leading/trailing whitespace where *new* has none."""
+    if not new or not new.strip():
+        return new
+    lead = old[:len(old) - len(old.lstrip())]
+    tail = old[len(old.rstrip()):]
+    if lead and new[:1] == new.lstrip()[:1]:
+        new = lead + new
+    if tail and new[-1:] == new.rstrip()[-1:]:
+        new = new + tail
+    return new
+
+
+def _qpdf_linearize(data: bytes):
+    exe = shutil.which("qpdf")
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as td:
+        src, dst = os.path.join(td, "in.pdf"), os.path.join(td, "out.pdf")
+        with open(src, "wb") as f:
+            f.write(data)
+        try:
+            r = subprocess.run([exe, "--linearize", "--object-streams=preserve", src, dst],
+                               capture_output=True, timeout=60)
+        except Exception:  # noqa: BLE001
+            return None
+        # exit 3 = success with warnings
+        if r.returncode not in (0, 3) or not os.path.exists(dst):
+            return None
+        with open(dst, "rb") as f:
+            res = f.read()
+    return res if res.startswith(b"%PDF") else None
+
+
+def _like_input(src: bytes, out: bytes) -> bytes:
+    """*out* serialised the way *src* was. Every edit re-saves the file, and
+    a re-save that drops the object and cross-reference streams an Acrobat,
+    Ghostscript or pdfTeX file was written with (or its linearization) says
+    "another program saved this" to anyone who opens the file's structure.
+    Never fails an edit: on any error *out* is returned as it is."""
+    try:
+        objstm = b"/ObjStm" in src
+        linear = b"/Linearized" in src[:4096]
+        if not objstm and not linear:
+            return out
+        d = fitz.open(stream=out, filetype="pdf")
+        try:
+            kw = {"garbage": 1, "deflate": True}
+            if objstm:
+                kw["use_objstms"] = 1
+            res = d.tobytes(**kw)
+        finally:
+            d.close()
+        if linear:
+            # MuPDF no longer linearizes; qpdf does, keeping object streams
+            # and the trailer /ID. Optional: without it the file stays as is.
+            lin = _qpdf_linearize(res)
+            if lin:
+                res = lin
+        return res
+    except Exception:  # noqa: BLE001
+        return out
+
+
 def apply_replacements(pdf_bytes: bytes, replacements: list,
                        preserve_size: bool = True, try_inplace: bool = False,
                        _known_refusals: list = None) -> tuple:
+    """See _apply_replacements; the result is saved in the input's own
+    container style (_like_input)."""
+    out, rep = _apply_replacements(pdf_bytes, replacements, preserve_size, try_inplace,
+                                   _known_refusals)
+    if out is not pdf_bytes and out != pdf_bytes:
+        out = _conform.conform_names(pdf_bytes, out)
+        out = _id_case_like(pdf_bytes, _like_input(pdf_bytes, out))
+    return out, rep
+
+
+_ID_RE = re.compile(rb"(/ID\s*\[\s*<)([0-9A-Fa-f]+)(>\s*<)([0-9A-Fa-f]+)(>)")
+
+
+def _drop_id(out: bytes) -> bytes:
+    """No /ID where the input had none. MuPDF adds one on save — to a Chrome
+    PDF, which never writes one, an ID is another program's trace."""
+    if not _ID_RE.search(out):
+        return out
+    try:
+        d = fitz.open(stream=out, filetype="pdf")
+        try:
+            d.xref_set_key(-1, "ID", "null")
+            res = d.tobytes(garbage=1, deflate=True, no_new_id=1,
+                            **({"use_objstms": 1} if b"/ObjStm" in out else {}))
+        finally:
+            d.close()
+        return res if not _ID_RE.search(res) else out
+    except Exception:  # noqa: BLE001
+        return out
+
+
+def _id_case_like(src: bytes, out: bytes) -> bytes:
+    """The trailer /ID written in the input's hex case. Acrobat writes it in
+    upper case, MuPDF in lower: a lower-case ID in an Acrobat file is another
+    program's signature. Same length, so no offset moves."""
+    ms = list(_ID_RE.finditer(src))
+    if not ms:
+        return _drop_id(out)
+    m = ms[-1]                     # the effective trailer is the last one
+    h = m.group(2) + m.group(4)
+    if not any(c in b"ABCDEFabcdef" for c in h):
+        return out                 # all digits: no case to match
+    case = bytes.upper if h == h.upper() else bytes.lower
+    return _ID_RE.sub(lambda k: k.group(1) + case(k.group(2)) + k.group(3)
+                      + case(k.group(4)) + k.group(5), out)
+
+
+def _apply_replacements(pdf_bytes: bytes, replacements: list,
+                        preserve_size: bool = True, try_inplace: bool = False,
+                        _known_refusals: list = None) -> tuple:
     """Apply [(span_dict, new_text), …] → (edited_bytes, font_report).
 
     `try_inplace` (default False): first attempt every replacement as a true
@@ -1080,11 +1279,53 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
     # the W-9, a field that alone resized 8.0pt -> 5.6pt and reported
     # "resized_to_fit" came back at full size, overflowing, with the response
     # saying nothing at all.
+    # A field's edge whitespace is invisible in the editor, so retyping the
+    # whole field drops it without anyone choosing to: " If your total
+    # income…" came back as "If your…", and with the text drawn back in its
+    # place the text layer read "compensation.If" — two words glued into one
+    # for copy, search and screen readers. Keep the edges the field had.
+    replacements = [(sd, _keep_edges(sd.get("text", ""), nt)) for sd, nt in replacements]
+    # An OCR layer over a scan. "Editing" it reported success while the page
+    # the user sees stayed exactly as it was (0 pixels changed) and its text
+    # layer started contradicting its image; redrawing instead would print
+    # crisp new text over the scanned picture of the old. Neither is an edit.
+    invisible = [sd for sd, _ in replacements if sd.get("invisible")]
+    if invisible:
+        replacements = [(sd, nt) for sd, nt in replacements if not sd.get("invisible")]
+        refused = [{"text": sd["text"][:60], "reason": "invisible_text",
+                    "message": _INVISIBLE_MSG} for sd in invisible]
+        if not replacements:
+            return pdf_bytes, {"fonts": [], "warnings": [
+                f"{sd['text'][:40]!r} was left unchanged: {_INVISIBLE_MSG}" for sd in invisible],
+                "in_place": {"count": 0, "total": len(invisible), "refusals": refused}}
+        out, rep = _apply_replacements(pdf_bytes, replacements, preserve_size, try_inplace,
+                                      _known_refusals)
+        rep.setdefault("in_place", {}).setdefault("refusals", []).extend(refused)
+        rep["warnings"] = list(rep.get("warnings") or []) + [
+            f"{sd['text'][:40]!r} was left unchanged: {_INVISIBLE_MSG}" for sd in invisible]
+        return out, rep
+
     inplace_refusals = list(_known_refusals or [])
     if try_inplace:
         (pdf_bytes, in_place_count, replacements,
          inplace_refusals) = _try_inplace_batch(pdf_bytes, replacements)
         reflowed = getattr(_try_inplace_batch, "reflowed", [])
+        # The in-place engine may just have INJECTED new glyphs into an
+        # embedded font (e.g. Word's TwCenMT-Bold gained 'm' and 'h' to draw
+        # a longer name) — but the request's font overlay (_DOC_FONTS) was
+        # captured once, at upload, from the ORIGINAL pre-edit bytes, and
+        # resolve_full_font() checks that overlay before ever looking at the
+        # document's own current font. A field redrawn right after such an
+        # edit — in THIS call, or a later one against the same document (a
+        # /bulk or /annex row through the same template) — was handed the
+        # stale, pre-edit font missing it, and PyMuPDF's stand-in for a
+        # glyph absent from the buffer it was given came out the height of
+        # an ascender: "Hamburg" with a giant "m". Refreshed unconditionally
+        # here, not only when this call still has fields left for redraw, so
+        # every later resolve_full_font() in this request sees it too — a
+        # font this request never trusted is untouched either way.
+        if in_place_count:
+            _refresh_doc_font_overlay(pdf_bytes)
         if not replacements:
             return pdf_bytes, {"fonts": [], "warnings": [],
                                "in_place": {"count": in_place_count,
@@ -1185,6 +1426,21 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
 
             with open(out_path, "rb") as f:
                 edited = f.read()
+            # The redraw draws its text from a stream appended to the page,
+            # so every text layer (MuPDF, Chrome, Firefox) read the edited
+            # words LAST — after their line, or below the signature. Put
+            # each back where the old text was drawn (pixel-identical).
+            for pn in sorted({sd.get("page", 0) for sd, _nt in replacements}):
+                edited = _reading_order.restore_order(pdf_bytes, edited, pn)
+            # The redraw pushes what follows a lengthened field along its
+            # line; underlines and links over those words go with them.
+            for sd, _nt in replacements:
+                try:
+                    edited = _reflow.carry_underlines(pdf_bytes, edited, sd.get("page", 0),
+                                                      (sd["bbox"][1] - 1, sd["bbox"][3] + 3),
+                                                      field=sd["bbox"], edit=(sd["text"], _nt))
+                except Exception:  # noqa: BLE001 — a failure keeps the edit as it was
+                    pass
             # The redraw's own font can record a different character than the
             # one it drew; see _canonicalise_text_layer.
             edited = _canonicalise_text_layer(edited, [nt for _, nt in replacements])
@@ -1206,7 +1462,7 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                         [inplace_refusals[i] for i in range(len(replacements))
                          if i not in boxed]
                         if len(inplace_refusals) == len(replacements) else None)
-                    edited, sub = apply_replacements(
+                    edited, sub = _apply_replacements(
                         pdf_bytes, keep, preserve_size=preserve_size,
                         try_inplace=False, _known_refusals=aligned)
                     sub["in_place"] = {"count": in_place_count,
@@ -1313,6 +1569,87 @@ def _font_status(fontname: str) -> dict:
         "source":     src,
         "cache_name": _font_cache_name(fontname),
     }
+
+
+def _glyph_count(raw: bytes):
+    """How many glyphs *raw* (a TrueType/OpenType program) has, or None if
+    it can't be read. Cheap: only the maxp table is touched."""
+    try:
+        from fontTools.ttLib import TTFont
+        return TTFont(io.BytesIO(raw), lazy=True)["maxp"].numGlyphs
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _refresh_doc_font_overlay(pdf_bytes: bytes) -> None:
+    """Update the request's font overlay to this document's CURRENT fonts.
+
+    _ingest_embedded_fonts sets _DOC_FONTS once, from the upload, before any
+    edit runs. The in-place engine can extend one of those fonts mid-request
+    — inject glyphs for characters the original embedded subset lacked, e.g.
+    'm'/'h' added to a Word document's Bold face to draw a longer name — and
+    resolve_full_font() checks the overlay BEFORE ever reading the document's
+    own current font, so a field the redraw stamps right after such an edit,
+    needing one of those same new letters, was handed the pre-edit bytes
+    that don't have it. PyMuPDF's stand-in for a glyph missing from the font
+    buffer it was given is not a blank box here — it came out the height of
+    an ascender ("Hamburg" with a giant "m"), which is what surfaced this.
+
+    A Word export commonly embeds the SAME face TWICE under two different
+    xrefs — here "BCDHEE+TwCenMT-Bold" (the subset-tagged name PDF show
+    operators use) and, separately, "Tw Cen MT Bold" (its own internal name,
+    with none of that tag) — both present in the ORIGINAL, unedited upload.
+    They share one overlay key (font_cache_key ignores the subset tag), but
+    the in-place engine extends only the ONE it locates by name; the other
+    stays at its original, smaller glyph count. Refreshing by iteration
+    order picked whichever xref came last — sometimes the unextended twin,
+    silently undoing the very glyphs just injected. Comparing glyph counts
+    and keeping the larger avoids this: a bigger glyph table is a strict
+    superset of what this request has needed so far, never a worse choice.
+
+    Re-extracts this request's own embedded fonts from *pdf_bytes* (the
+    CURRENT, post-in-place bytes) and overwrites the matching overlay entries
+    in place — the SAME dict object _DOC_FONTS already holds, so every
+    resolve_full_font() call from here on sees the updated glyph set. A font
+    this request never ingested (not already a key in the overlay) is left
+    alone: this only refreshes fonts already trusted, never adds new ones.
+    """
+    overlay = _pe._DOC_FONTS.get()
+    if not overlay:
+        return
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return
+    # The glyph count each key's CURRENT overlay entry has, so a candidate
+    # only replaces it when it covers strictly more — never a regression,
+    # and stable across however many same-keyed xrefs this document has.
+    best_n = {key: _glyph_count(raw) for key, raw in overlay.items()}
+    try:
+        seen = set()
+        for pno in range(doc.page_count):
+            for fo in doc[pno].get_fonts(full=True):
+                xref, basefont = fo[0], fo[3]
+                if xref in seen or not basefont:
+                    continue
+                seen.add(xref)
+                key = _pe.font_cache_key(basefont)
+                if key not in overlay:
+                    continue        # not a font this request already trusted
+                try:
+                    raw = doc.extract_font(xref)[3]
+                except Exception:  # noqa: BLE001
+                    continue
+                if not raw or len(raw) <= 256:
+                    continue
+                n = _glyph_count(raw)
+                cur = best_n.get(key)
+                if cur is not None and n is not None and n <= cur:
+                    continue        # this xref's twin already covers as much
+                overlay[key] = raw
+                best_n[key] = n
+    finally:
+        doc.close()
 
 
 def _ingest_embedded_fonts(pdf_bytes: bytes, user: str = None) -> list:

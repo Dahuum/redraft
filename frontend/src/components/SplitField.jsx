@@ -91,6 +91,32 @@ export default function SplitField({
   // showing the user their own document backwards. Placing it again would
   // need shaping the engine does not do, so the field is shown as read-only
   // with the reason rather than as an input that cannot work.
+  // Invisible text is the OCR layer a scanner lays over a PICTURE of the page.
+  // Editing it would change nothing anyone can see — only what search and copy
+  // return — so it is shown, like right-to-left text, as read-only with why.
+  if (span.invisible) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant">
+          <span className="truncate">{label}</span>
+          <span className="material-symbols-outlined text-[16px] shrink-0" title="Scanned page">
+            document_scanner
+          </span>
+        </div>
+        <div className="rounded-lg border border-outline-variant/50 bg-surface-container-high/40 px-3 py-2">
+          <p className="text-sm text-on-surface-variant/70 truncate" title={span.text}>
+            {span.text}
+          </p>
+          <p className="mt-1 text-caption text-on-surface-variant">
+            This page is a scanned image. This text is the invisible layer that makes
+            it searchable, so changing it wouldn't change what the page shows. You can
+            add new text on top of it instead.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (span.rtl) {
     return (
       <div className="space-y-1.5">

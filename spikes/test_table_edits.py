@@ -182,6 +182,44 @@ for right in (True, False):
               rep["in_place"]["count"] == 1 and abs(w[0] - tgt["bbox"][0]) < 0.1,
               f"x0 {tgt['bbox'][0]:.2f} -> {w[0]:.2f}")
 
+
+# ── a LONE amount flush against the text block's right margin (fpdf2's
+#    cell(0, h, amount, align="R")) keeps its right edge; a lone amount that is
+#    merely the rightmost thing on a sparse page keeps its left edge ─────────
+def lone_pdf(margin_line):
+    d = fitz.open()
+    pg = d.new_page(width=400, height=300)
+    fnt = fitz.Font("helv")
+    pg.insert_text((40, 100), "Implementation support", fontsize=10, fontname="helv")
+    pg.insert_text((340 - fnt.text_length("11,400.00", 10), 100), "11,400.00",
+                   fontsize=10, fontname="helv")
+    if margin_line:          # a justified line ending exactly on the margin
+        words, y = "This statement confirms that every invoice was settled".split(), 140
+        gap = (300 - sum(fnt.text_length(w, 10) for w in words)) / (len(words) - 1)
+        x = 40
+        for w in words:
+            pg.insert_text((x, y), w, fontsize=10, fontname="helv")
+            x += fnt.text_length(w, 10) + gap
+    else:
+        pg.insert_text((40, 140), "Paid in full.", fontsize=10, fontname="helv")
+    return d.tobytes()
+
+
+for margin_line in (True, False):
+    lp = lone_pdf(margin_line)
+    tgt = next(s for s in api.extract_spans(lp) if s["text"].strip() == "11,400.00")
+    out, rep = api.apply_replacements(lp, [(tgt, "211,400.00")], try_inplace=True)
+    w = next(x for x in fitz.open(stream=out, filetype="pdf")[0].get_text("words")
+             if x[4] == "211,400.00")
+    if margin_line:
+        check("lone amount on the right margin: a longer amount keeps its right edge",
+              rep["in_place"]["count"] == 1 and abs(w[2] - tgt["bbox"][2]) < 0.1,
+              f"x1 {tgt['bbox'][2]:.2f} -> {w[2]:.2f}")
+    else:
+        check("lone amount, no margin evidence: keeps its LEFT edge",
+              rep["in_place"]["count"] == 1 and abs(w[0] - tgt["bbox"][0]) < 0.1,
+              f"x0 {tgt['bbox'][0]:.2f} -> {w[0]:.2f}")
+
 w4 = os.path.expanduser("~/.cache/redraft-audit/corpus/irs-w4.pdf")
 if os.path.exists(w4):
     raw4 = open(w4, "rb").read()

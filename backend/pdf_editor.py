@@ -1030,6 +1030,7 @@ def get_spans(doc: fitz.Document, page_num: int = 0) -> list:
                     "size":   span["size"],
                     "color":  _int_to_rgb(span["color"]),
                     "flags":  span["flags"],
+                    "alpha":  span.get("alpha", 255),
                 })
     return spans
 
@@ -1521,6 +1522,40 @@ class PDFEditor:
                         else:
                             cursor = f["bbox"].x1
                         prev_orig_x1 = f["bbox"].x1
+
+            # Whitespace-only spans (a trailing space Word draws after
+            # "contact@1337.ma") are no field to edit, so get_spans leaves
+            # them out — and the push left them behind, INSIDE the shifted
+            # words: extraction then read the line as "https://\n \nZoé…".
+            # A space draws no ink; it moves with the word to its left.
+            if overflowing:
+                blanks = []
+                for b_ in page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
+                    for l_ in b_.get("lines", []):
+                        for sp_ in l_["spans"]:
+                            if sp_.get("text") and not sp_["text"].strip():
+                                blanks.append({"text": sp_["text"], "bbox": fitz.Rect(sp_["bbox"]),
+                                               "origin": sp_["origin"], "font": sp_["font"],
+                                               "size": sp_["size"],
+                                               "color": _int_to_rgb(sp_["color"]),
+                                               "flags": sp_["flags"]})
+                for edited_span, new_x1, oy in overflowing:
+                    orig_x1 = edited_span["bbox"].x1
+                    for bl in blanks:
+                        if abs(bl["origin"][1] - oy) > SAME_LINE_TOL or \
+                                bl["bbox"].x0 < orig_x1 - SAME_LINE_TOL:
+                            continue
+                        left = [f for f in all_spans
+                                if abs(f["origin"][1] - oy) <= SAME_LINE_TOL
+                                and f["bbox"].x1 <= bl["bbox"].x0 + SAME_LINE_TOL
+                                and f["bbox"].x0 >= orig_x1 - SAME_LINE_TOL]
+                        if left:
+                            dx = shift_of.get(id(max(left, key=lambda f: f["bbox"].x1)), 0.0)
+                        else:
+                            dx = max(0.0, new_x1 - bl["bbox"].x0)
+                        if dx > 0.1:
+                            all_spans.append(bl)
+                            shift_of[id(bl)] = dx
 
             shifted_spans = [s for s in all_spans if id(s) in shift_of]
 
