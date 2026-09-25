@@ -345,34 +345,33 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
         {/* Document canvas */}
         <div ref={canvasBoxRef} className="flex-1 overflow-auto px-6 pt-6 pb-20 flex justify-center">
           {file && fileData ? (
-            <div className="paper-shadow rounded-sm h-fit">
-              <PdfCanvas
-                data={previewData || fileData}
-                pageIndex={pageIndex}
-                spans={spans}
-                selectedId={selectedId}
-                editedIds={editedIds}
-                onSelect={(id) => id != null && setSelectedId(id)}
-                maxWidth={pdfWidth}
-                overlays={overlays}
-                overlaySelectedId={overlaySel}
-                onOverlaySelect={selectOverlay}
-                onOverlayChange={updateOverlay}
-                onOverlayDelete={(id) => {
-                  removeOverlay(id);
-                  setOverlaySel(null);
-                }}
-                fonts={fonts}
-                placement={placement}
-                onPlace={handlePlace}
-                moves={previewData ? {} : moves}
-                edits={edits}
-                onSpanMove={moveSpan}
-                onSpanMoveClear={clearMove}
-                selectedPopover={renderPopover}
-                liveEdits={!previewData}
-              />
-            </div>
+            <PdfCanvas
+              data={previewData || fileData}
+              pageIndex={pageIndex}
+              spans={spans}
+              selectedId={selectedId}
+              editedIds={editedIds}
+              onSelect={(id) => id != null && setSelectedId(id)}
+              maxWidth={pdfWidth}
+              overlays={overlays}
+              overlaySelectedId={overlaySel}
+              onOverlaySelect={selectOverlay}
+              onOverlayChange={updateOverlay}
+              onOverlayDelete={(id) => {
+                removeOverlay(id);
+                setOverlaySel(null);
+              }}
+              fonts={fonts}
+              placement={placement}
+              onPlace={handlePlace}
+              moves={previewData ? {} : moves}
+              edits={edits}
+              onSpanMove={moveSpan}
+              onSpanMoveClear={clearMove}
+              selectedPopover={renderPopover}
+              liveEdits={!previewData}
+              onZoomFactor={(f) => setZoom((z) => Math.min(2.5, Math.max(0.4, +(z * f).toFixed(3))))}
+            />
           ) : (
             <button
               onClick={() => inputRef.current?.click()}
