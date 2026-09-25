@@ -354,7 +354,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
           </section>
         )}
 
-        {/* My templates (cloud) */}
+        {/* My templates (cloud): same card as Recent activity, on a blue tint */}
         {cloudEnabled && projects.length > 0 && (
           <section className="mt-10">
             <div className="flex items-center justify-between mb-4 px-1">
@@ -369,7 +369,7 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                 <div
                   key={p.id}
                   onClick={() => openingId == null && openProject(p)}
-                  className="group relative rounded-3xl bg-surface p-4 cursor-pointer transition-transform duration-200 hover:-translate-y-1"
+                  className="group relative rounded-3xl bg-surface p-3 pb-4 cursor-pointer transition-transform duration-200 hover:-translate-y-1 animate-rise"
                 >
                   <button
                     onClick={(e) => {
@@ -377,27 +377,35 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                       removeProject(p);
                     }}
                     title="Remove from account"
-                    className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-surface-container text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-error-container transition-all grid place-items-center"
+                    aria-label="Remove template from account"
+                    className="absolute top-5 right-5 z-10 w-8 h-8 rounded-full bg-surface text-on-surface-variant shadow-soft opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error transition-all grid place-items-center"
                   >
                     <Icon name="trash" size={16} />
                   </button>
-                  <div className="flex items-center gap-4">
-                    <div className="w-14 h-[76px] rounded-xl bg-white overflow-hidden shrink-0 grid place-items-center shadow-soft">
-                      {openingId === p.id ? (
-                        <Icon name="spinner" size={20} spin className="text-secondary-container" />
-                      ) : thumbs[p.id] ? (
+                  <div className="aspect-[4/3] rounded-[20px] bg-[rgb(var(--c-tint-blue))] mb-3.5 relative overflow-hidden grid place-items-center">
+                    <span className="absolute top-3 left-3 z-10 inline-flex items-center gap-1.5 rounded-full bg-surface px-2.5 py-1 text-[12px] font-semibold text-on-surface">
+                      <Icon name="layers" size={13} />
+                      Bulk template
+                    </span>
+                    {openingId === p.id ? (
+                      <Icon name="spinner" size={28} spin className="text-secondary-container" />
+                    ) : thumbs[p.id] ? (
+                      <div className="absolute left-[16%] right-[16%] top-9 bottom-0 rounded-t-lg bg-white shadow-[0_10px_24px_-10px_rgb(var(--c-shadow)/0.45)] overflow-hidden">
                         <img src={thumbs[p.id]} alt="" className="w-full h-full object-cover object-top" />
-                      ) : (
-                        <Icon name="doc" size={24} className="text-on-surface/40" />
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="text-[16px] font-semibold text-on-surface truncate">{p.name}</h3>
-                      <p className="text-[13px] text-on-surface-variant flex items-center gap-1.5 mt-0.5">
-                        <Icon name="layers" size={14} />
-                        Bulk template · {(p.setup?.picked?.length) || 0} fields
-                      </p>
-                    </div>
+                      </div>
+                    ) : (
+                      <Icon name="doc" size={34} className="text-on-surface/30" />
+                    )}
+                  </div>
+                  <h3 className="px-1.5 text-[16px] font-semibold text-on-surface truncate mb-1 group-hover:text-secondary-container transition-colors">
+                    {p.name}
+                  </h3>
+                  <div className="px-1.5 flex items-center justify-between text-on-surface-variant text-[13px]">
+                    <span>{(p.setup?.picked?.length) || 0} field{(p.setup?.picked?.length) === 1 ? "" : "s"} to fill</span>
+                    <span className="flex items-center gap-1">
+                      <Icon name="doc" size={14} />
+                      {p.pages || 1}
+                    </span>
                   </div>
                 </div>
               ))}
