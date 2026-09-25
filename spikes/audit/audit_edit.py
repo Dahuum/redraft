@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _common  # noqa: E402
 from _common import (HARD, corpus_docs, line_reads, moved_text, output_defects,  # noqa: E402
-                     page_facts, stranded)
+                     page_facts, stranded, edit_tells)
 from api import extract_spans, apply_replacements  # noqa: E402
 
 import warnings  # noqa: E402
@@ -46,11 +46,18 @@ def _one_word(old):
     return " ".join(words)
 
 
-tot = {"n": 0, "inplace": 0, "redrawn": 0, "refused": 0, "defects": 0, "crash": 0}
+tot = {"tells": 0, "n": 0, "inplace": 0, "redrawn": 0, "refused": 0, "defects": 0, "crash": 0}
 by_shape, reasons, rows = {}, {}, []
 
 for label, path in corpus_docs():
     data = open(path, "rb").read()
+    try:
+        # What every API endpoint does first: adopt the PDF's own fonts (and, for a Type3 font,
+        # its genuine family) for this request. Without it the audit judged a different engine.
+        import api as _api
+        _api._ingest_embedded_fonts(data)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         spans = extract_spans(data)
     except Exception as exc:  # noqa: BLE001
@@ -100,6 +107,13 @@ for label, path in corpus_docs():
                 bad += line_reads(data, out, page, sd, new)
             if rf:
                 tot["reflowed"] = tot.get("reflowed", 0) + 1
+            try:
+                tells = edit_tells(data, out, page, sd, new, redrawn=not rep['in_place']['count']) if not bad else []
+            except Exception:  # noqa: BLE001 — a detector bug must not hide the audit
+                tells = []
+            if tells:
+                tot["tells"] += 1
+                notes.append("TELL %-12s %r -> %s" % (shape, old[:20], tells))
             if bad:
                 tot["defects"] += 1
                 d0["defects"] += 1
@@ -122,6 +136,7 @@ print("%-22s%5s%8s%10s%9s%8s" % ("document", "n", "clean", "refused", "defect", 
 for r in rows:
     print("%-22s%5d%8d%10d%9d%8d" % r)
 print("-" * 74)
+print("VISIBLE TELLS (size / typeface / ruling, not counted as defects): %d" % tot["tells"])
 print("TOTAL %d   clean %d (%.1f%%)   refused %d (%.1f%%)   DEFECTS %d   crashes %d"
       % (tot["n"], clean, 100.0 * clean / n, tot["refused"], 100.0 * tot["refused"] / n,
          tot["defects"], tot["crash"]))

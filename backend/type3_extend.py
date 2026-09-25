@@ -435,3 +435,25 @@ def extend(doc, display_name: str, missing_chars, code_for: dict):
         import inplace_spike as S
         S._add_tounicode_entries(doc, info["tu_xref"], tu, hex_digits=2)
     return True, None
+
+
+def donor_bytes(pdf_bytes: bytes, xref: int):
+    """The genuine family of a Type3 font at its own weight, as font-file bytes, or None.
+
+    For the REDRAW engine: a Type3 font has no font program to reuse, so a value redrawn in it
+    fell back to Helvetica. The family it was made from (Merriweather, Manrope...) is the
+    honest stand-in — same letterforms, width-matched to the document's own advances.
+    """
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            info = read_font(doc, xref)
+            sub = build_subset_font(doc, info) if info else None
+        finally:
+            doc.close()
+        if not sub:
+            return None
+        donor, why = get_donor(info["fd"], sub[1], info["upem"])
+        return _save(donor) if donor is not None else None
+    except Exception:  # noqa: BLE001
+        return None
