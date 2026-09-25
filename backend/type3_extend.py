@@ -237,25 +237,45 @@ def _family_and_style(fd):
     return family, wt, style, italic
 
 
-def _pin_variable(donor: TTFont, weight: int, ref_widths: dict, upem_out: int):
-    """A static instance of a variable *donor*: weight from the descriptor, optical size by width match."""
+_DROP = ("GPOS", "GSUB", "GDEF", "kern", "DSIG", "BASE", "JSTF", "MATH", "STAT", "meta", "SVG ", "COLR", "CPAL")
+
+
+def _lean(raw: bytes) -> TTFont:
+    """The donor with the layout tables removed. Only outlines and advances are used from it,
+    and compiling a variable font's GPOS once per optical-size candidate took a minute."""
+    t = TTFont(io.BytesIO(raw))
+    for tag in _DROP:
+        if tag in t:
+            del t[tag]
+    return t
+
+
+_PIN_CACHE: dict = {}
+
+
+def _pin_variable(raw: bytes, weight: int, ref_widths: dict, upem_out: int):
+    """A static instance of a variable donor: weight from the descriptor, optical size by width match."""
+    import hashlib
     from fontTools.varLib import instancer
-    axes = {a.axisTag: a for a in donor["fvar"].axes}
+    key = (hashlib.sha1(raw).hexdigest(), weight, tuple(sorted(ref_widths.items())), upem_out)
+    if key in _PIN_CACHE:
+        return _PIN_CACHE[key]
+    probe = _lean(raw)
+    axes = {a.axisTag: a for a in probe["fvar"].axes}
     loc = {t: a.defaultValue for t, a in axes.items()}
     if "wght" in axes:
         loc["wght"] = min(max(weight, axes["wght"].minValue), axes["wght"].maxValue)
     cands = [None]
     if "opsz" in axes:
         lo, hi = axes["opsz"].minValue, axes["opsz"].maxValue
-        cands = [lo + (hi - lo) * k / 6.0 for k in range(7)]
+        cands = [lo + (hi - lo) * k / 4.0 for k in range(5)]
     best, best_err = None, 1e18
-    cm0 = donor.getBestCmap()
     for o in cands:
         l2 = dict(loc)
         if o is not None:
             l2["opsz"] = o
         try:
-            inst = instancer.instantiateVariableFont(TTFont(io.BytesIO(_save(donor))), l2, inplace=False)
+            inst = instancer.instantiateVariableFont(_lean(raw), l2, inplace=True)
         except Exception:  # noqa: BLE001
             continue
         cm, hm, up = inst.getBestCmap(), inst["hmtx"], inst["head"].unitsPerEm
@@ -266,7 +286,8 @@ def _pin_variable(donor: TTFont, weight: int, ref_widths: dict, upem_out: int):
                 err += abs(hm[g][0] * upem_out / up - w) / max(w, 1); n += 1
         if n and err / n < best_err:
             best, best_err = inst, err / n
-    return best, (best_err if best is not None else None)
+    _PIN_CACHE[key] = (best, best_err if best is not None else None)
+    return _PIN_CACHE[key]
 
 
 def _save(tt):
@@ -289,7 +310,7 @@ def get_donor(fd, ref_widths, upem):
         return None, "no_donor"          # a substitute typeface is never dropped into a page unmeasured
     tt = TTFont(io.BytesIO(raw))
     if "fvar" in tt:
-        tt, err = _pin_variable(tt, weight, ref_widths, upem)
+        tt, err = _pin_variable(raw, weight, ref_widths, upem)
         if tt is None:
             return None, "no_donor"
         if err is not None and err > 0.06:
@@ -299,8 +320,8 @@ def get_donor(fd, ref_widths, upem):
 
 # ── writing back ───────────────────────────────────────────────────────────────────────────
 class _PathOut(BasePen):
-    def __init__(self, sy):
-        super().__init__(None)
+    def __init__(self, sy, glyphset):
+        super().__init__(glyphset)             # composites (Å, é, ö…) need it to find their parts
         self.sy, self.ops, self.pts = sy, [], []
 
     def _pt(self, p):
@@ -327,7 +348,7 @@ def _f(v):
 
 def _charproc(font_tt, gname, sy):
     gs = font_tt.getGlyphSet()
-    pen = _PathOut(sy)
+    pen = _PathOut(sy, gs)
     gs[gname].draw(pen)
     if not pen.pts:
         return None
@@ -367,7 +388,10 @@ def extend(doc, display_name: str, missing_chars, code_for: dict):
         code = code_for.get(ch)
         if code is None or code > 255 or code in info["diffs"] or code <= info["last"]:
             return None, "no_code"
-        made = _charproc(ext, order[res["gid"][ch]], sy)
+        try:
+            made = _charproc(ext, order[res["gid"][ch]], sy)
+        except Exception:  # noqa: BLE001
+            made = None
         if not made:
             return None, "empty_glyph"
         new[ch] = (code,) + made

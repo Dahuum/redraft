@@ -84,6 +84,8 @@ for label, path in corpus_docs():
                 d0["refused"] += 1
                 sh["refused"] += 1
                 for r in hard:
+                    if r["reason"] == "crowds_neighbour":
+                        notes.append("%-12s %r -> refused (crowds_neighbour) — check it is a real crowd" % (shape, old[:20]))
                     reasons[r["reason"]] = reasons.get(r["reason"], 0) + 1
                     sh["why"][r["reason"]] = sh["why"].get(r["reason"], 0) + 1
                 continue

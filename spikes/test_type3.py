@@ -100,5 +100,15 @@ if rep["in_place"]["count"] == 1:
 else:
     print("SKIP - accent injection not in place (no donor?)")
 
+# 5. composite glyphs (Å, Ñ, ö are a base letter plus a mark in the donor) must be writable
+out, rep = edit("Total due USD 3,840.00", "Total due USD 3,840.00 Ångström-Ñ")
+if rep["in_place"]["count"] == 0 and any("no_donor" in str(r) for r in rep["in_place"].get("refusals", [])):
+    print("SKIP - composite glyphs (no donor reachable)")
+else:
+    check("accented capitals with composite outlines go in place", rep["in_place"]["count"] == 1, str(rep["in_place"]))
+    pg = fitz.open(stream=out, filetype="pdf")[0]
+    check("the accented text reads back", "Ångström-Ñ" in pg.get_text(), pg.get_text()[:200])
+    check("still no font added", fonts(out)[0] == fonts(raw)[0])
+
 print("RESULT:", "ALL PASS" if not FAIL else "FAILURES: %s" % FAIL)
 sys.exit(1 if FAIL else 0)
