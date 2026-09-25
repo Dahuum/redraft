@@ -26,6 +26,10 @@ looking only at the edited text:
   * INVISIBLE OCR TEXT. On a scan the text is a picture; the searchable layer
     over it is drawn invisibly. Editing it reported success, changed no pixel,
     and left the text layer contradicting the image. It is refused now.
+  * CROWDED, NOT OVERLAPPED. A value too wide for a right-aligned cell was
+    redrawn at 68% size and ended 1pt from the QTY figure beside it (57pt of
+    clear space before). No word overlapped, MuPDF fused the two into one
+    word, and every check passed; the edit is refused now.
 """
 import os
 import sys
@@ -264,6 +268,22 @@ check("one-text-object page: the reorder moved no pixel",
       fitz.open(stream=out, filetype="pdf")[0].get_pixmap(dpi=96).samples
       == fitz.open(stream=_no_reorder(texb, tsd, tsd["text"].replace("search", "sea")),
                    filetype="pdf")[0].get_pixmap(dpi=96).samples)
+
+# ---- crowded, not overlapped ------------------------------------------------
+_cb = open(os.path.join(HERE, "..", "examples", "annex-cell.pdf"), "rb").read()
+_cells = [s for s in api.extract_spans(_cb) if s["text"] == "2,400.00"]
+_csd = max(_cells, key=lambda s: s["bbox"][0])          # the TOTAL column, QTY "1" to its left
+_long = "Zoé Ångström-Ñuñez 2,400.00"
+_out, _rep = api.apply_replacements(_cb, [(_csd, _long)], try_inplace=True)
+check("a value that would end up touching its neighbour is refused", _out == _cb)
+_saved = api._crowds_neighbour
+api._crowds_neighbour = lambda *a, **k: None            # calibration: the rule is what refuses
+_out2, _ = api.apply_replacements(_cb, [(_csd, _long)], try_inplace=True)
+api._crowds_neighbour = _saved
+check("(calibration) without the rule the same edit is applied", _out2 != _cb)
+_out, _rep = api.apply_replacements(_cb, [(_csd, "12,400.00")], try_inplace=True)
+check("a value that fits still edits", _out != _cb and
+      "12,400.00" in fitz.open(stream=_out, filetype="pdf")[0].get_text())
 
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not FAIL else f"{len(FAIL)} FAILED -> {FAIL}")

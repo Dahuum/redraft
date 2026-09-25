@@ -83,6 +83,17 @@ except Exception:          # noqa: BLE001
     _np = None
 
 
+def _fname(f) -> str:
+    """Display name of a get_fonts() entry, the way MuPDF names the same font in extracted spans.
+
+    A font without a BaseFont (every Type3 font, which is what browsers write for variable
+    fonts) is reported as "" here but as "Type3 (7 0 R)" in span["font"]. Keyed by the empty
+    name, all of a document's Type3 fonts collapsed into one, and every one but the first had no
+    character map, so its text could not be found ("sequence_not_found").
+    """
+    return f[3].split("+")[-1] or "%s (%s 0 R)" % (f[2], f[0])
+
+
 def _norm(s: str) -> str:
     return s.replace("\xa0", " ")
 
@@ -92,7 +103,7 @@ def _font_info(doc):
     subtype, used = {}, {}
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            subtype[f[3].split("+")[-1]] = f[2]
+            subtype[_fname(f)] = f[2]
     for pno in range(doc.page_count):
         d = doc[pno].get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
         for b in d["blocks"]:
@@ -260,7 +271,7 @@ def _cid_glyph_coverage(doc, font_display_name: str, cids):
     type0_xref = None
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            if f[3].split("+")[-1] != font_display_name:
+            if _fname(f) != font_display_name:
                 continue
             if "/Subtype/Type0" not in doc.xref_object(f[0], compressed=True).replace(" ", ""):
                 continue
@@ -329,7 +340,7 @@ def _tounicode_code_maps(doc, want_type0: bool):
     out, seen_xrefs = {}, set()
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            xref, subtype, name = f[0], f[2], f[3].split("+")[-1]
+            xref, subtype, name = f[0], f[2], _fname(f)
             if (subtype == "Type0") != want_type0 or name in out or xref in seen_xrefs:
                 continue
             seen_xrefs.add(xref)
@@ -394,7 +405,7 @@ def _simple_font_encodings(doc):
     out = {}
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            name = f[3].split("+")[-1]
+            name = _fname(f)
             if name not in out and f[5]:
                 out[name] = f[5]
     return out
@@ -517,7 +528,7 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
     key = None
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            if f[3].split("+")[-1] != font_display_name:
+            if _fname(f) != font_display_name:
                 continue
             raw = None
             try:
@@ -551,7 +562,7 @@ def _simple_font_glyph_coverage(doc, font_display_name: str):
 
 def _page_font_refmap(page):
     """PDF resource name (e.g. 'F0') -> display font name (subset prefix stripped)."""
-    return {f[4]: f[3].split("+")[-1] for f in page.get_fonts(full=True)}
+    return {f[4]: _fname(f) for f in page.get_fonts(full=True)}
 
 
 def _page_font_subtypes(page):
@@ -1355,7 +1366,7 @@ def _cid_program_gid_map(doc, font_display_name: str) -> dict:
         from fontTools.ttLib import TTFont
         for pno in range(doc.page_count):
             for f in doc[pno].get_fonts(full=True):
-                if f[3].split("+")[-1] != font_display_name:
+                if _fname(f) != font_display_name:
                     continue
                 if "/Subtype/Type0" not in doc.xref_object(
                         f[0], compressed=True).replace(" ", ""):
@@ -1407,7 +1418,7 @@ def _try_extend(doc, font_display_name, missing_chars):
     type0_xref = None
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            if f[3].split("+")[-1] != font_display_name:
+            if _fname(f) != font_display_name:
                 continue
             # Only a Type0 object can have the descendant chain this walks.
             # A display name is not unique — the attestation fixture embeds
@@ -1504,6 +1515,14 @@ def _try_extend(doc, font_display_name, missing_chars):
 
 
 _SIMPLE_EXTEND_FAIL_MSG = {
+    "type3_unsupported_structure": ("This font is drawn glyph by glyph (a Type3 font) in a form "
+                                    "that can't be extended without risk, so the new characters "
+                                    "can't be added."),
+    "type3_no_donor": ("This font is drawn glyph by glyph and the genuine family it comes from "
+                       "isn't available to copy the missing characters from."),
+    "type3_donor_mismatch": ("The available stand-in for this font's letters is measurably a "
+                             "different size, so it would show."),
+    "type3_no_family": "This font's family name isn't recorded, so its missing characters can't be sourced.",
     "no_font_ref": "Couldn't locate this font's own reference on the page.",
     "cff_encoding_unsupported": ("This font's outlines are a CFF program and its encoding "
                                  "isn't one whose character codes can be mapped safely, so "
@@ -1549,7 +1568,7 @@ def _simple_font_refs(doc, font_display_name: str, require_truetype: bool = True
     """
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            if f[3].split("+")[-1] != font_display_name:
+            if _fname(f) != font_display_name:
                 continue
             xref = f[0]
             obj = doc.xref_object(xref, compressed=True)
@@ -1644,7 +1663,7 @@ def _simple_cff_refs(doc, font_display_name: str):
     """
     for pno in range(doc.page_count):
         for f in doc[pno].get_fonts(full=True):
-            if f[3].split("+")[-1] != font_display_name:
+            if _fname(f) != font_display_name:
                 continue
             xref = f[0]
             obj = doc.xref_object(xref, compressed=True)
@@ -1749,6 +1768,15 @@ def _try_extend_simple_cff(doc, font_display_name, missing_chars, code_for=None)
                            {code_for.get(ch, ord(ch)): ord(ch) for ch in missing_chars},
                            hex_digits=2)
     return result["names"], None
+
+
+def _type3_xref(doc, font_display_name: str):
+    """xref of the Type3 font with this display name, or None."""
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[2] == "Type3" and _fname(f) == font_display_name:
+                return f[0]
+    return None
 
 
 def _private_code_font(doc, refs) -> bool:
@@ -2764,6 +2792,25 @@ def _fit_plan(base_w: float, avail: float, n_chars: int, n_spaces: int,
             "short": max(remaining, 0.0)}
 
 
+def _type3_unit(doc, font_xref) -> float:
+    """How many 1000-unit widths one /Widths unit of this font is worth.
+
+    A Type3 font measures /Widths in its own glyph space, scaled to text space by /FontMatrix:
+    width_pt = w * FontMatrix[0] * size. Chrome writes a matrix of .0005 (a 2000-unit em), so a
+    reader that divides by 1000 sees every string twice as wide as it is drawn and refuses
+    ("would_overflow") an edit that fits. Anything that is not Type3 is already in 1000 units.
+    """
+    if not font_xref:
+        return 1.0
+    try:
+        if doc.xref_get_key(font_xref, "Subtype")[1] != "/Type3":
+            return 1.0
+        m = re.findall(r"-?\d*\.?\d+(?:[eE]-?\d+)?", doc.xref_get_key(font_xref, "FontMatrix")[1] or "")
+        return abs(float(m[0])) * 1000.0 if m else 1.0
+    except Exception:  # noqa: BLE001
+        return 1.0
+
+
 def _parse_widths_array(doc, refs):
     """(first_char, [w1000, ...]) from a simple font's /Widths, or None."""
     first, last = refs.get("first_char"), refs.get("last_char")
@@ -2782,6 +2829,9 @@ def _parse_widths_array(doc, refs):
     widths = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", text)]
     if len(widths) != (last - first + 1):
         return None
+    k = _type3_unit(doc, refs.get("font_xref"))
+    if k != 1.0:
+        widths = [w * k for w in widths]
     return first, widths
 
 
@@ -2851,7 +2901,7 @@ def _run_width_pt(doc, font_display_name, codes, size, is_cid) -> float:
         type0 = None
         for pno in range(doc.page_count):
             for f in doc[pno].get_fonts(full=True):
-                if f[3].split("+")[-1] == font_display_name:
+                if _fname(f) == font_display_name:
                     type0 = f[0]
                     break
             if type0:
@@ -2968,7 +3018,7 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
         # come from the font's own /ToUnicode, never from the glyph maps.
         _t0 = next((f[0] for p_ in range(doc.page_count)
                     for f in doc[p_].get_fonts(full=True)
-                    if f[3].split("+")[-1] == nm and f[2] == "Type0"), None)
+                    if _fname(f) == nm and f[2] == "Type0"), None)
         _refs = _font_stream_refs(doc, _t0) if _t0 else None
         if isinstance(_refs, dict) and _cidtogid_stream(doc, _refs) is not None:
             fm = {_norm(k): v for k, v in (cidmap or {}).get("rev", {}).items() if len(k) == 1}
@@ -3002,7 +3052,15 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             # their own; the glyphs themselves are injected below, under
             # exactly those codes. See _private_code_font.
             prefs = _simple_font_refs(doc, nm)
-            if _private_code_font(doc, prefs):
+            t3x = None
+            if not prefs:
+                # A Type3 font (what Chrome writes for a variable font) has no
+                # font program, so it never gets refs — but its codes are the
+                # producer's own invention exactly like a private TrueType's.
+                t3x = _type3_xref(doc, nm)
+                if t3x:
+                    prefs = {"last_char": int(doc.xref_get_key(t3x, "LastChar")[1])}
+            if t3x or _private_code_font(doc, prefs):
                 need = [ch for ch in dict.fromkeys(new)
                         if ch not in cm["rev"] and not ch.isspace()]
                 alloc = _allocate_private_codes(doc, prefs, cm["rev"], need)
@@ -3049,8 +3107,15 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
                     code_for = {}
                     for ch, code in zip(new, new_codes or []):
                         code_for.setdefault(ch, code)
-                    new_gids, fail_reason = _try_extend_simple(doc, nm, missing,
-                                                               code_for=code_for)
+                    if _type3_xref(doc, nm):
+                        import type3_extend
+                        ok, fail_reason = type3_extend.extend(doc, nm, missing, code_for)
+                        new_gids = {ch: code_for[ch] for ch in missing} if ok else None
+                        if not ok:
+                            fail_reason = "type3_" + str(fail_reason)
+                    else:
+                        new_gids, fail_reason = _try_extend_simple(doc, nm, missing,
+                                                                   code_for=code_for)
                     if new_gids is None:
                         why = _SIMPLE_EXTEND_FAIL_MSG.get(
                             fail_reason, "Couldn't add the missing glyph(s).")
@@ -3217,19 +3282,55 @@ def _right_aligned_column(page, target) -> bool:
     placed correctly. With no evidence the left edge is kept, as before.
     """
     t = (target.get("text") or "").strip()
-    if not t or not _NUMERIC_RE.match(t):
+    if not t:
         return False
+    numeric = bool(_NUMERIC_RE.match(t))
     x0, x1, y = target["origin"][0], target["bbox"][2], target["origin"][1]
     mates = 0
+    lefts = set()
     for s in _spans(page):
         st = s["text"].strip()
-        if not st or not _NUMERIC_RE.match(st):
+        if not st or (numeric and not _NUMERIC_RE.match(st)):
             continue
         if abs(s["origin"][1] - y) <= 2.0:
             continue
+        # a mate ends exactly where the target ends but starts elsewhere; a justified paragraph's
+        # lines share BOTH edges, so they are never mates
         if abs(s["bbox"][2] - x1) < 0.1 and abs(s["origin"][0] - x0) > 1.0:
             mates += 1
-    return mates >= 2 or _flush_right_margin(page, target)
+            lefts.add(round(s["origin"][0], 1))
+    if numeric:
+        return mates >= 2 or _flush_right_margin(page, target)
+    return _flush_right_line(page, target)
+
+
+def _flush_right_line(page, target) -> bool:
+    """A WHOLE line of text set flush right: "Total due USD 3,840.00", a date under a letterhead.
+
+    Evidence, all required: it ends — to 0.4pt — where the page's right content margin is (the
+    page as wide as its left margin is deep); it is no longer than 70% of the measure and starts
+    well inside it; it is the only text on its line; and no other line shares BOTH its edges (the
+    lines of a justified block do). Measured over 16,523 lines in every document at hand,
+    examples and twin sources: it flags right-aligned dates, totals, references and footers, and
+    3 doubtful lines, all in dense IRS forms and a Wikipedia reference list.
+    """
+    spans = [s for s in _spans(page) if s["text"].strip()]
+    if not spans:
+        return False
+    left = min(s["origin"][0] for s in spans)
+    right = page.rect.width - left
+    measure = right - left
+    x0, x1, y = target["origin"][0], target["bbox"][2], target["origin"][1]
+    if abs(x1 - right) > 0.4 or (x1 - x0) > 0.70 * measure or x0 < left + 0.10 * measure:
+        return False
+    for s in spans:
+        if abs(s["origin"][0] - x0) < 0.1 and abs(s["origin"][1] - y) < 0.1:
+            continue                                    # the target itself
+        if abs(s["origin"][1] - y) <= 1.0:
+            return False                                # part of a longer line
+        if abs(s["bbox"][2] - x1) < 0.4 and abs(s["origin"][0] - x0) < 1.0:
+            return False                                # a block of equal lines, not a right-aligned one
+    return True
 
 
 def _flush_right_margin(page, target) -> bool:
@@ -3580,7 +3681,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     _subs = set()
     for _pno in range(doc.page_count):
         for _f in doc[_pno].get_fonts(full=True):
-            if _f[3].split("+")[-1] == nm:
+            if _fname(_f) == nm:
                 _subs.add(_f[2])
     cid_options = [t == "Type0" for t in sorted(_subs)] or [subtype.get(nm) == "Type0"]
     cid_options = sorted(set(cid_options), reverse=True)   # try CID first
@@ -3642,7 +3743,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
 
     page_names = []
     for _f in doc[tpage].get_fonts(full=True):
-        _n = _f[3].split("+")[-1]
+        _n = _fname(_f)
         if _n not in page_names:
             page_names.append(_n)
     name_order = ([nm] if nm in page_names else []) + [n for n in page_names if n != nm]
@@ -3653,7 +3754,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         out = []
         for _pno in range(doc.page_count):
             for _f in doc[_pno].get_fonts(full=True):
-                if _f[3].split("+")[-1] == name and _f[2] not in out:
+                if _fname(_f) == name and _f[2] not in out:
                     out.append(_f[2])
         return out or ["TrueType"]
 
