@@ -495,3 +495,6 @@ html[data-theme="dark"] .hr-form span, html:not([data-theme]) .hr-form span { ba
 /* nav compacts once you scroll */
 .hr-nav__bar { transition: height .3s ease, box-shadow .3s ease; }
 .hr-nav.is-compact .hr-nav__bar { height: 68px; box-shadow: 0 1px 0 rgba(45,35,35,.06), 0 18px 40px -18px rgba(45,35,35,.5); }
+
+/* signed-in visitors: hidden prompts stay hidden even where a class sets display */
+[hidden] { display: none !important; }
