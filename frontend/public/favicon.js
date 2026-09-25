@@ -1,6 +1,5 @@
-/* Redraft tab icon: the sparkle tile, with a short twinkle now and then.
- * Plays on load, whenever you come back to the tab, and once every 12 seconds while it is
- * visible; the rest of the time it is still. Skipped for prefers-reduced-motion.
+/* Redraft tab icon: the sparkle tile, with one short twinkle each time the page loads or is
+ * reloaded, then it stays still. Skipped for prefers-reduced-motion.
  * (Browsers draw the tab title in their own font, so only the icon can be animated.) */
 (function () {
   var link = document.querySelector('link[rel~="icon"]');
@@ -21,7 +20,7 @@
 
   var timer = null;
   function play() {
-    if (timer || document.hidden) return;
+    if (timer) return;
     var f = 0, N = 14;
     timer = setInterval(function () {
       f++;
@@ -32,6 +31,4 @@
     }, 70);
   }
   play();
-  document.addEventListener('visibilitychange', function () { if (!document.hidden) play(); });
-  setInterval(play, 12000);
 })();
