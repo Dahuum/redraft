@@ -135,6 +135,82 @@ def output_defects(out_pdf: bytes, page: int, new_text: str, base: dict) -> list
     return found
 
 
+def edit_tells(before_pdf: bytes, out_pdf: bytes, page: int, sd: dict, new: str,
+               redrawn: bool = True) -> list:
+    """What a reader would notice about the edited text itself, judged on the rendering.
+
+    The other checks ask whether the page is intact. This asks whether the NEW TEXT looks like
+    the old: (1) size — the redraw shrinks a value that does not fit, and a field set 40%
+    smaller than its neighbours is a tell; (2) typeface — a word the edit left alone must keep
+    its width at the same size, or a different face was drawn; (3) ruling — the new text must
+    not sit across a table line the old text did not touch.
+    """
+    found = []
+    db = fitz.open(stream=before_pdf, filetype="pdf")
+    da = fitz.open(stream=out_pdf, filetype="pdf")
+    try:
+        acc = getattr(fitz, "TEXT_ACCURATE_BBOXES", 0)
+        x0, y0, x1, y1 = sd["bbox"]
+
+        def band(w):
+            return min(w[3], y1 + 2) - max(w[1], y0 - 2) > 0.5 * (w[3] - w[1])
+
+        wb = [w for w in db[page].get_text("words", flags=acc) if band(w)]
+        wa = [w for w in da[page].get_text("words", flags=acc) if band(w)]
+        old_words = {w[4]: w for w in wb if w[2] > x0 - 1 and w[0] < x1 + 1}
+        keep = []
+        for t, o in old_words.items():
+            if len(t) < 3:
+                continue
+            near = [w for w in wa if w[4] == t and abs(w[0] - o[0]) < 0.6 * max(60.0, x1 - x0) + 40]
+            if near:
+                keep.append((o, min(near, key=lambda w: abs(w[0] - o[0]) + abs(w[1] - o[1]))))
+        # (1)+(2) a word the edit left alone, before vs after
+        for o, w in keep[:2]:
+            rb, ra = o[2] - o[0], w[2] - w[0]
+            hb, ha = o[3] - o[1], w[3] - w[1]
+            if rb > 4 and hb > 2 and ha > 0:
+                k = (ra / rb) / (ha / hb)                        # width at equal height
+                if redrawn and abs(k - 1.0) > 0.05:      # an in-place edit keeps its font by construction
+                    found.append("typeface/tracking of %r changed %+.0f%%" % (w[4][:12], (k - 1) * 100))
+                    break
+                if ha / hb < 0.85:
+                    found.append("text shrunk to %.0f%% of its size" % (100 * ha / hb))
+                    break
+        # (3) ruling across the new text
+        fresh = [w for w in wa if not any(abs(w[0] - v[0]) < 0.6 and abs(w[1] - v[1]) < 0.6 and w[4] == v[4]
+                                          for v in wb)]
+        if fresh:
+            r = fitz.Rect(min(w[0] for w in fresh), min(w[1] for w in fresh),
+                          max(w[2] for w in fresh), max(w[3] for w in fresh))
+            inner = fitz.Rect(r.x0, r.y0 + 0.2 * r.height, r.x1, r.y1 - 0.2 * r.height)
+
+            def lines(doc):
+                out = []
+                for d in doc[page].get_drawings():
+                    for it in d["items"]:
+                        if it[0] == "l":
+                            a, b = it[1], it[2]
+                            rr = fitz.Rect(min(a.x, b.x), min(a.y, b.y), max(a.x, b.x), max(a.y, b.y))
+                        elif it[0] == "re":
+                            rr = fitz.Rect(it[1])
+                        else:
+                            continue
+                        if (rr.width < 1.6 and rr.height > 4) or (rr.height < 1.6 and rr.width > 4):
+                            rr = fitz.Rect(rr.x0 - 0.2, rr.y0 - 0.2, rr.x1 + 0.2, rr.y1 + 0.2)   # zero-width lines
+                            out.append(rr)
+                return out
+            was = {tuple(round(v) for v in b) for b in lines(db) if b.intersects(fitz.Rect(x0 - 3, y0 - 3, x1 + 3, y1 + 3))}
+            for b in lines(da):
+                if b.intersects(inner) and tuple(round(v) for v in b) not in was:
+                    found.append("new text crosses a rule at x=%.0f,y=%.0f" % (b.x0, b.y0))
+                    break
+    finally:
+        db.close()
+        da.close()
+    return found
+
+
 def stranded(before_pdf: bytes, out_pdf: bytes, page: int, field=None, edit=None) -> list:
     """Underlines left behind: the words a rule underlined are still on the
     page but no longer over it (the Wikipedia caption: "Guido" slid left and

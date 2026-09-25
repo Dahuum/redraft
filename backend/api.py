@@ -1758,6 +1758,24 @@ def _ingest_embedded_fonts(pdf_bytes: bytes, user: str = None) -> list:
         return installed
     seen = set()
     try:
+        t3 = {}
+        for pno in range(doc.page_count):
+            for fo in doc[pno].get_fonts(full=True):
+                if fo[2] == "Type3" and not fo[3]:
+                    t3[_spike._fname(fo)] = fo[0]
+        if t3:
+            import functools
+            import type3_extend
+
+            memo = {}                       # per request: xrefs mean nothing across documents
+
+            def _lazy(xref):
+                if xref not in memo:
+                    memo[xref] = type3_extend.donor_bytes(pdf_bytes, xref)
+                return memo[xref]
+            _pe._DOC_TYPE3.set({n: functools.partial(_lazy, x) for n, x in t3.items()})
+        else:
+            _pe._DOC_TYPE3.set(None)
         for pno in range(doc.page_count):
             for fo in doc[pno].get_fonts(full=True):
                 xref, basefont = fo[0], fo[3]

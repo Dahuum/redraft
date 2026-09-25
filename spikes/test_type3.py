@@ -110,5 +110,20 @@ else:
     check("the accented text reads back", "Ångström-Ñ" in pg.get_text(), pg.get_text()[:200])
     check("still no font added", fonts(out)[0] == fonts(raw)[0])
 
+# 6. the REDRAW path (no in-place) draws a Type3 font's own family, not Helvetica
+api._ingest_embedded_fonts(raw)
+sp = api.extract_spans(raw)
+t = next(s for s in sp if s["text"].startswith("Invoice 2026"))
+out, rep = api.apply_replacements(raw, [(t, "Invoice 2026-0518 B")], try_inplace=False)
+srcs = [f.get("source", "") for f in rep.get("fonts", [])]
+if out == raw or not srcs:
+    print("SKIP - redraw not applied")
+else:
+    check("a redraw of a Type3 field uses the family donor", any("type3-family-donor" in x for x in srcs), str(srcs))
+    w0 = next(w for w in src[0].get_text("words") if w[4] == "Invoice")
+    w1 = next(w for w in fitz.open(stream=out, filetype="pdf")[0].get_text("words") if w[4] == "Invoice")
+    check("the unchanged word keeps its width (same typeface)",
+          abs((w1[2] - w1[0]) / (w0[2] - w0[0]) - 1) < 0.04, "%.1f vs %.1f" % (w1[2] - w1[0], w0[2] - w0[0]))
+
 print("RESULT:", "ALL PASS" if not FAIL else "FAILURES: %s" % FAIL)
 sys.exit(1 if FAIL else 0)
