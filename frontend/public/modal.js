@@ -152,9 +152,23 @@
           signedIn = true;
           var u = res.data.session.user;
           if (u && window.rdIdentify) window.rdIdentify(u.id, { email: u.email });
-          document.querySelectorAll('[data-modal]').forEach(function (el) {
-            el.textContent = 'Open app';
-          });
+          // Signed in: "Log in" and other account-creation prompts have no job any more, so
+          // they go away; the remaining sign-up buttons become one "Open app".
+          // Some buttons are drawn a moment later (the pricing ones), so apply this again once
+          // the page has settled.
+          var relabel = function () {
+            document.querySelectorAll('[data-modal]').forEach(function (el) {
+              if (el.dataset.modal === 'signin' || el.hasAttribute('data-signedin-hide')) {
+                (el.closest('li') || el).hidden = true;
+                return;
+              }
+              if (el.textContent !== 'Open app') el.textContent = 'Open app';
+            });
+          };
+          relabel();
+          window.addEventListener('load', relabel);
+          setTimeout(relabel, 600);
+          setTimeout(relabel, 1800);
         }
       });
     }
