@@ -160,7 +160,7 @@ const findScroller = (el) => {
  * trackpad pinch over the board into zoom via onZoomFactor(factor).
  */
 export function useZoomMotion({ rootRef, w, h, pageKey, onZoomFactor }) {
-  const s = useRef({ box: null, anim: null, origin: { x: 0, y: 0 }, anchor: null, acc: 1, raf: 0, key: null }).current;
+  const s = useRef({ box: null, anim: null, origin: { x: 0, y: 0 }, anchor: null, acc: 1, raf: 0, key: null, scroll: null }).current;
   const cb = useRef(onZoomFactor);
   cb.current = onZoomFactor;
 
@@ -184,6 +184,7 @@ export function useZoomMotion({ rootRef, w, h, pageKey, onZoomFactor }) {
     const prev = s.box;
     const sameDoc = prev && s.key === pageKey;
     s.box = box; s.key = pageKey;
+    if (!s.scroll) s.scroll = { l: sc.scrollLeft, t: sc.scrollTop };
     el.style.transformOrigin = "";
     const anchor = s.anchor; s.anchor = null;
     if (!sameDoc || Math.abs(prev.w - box.w) < 0.5) return;
@@ -198,16 +199,23 @@ export function useZoomMotion({ rootRef, w, h, pageKey, onZoomFactor }) {
     // Keep the point under the pointer (or the view centre) fixed while the page resizes.
     const px = anchor ? anchor.px : sc.clientWidth / 2;
     const py = anchor ? anchor.py : sc.clientHeight / 2;
-    const fx = Math.min(1, Math.max(0, (sc.scrollLeft + px - vis.l) / vis.w));
-    const fy = Math.min(1, Math.max(0, (sc.scrollTop + py - vis.t) / vis.h));
+    // Where the container was scrolled BEFORE this layout change. Reading it now would be too late:
+    // when the page gets smaller the browser has already shortened the scroll range and clamped it.
+    const sL0 = s.scroll ? s.scroll.l : sc.scrollLeft, sT0 = s.scroll ? s.scroll.t : sc.scrollTop;
+    const fx = Math.min(1, Math.max(0, (sL0 + px - vis.l) / vis.w));
+    const fy = Math.min(1, Math.max(0, (sT0 + py - vis.t) / vis.h));
     sc.scrollLeft = box.l + fx * box.w - px;
     sc.scrollTop = box.t + fy * box.h - py;
+    const sL1 = sc.scrollLeft, sT1 = sc.scrollTop; // after the browser has clamped it
+    s.scroll = { l: sL1, t: sT1 };
 
     if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
     const k = vis.w / box.w; // start scale
     if (Math.abs(1 - k) < 0.01) return;
-    const ox = (vis.l - box.l) / (1 - k);
-    const oy = (vis.t - box.t) / (1 - k);
+    // The first frame must sit exactly where the old picture was ON SCREEN. Scrolling moved the
+    // container, so compare screen positions (content position minus scroll), not content positions.
+    const ox = (vis.l - sL0 - (box.l - sL1)) / (1 - k);
+    const oy = (vis.t - sT0 - (box.t - sT1)) / (1 - k);
     s.origin = { x: ox, y: oy };
     el.style.transformOrigin = `${ox}px ${oy}px`;
     const a = el.animate([{ transform: `scale(${k})` }, { transform: "scale(1)" }], {
@@ -232,7 +240,9 @@ export function useZoomMotion({ rootRef, w, h, pageKey, onZoomFactor }) {
         s.raf = requestAnimationFrame(() => { const f = s.acc; s.acc = 1; s.raf = 0; cb.current?.(f); });
       }
     };
+    const onScroll = () => { s.scroll = { l: sc.scrollLeft, t: sc.scrollTop }; };
     sc.addEventListener("wheel", onWheel, { passive: false });
-    return () => { sc.removeEventListener("wheel", onWheel); cancelAnimationFrame(s.raf); s.raf = 0; };
+    sc.addEventListener("scroll", onScroll, { passive: true });
+    return () => { sc.removeEventListener("wheel", onWheel); sc.removeEventListener("scroll", onScroll); cancelAnimationFrame(s.raf); s.raf = 0; };
   }, [w > 0]); // eslint-disable-line react-hooks/exhaustive-deps
 }
