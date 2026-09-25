@@ -11,13 +11,13 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://redraft.dev/mail-merge" />
 <script>
-  try { if (localStorage.getItem("redraft-theme") === "light") document.documentElement.setAttribute("data-theme","light"); } catch (e) {}
+  try { if (localStorage.getItem("redraft-theme") !== "dark") document.documentElement.setAttribute("data-theme","light"); } catch (e) {}
 </script>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 58 58'><rect x='3' y='3' width='52' height='52' rx='15' fill='%238aa0ff' stroke='%232d2323' stroke-width='3.5'/><path d='M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z' fill='white' stroke='%232d2323' stroke-width='3.2' stroke-linejoin='round'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/seo.css" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rubik:wght@700;900&family=Patrick+Hand+SC&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/pages.css" />
 <script>window.REDRAFT_PH = { key: "phc_ywKonRpoQMCmsfQVykKc6YeYffCgLswjf8gH9mDVuS3R", host: "https://us.i.posthog.com" };</script>
 <script src="/analytics.js"></script>
 <script type="application/ld+json">
@@ -30,8 +30,8 @@
 </head>
 <body>
   <div class="nav">
-    <a class="brand" href="/">Redraft</a>
-    <div class="links"><a href="/templates">Templates</a><a href="/new">Start from text</a></div>
+    <a class="brand" href="/"><svg viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#8aa0ff" stroke-width="3.5"/><path d="M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z" fill="#fff" stroke-width="3.2" stroke-linejoin="round"/></svg>Redraft</a>
+    <div class="links"><a href="/templates">Templates</a><a href="/new">Start from text</a><a class="pill" href="/app">Open the editor</a></div>
   </div>
 
   <div class="wrap">
@@ -40,14 +40,14 @@
       <p class="lede">Take one PDF template and a spreadsheet, and generate <b>hundreds of personalized
         PDFs</b> at once — a ZIP or one merged file, each named per row. The fields you change keep the
         template's original font.</p>
-      <a class="cta" href="/app" onclick="try{window.rdTrack&&window.rdTrack('cta_click',{page:'mail-merge'})}catch(e){}">⚡ Try it with your template</a>
-      <span class="lock">🔒 Processed in memory, never stored</span>
+      <a class="cta" href="/app" onclick="try{window.rdTrack&&window.rdTrack('cta_click',{page:'mail-merge'})}catch(e){}">Try it with your template</a>
+      <span class="lock"><svg stroke="currentColor" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg> Processed in memory, never stored</span>
     </section>
 
     <div class="grid3">
-      <div class="feat"><div class="ic">🖱️</div><h3>Click the fields</h3><p>Click the spots on your PDF that change — each becomes a column, prefilled with its original value.</p></div>
-      <div class="feat"><div class="ic">📊</div><h3>Map a spreadsheet</h3><p>Import a CSV or Excel; every row becomes one document. Or type values by hand.</p></div>
-      <div class="feat"><div class="ic">📦</div><h3>ZIP or one PDF</h3><p>Download a ZIP (one file per row, named per client) or a single merged PDF.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></svg></div><h3>Click the fields</h3><p>Click the spots on your PDF that change — each becomes a column, prefilled with its original value.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M3.5 15h17M9.5 4.5v15"/></svg></div><h3>Map a spreadsheet</h3><p>Import a CSV or Excel; every row becomes one document. Or type values by hand.</p></div>
+      <div class="feat"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 7.5 12 3.5l7.5 4v9L12 20.5l-7.5-4z"/><path d="M12 11.5v9M4.5 7.5l7.5 4 7.5-4"/></svg></div><h3>ZIP or one PDF</h3><p>Download a ZIP (one file per row, named per client) or a single merged PDF.</p></div>
     </div>
 
     <section class="section">

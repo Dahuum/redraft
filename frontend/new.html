@@ -11,76 +11,20 @@
       document.documentElement.setAttribute("data-theme", "light");
   } catch (e) {}
 </script>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 58 58'><rect x='3' y='3' width='52' height='52' rx='15' fill='%238aa0ff' stroke='%232d2323' stroke-width='3.5'/><path d='M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z' fill='white' stroke='%232d2323' stroke-width='3.2' stroke-linejoin='round'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rubik:wght@700;900&family=Patrick+Hand+SC&display=swap" rel="stylesheet" />
 <script>
   window.REDRAFT_PH = { key: "phc_ywKonRpoQMCmsfQVykKc6YeYffCgLswjf8gH9mDVuS3R", host: "https://us.i.posthog.com" };
 </script>
 <script src="/analytics.js"></script>
-<style>
-  :root {
-    --bg:#080c14; --card:#0e131d; --card2:#131a26; --ink:#e7ebf3; --muted:#9aa4b5;
-    --line:#232c3b; --accent:#00f5ff; --accent-ink:#04121a; --brand:#2563eb;
-  }
-  :root[data-theme="light"] {
-    --bg:#eef1f6; --card:#ffffff; --card2:#f6f8fb; --ink:#101725; --muted:#5a6474;
-    --line:#e2e6ee; --accent:#0aa5ad; --accent-ink:#ffffff; --brand:#2563eb;
-  }
-  * { box-sizing:border-box; }
-  html,body { margin:0; }
-  body {
-    background:radial-gradient(ellipse at top, rgba(37,99,235,.10), transparent 60%), var(--bg);
-    color:var(--ink); min-height:100vh; line-height:1.5;
-    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    display:flex; flex-direction:column; align-items:center; padding:32px 20px 64px;
-  }
-  a { color:inherit; }
-  .nav { width:100%; max-width:760px; display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; }
-  .brand { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:20px; letter-spacing:-.02em; text-decoration:none; color:var(--ink); }
-  .nav a.ghost { text-decoration:none; color:var(--muted); font-size:14px; font-weight:500; }
-  .nav a.ghost:hover { color:var(--ink); }
-  .card { width:100%; max-width:760px; background:var(--card); border:1px solid var(--line);
-          border-radius:20px; padding:30px; box-shadow:0 24px 60px rgba(0,0,0,.28); }
-  h1 { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:28px; letter-spacing:-.02em; margin:0 0 6px; }
-  .sub { color:var(--muted); font-size:15px; margin:0 0 24px; }
-  label { display:block; font-size:12px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 7px; }
-  input, textarea {
-    width:100%; background:var(--card2); border:1px solid var(--line); border-radius:11px;
-    padding:12px 14px; font:inherit; color:var(--ink); outline:none; transition:border-color .15s, box-shadow .15s;
-  }
-  input:focus, textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(0,245,255,.12); }
-  textarea { min-height:260px; resize:vertical; line-height:1.65; font-size:14.5px; }
-  .row { margin-bottom:18px; }
-  .hint { color:var(--muted); font-size:12.5px; margin:8px 2px 0; }
-  .actions { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:8px; }
-  .btn { display:inline-flex; align-items:center; gap:9px; background:var(--accent); color:var(--accent-ink);
-         border:none; border-radius:11px; font:inherit; font-weight:700; font-size:15px; padding:13px 22px; cursor:pointer;
-         transition:filter .15s, transform .05s; }
-  .btn:hover { filter:brightness(1.06); }
-  .btn:active { transform:scale(.98); }
-  .btn[disabled] { opacity:.5; cursor:not-allowed; }
-  .lock { color:var(--muted); font-size:12.5px; display:inline-flex; align-items:center; gap:6px; }
-  .err { color:#f87171; font-size:13.5px; margin:12px 2px 0; min-height:18px; }
-  .embed { width:100%; max-width:760px; margin-top:20px; }
-  details { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:6px 18px; }
-  summary { cursor:pointer; padding:12px 0; font-weight:600; font-size:14.5px; list-style:none; display:flex; align-items:center; gap:8px; }
-  summary::-webkit-details-marker { display:none; }
-  summary .chev { margin-left:auto; color:var(--muted); transition:transform .2s; }
-  details[open] summary .chev { transform:rotate(180deg); }
-  pre { background:var(--card2); border:1px solid var(--line); border-radius:10px; padding:14px; overflow-x:auto;
-        font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; color:var(--ink); margin:6px 0 14px; }
-  .copy { background:transparent; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:7px 12px;
-          font:inherit; font-size:13px; cursor:pointer; }
-  .copy:hover { border-color:var(--accent); }
-  .foot { color:var(--muted); font-size:12.5px; margin-top:26px; text-align:center; }
-</style>
+<link rel="stylesheet" href="/pages.css" />
 </head>
 <body>
   <div class="nav">
-    <a class="brand" href="/">Redraft</a>
-    <span><a class="ghost" href="/templates" style="margin-right:18px">Templates</a><a class="ghost" href="/app">Open the editor →</a></span>
+    <a class="brand" href="/"><svg viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#8aa0ff" stroke-width="3.5"/><path d="M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z" fill="#fff" stroke-width="3.2" stroke-linejoin="round"/></svg>Redraft</a>
+    <div class="links"><a href="/templates">Templates</a><a href="/new">Start from text</a><a class="pill" href="/app">Open the editor</a></div>
   </div>
 
   <div class="card">
@@ -102,9 +46,9 @@ Tip: leave a blank line between paragraphs. A short line in CAPITALS or a legal 
 
     <div class="actions">
       <button class="btn" id="create">
-        <span>✨</span> Create &amp; open in editor
+        <svg stroke="currentColor" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 14.3 10l6.5 2.3-6.5 2.3L12 21l-2.3-6.4L3.2 12.3 9.7 10z"/></svg> Create &amp; open in editor
       </button>
-      <span class="lock">🔒 Processed in memory, never stored</span>
+      <span class="lock"><svg stroke="currentColor" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg> Processed in memory, never stored</span>
     </div>
     <p class="err" id="err"></p>
   </div>
@@ -116,7 +60,7 @@ Tip: leave a blank line between paragraphs. A short line in CAPITALS or a legal 
       <pre id="snippet">&lt;a href="https://redraft.dev/new"
    style="display:inline-flex;align-items:center;gap:8px;background:#2563eb;color:#fff;
           text-decoration:none;font:600 15px system-ui;padding:12px 20px;border-radius:10px"&gt;
-  📄 Create a document in Redraft
+  Create a document in Redraft
 &lt;/a&gt;</pre>
       <button class="copy" id="copy">Copy snippet</button>
     </details>
