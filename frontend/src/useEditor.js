@@ -53,7 +53,7 @@ export function useEditor() {
         setOverlays([]);
         setMoves({});
         resetPreview();
-        setSelectedId(res.spans[0] ? res.spans[0].id : null);
+        setSelectedId(null); // document-first: nothing is open until you click text
         window.rdTrack?.("doc_opened", { pages: res.pages.length, fields: res.spans.length });
         return res;
       } catch (e) {

@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import Icon from "./Icon.jsx";
 
 /**
  * Shared CSV/paste source picker for the bulk and annex import panels:
@@ -20,8 +21,8 @@ export default function ImportSource({
     <>
       <div className="flex items-center gap-1 bg-surface-container-low rounded-lg p-1 border border-outline-variant/20 w-max">
         {[
-          ["upload", "upload_file", "Upload"],
-          ["paste", "content_paste", "Paste"],
+          ["upload", "upload", "Upload"],
+          ["paste", "doc", "Paste"],
         ].map(([k, icon, lbl]) => (
           <button
             key={k}
@@ -32,7 +33,7 @@ export default function ImportSource({
                 : "text-on-surface-variant hover:text-on-surface"
             }`}
           >
-            <span className="material-symbols-outlined text-[16px]">{icon}</span>
+            <Icon name={icon} size={16} />
             {lbl}
           </button>
         ))}
@@ -50,9 +51,7 @@ export default function ImportSource({
           }}
           className="border-2 border-dashed border-outline-variant/50 hover:border-secondary-container rounded-xl p-6 flex flex-col items-center gap-2 cursor-pointer transition-colors text-center"
         >
-          <span className="material-symbols-outlined text-[24px] text-on-surface-variant">
-            cloud_upload
-          </span>
+          <Icon name="cloudup" size={24} className="text-on-surface-variant" />
           <p className="text-body-md text-on-surface">{dropLabel}</p>
           <input
             ref={inputRef}

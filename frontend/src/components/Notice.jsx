@@ -1,13 +1,9 @@
+import Icon from "./Icon.jsx";
+
 const TONES = {
-  error: { box: "border-error/30 bg-error/10 text-error", icon: "error" },
-  success: {
-    box: "border-secondary-container/30 bg-secondary-container/10 text-secondary",
-    icon: "check_circle",
-  },
-  info: {
-    box: "border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan",
-    icon: "info",
-  },
+  error: { box: "bg-error-container text-on-error-container", icon: "warning" },
+  success: { box: "bg-[rgb(var(--c-tint-mint))] text-on-surface", icon: "check" },
+  info: { box: "bg-[rgb(var(--c-tint-blue))] text-on-surface", icon: "info" },
 };
 
 /**
@@ -17,8 +13,8 @@ const TONES = {
 export default function Notice({ tone = "info", icon, children }) {
   const t = TONES[tone] || TONES.info;
   return (
-    <div className={`rounded-lg px-3 py-2 text-caption flex items-center gap-2 border ${t.box}`}>
-      <span className="material-symbols-outlined text-[16px] shrink-0">{icon || t.icon}</span>
+    <div className={`rounded-2xl px-4 py-2.5 text-[14px] leading-5 flex items-center gap-2.5 ${t.box}`}>
+      <Icon name={icon || t.icon} size={17} className="shrink-0" />
       <span className="min-w-0">{children}</span>
     </div>
   );

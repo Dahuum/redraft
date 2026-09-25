@@ -10,6 +10,8 @@ import CanvasToolbar from "./CanvasToolbar.jsx";
 import Notice from "./Notice.jsx";
 import ImportSource from "./ImportSource.jsx";
 import { toast } from "./Toast.jsx";
+import Icon from "./Icon.jsx";
+import { fitWidth } from "../lib/fit.js";
 
 const MAX_ROWS = 500;
 
@@ -32,6 +34,7 @@ function uniquify(names) {
 export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId, onCloudSaved }) {
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
+  const [boxH, setBoxH] = useState(0);
   const [pageIndex, setPageIndex] = useState(0);
   const [zoom, setZoom] = useState(1);
 
@@ -101,7 +104,10 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
   useEffect(() => {
     const el = canvasBoxRef.current;
     if (!el) return;
-    const update = () => setBoxW(el.clientWidth);
+    const update = () => {
+      setBoxW(el.clientWidth);
+      setBoxH(el.clientHeight);
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -174,7 +180,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
     return () => clearTimeout(t);
   }, [cloudProjectId, picked, impMap, filenameId, splits]);
 
-  const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
+  const pdfWidth = fitWidth({ boxW, boxH, pages, pageIndex, zoom });
 
   // ---- Pick / unpick a field on the document ----
   function togglePick(id) {
@@ -404,9 +410,9 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
 
   return (
     // Stacks below lg — see EditorWorkspace for why the scroll moves here.
-    <div className="flex-1 flex flex-col lg:flex-row gap-4 p-3 sm:p-4 overflow-y-auto lg:overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
+    <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3 px-3 pb-3 sm:px-4 sm:pb-4 overflow-y-auto lg:overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
       {/* Left: the document — click spots to make them editable */}
-      <div className="flex-none h-[55vh] min-h-[300px] lg:flex-[0.58] lg:h-auto lg:min-h-0 bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
+      <div className="flex-none h-[55vh] min-h-[300px] lg:flex-1 lg:min-w-0 lg:h-auto lg:min-h-0 rounded-[28px] bg-[rgb(var(--c-tint-sand))] flex flex-col overflow-hidden relative">
         {/* Toolbar */}
         <CanvasToolbar
           pageIndex={pageIndex}
@@ -418,8 +424,8 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
 
         {/* Preview banner — step through generated documents */}
         {previewIdx != null && (
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-20 bg-secondary-container text-white rounded-full px-3 py-1.5 flex items-center gap-2 shadow-xl text-caption">
-            <span className="material-symbols-outlined text-[16px]">visibility</span>
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-secondary-container text-white rounded-full pl-4 pr-3 py-2 flex items-center gap-2.5 shadow-panel text-[14px]">
+            <Icon name="eye" size={16} />
             Preview · document {previewIdx + 1} / {rows.length}
             <div className="w-px h-4 bg-white/30 mx-0.5"></div>
             <button
@@ -427,34 +433,34 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
               onClick={() => showPreview(previewIdx - 1)}
               className="disabled:opacity-30 hover:opacity-80 transition-opacity"
             >
-              <span className="material-symbols-outlined text-[16px]">chevron_left</span>
+              <Icon name="chevleft" size={16} />
             </button>
             <button
               disabled={previewIdx >= rows.length - 1 || previewBusy}
               onClick={() => showPreview(previewIdx + 1)}
               className="disabled:opacity-30 hover:opacity-80 transition-opacity"
             >
-              <span className="material-symbols-outlined text-[16px]">chevron_right</span>
+              <Icon name="chevright" size={16} />
             </button>
             <button onClick={exitPreview} title="Exit preview" className="ml-0.5 hover:opacity-80 transition-opacity">
-              <span className="material-symbols-outlined text-[16px]">close</span>
+              <Icon name="close" size={16} />
             </button>
           </div>
         )}
 
         {/* Hint */}
         {previewIdx == null && (
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
-            <span className="material-symbols-outlined text-[14px] text-accent-cyan">ads_click</span>
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-surface/95 backdrop-blur-md rounded-full px-4 py-2 text-[13px] sm:text-[14px] text-on-surface shadow-panel flex items-center gap-2 max-w-[92%] whitespace-nowrap overflow-hidden">
+            <Icon name="target" size={14} className="text-accent-cyan" />
             {pickedSpans.length
               ? `${pickedSpans.length} selected — click text to add, click again to remove`
               : "Click any text or number you want to change"}
           </div>
         )}
 
-        <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-on-surface/[0.04]">
+        <div ref={canvasBoxRef} className="flex-1 overflow-auto px-6 pt-16 pb-20 flex justify-center">
           {file && data ? (
-            <div className="paper-shadow rounded-sm mt-12 mb-10 h-fit">
+            <div className="paper-shadow rounded-sm h-fit">
               <PdfCanvas
                 data={previewIdx != null ? previewData : data}
                 pageIndex={pageIndex}
@@ -467,7 +473,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
             </div>
           ) : (
             <div className="self-center text-center text-on-surface-variant">
-              <span className="material-symbols-outlined text-[40px] opacity-40">description</span>
+              <Icon name="doc" size={40} className="opacity-40" />
               <p className="mt-2 text-body-md">Load a PDF in the PDF Editor tab to start.</p>
             </div>
           )}
@@ -475,12 +481,12 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
       </div>
 
       {/* Right: values for only the picked fields */}
-      <div className="flex-none lg:flex-[0.42] min-h-[45vh] lg:min-h-0 bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden">
+      <div className="ink-scope flex-none lg:w-[540px] min-h-[45vh] lg:min-h-0 rounded-[28px] bg-[rgb(var(--c-sidebar))] text-on-surface flex flex-col overflow-hidden">
         {/* Header + guided steps */}
-        <div className="px-4 pt-4 pb-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md">
+        <div className="px-5 pt-5 pb-3">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <h2 className="font-display-md text-xl font-bold tracking-tight">Bulk generator</h2>
+              <h2 className="font-display-md font-black text-[24px] leading-none tracking-[-0.4px]">Bulk generator</h2>
             </div>
             {picked.length > 0 && (
               <button
@@ -488,21 +494,21 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                   setShowImport((v) => !v);
                   setError(null);
                 }}
-                className={`shrink-0 px-3 py-1.5 rounded-lg border text-label-md flex items-center gap-1.5 transition-colors ${
+                className={`shrink-0 px-4 py-2 rounded-full text-[14px] flex items-center gap-1.5 transition-colors ${
                   showImport
-                    ? "bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan"
-                    : "border-outline-variant/40 text-on-surface-variant hover:text-on-surface"
+                    ? "bg-secondary-container text-white"
+                    : "bg-black/25 text-on-surface hover:bg-[rgb(var(--c-field))]"
                 }`}
               >
-                <span className="material-symbols-outlined text-[16px]">upload</span>
+                <Icon name="upload" size={16} />
                 Import list
               </button>
             )}
           </div>
 
           {/* One plain guidance line for the current step */}
-          <div className="mt-2 flex items-center gap-2 text-caption">
-            <span className="w-5 h-5 shrink-0 rounded-full bg-accent-cyan/15 text-accent-cyan flex items-center justify-center text-[11px] font-bold">
+          <div className="mt-3 flex items-center gap-2.5 text-[14px]">
+            <span className="w-6 h-6 shrink-0 rounded-full bg-[#f7e7a6] text-[#2d2323] flex items-center justify-center text-[12px] font-bold">
               {currentStep}
             </span>
             <span className="text-on-surface-variant">{stepHint}</span>
@@ -513,8 +519,8 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
         <div className="flex-1 overflow-auto">
           {picked.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 text-on-surface-variant animate-fade">
-              <span className="material-symbols-outlined text-[44px] text-accent-cyan/70">ads_click</span>
-              <p className="mt-3 text-body-lg text-on-surface font-semibold">
+              <span className="w-16 h-16 rounded-2xl bg-black/25 grid place-items-center text-accent-cyan"><Icon name="target" size={30} /></span>
+              <p className="mt-4 font-display-md font-black text-[22px] tracking-[-0.3px] text-on-surface">
                 Click on the document to start
               </p>
               <p className="mt-1 text-body-md max-w-[270px]">
@@ -522,15 +528,15 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                 so you can type a new value. Everything you don't touch stays the same.
               </p>
               <div className="mt-3 flex items-center gap-1.5 text-accent-cyan text-label-md">
-                <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+                <Icon name="back" size={18} />
                 the document is right here
               </div>
               {spans.length > 0 && (
                 <button
                   onClick={runExample}
-                  className="mt-5 px-4 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors text-label-md flex items-center gap-2"
+                  className="mt-5 px-5 py-2.5 rounded-full bg-[rgb(var(--c-field))] text-on-surface hover:bg-[rgb(var(--c-field-hover))] transition-colors text-[15px] flex items-center gap-2"
                 >
-                  <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
+                  <Icon name="spark" size={18} />
                   Show me an example
                 </button>
               )}
@@ -569,9 +575,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                       <span className="flex-1 text-body-md text-on-surface truncate" title={s.text}>
                         {label(s)}
                       </span>
-                      <span className="material-symbols-outlined text-[16px] text-on-surface-variant">
-                        arrow_forward
-                      </span>
+                      <Icon name="arrowright" size={16} className="text-on-surface-variant" />
                       <select
                         value={impMap[s.id] || ""}
                         onChange={(e) =>
@@ -582,7 +586,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                             return n;
                           })
                         }
-                        className="flex-1 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                        className="flex-1 bg-[rgb(var(--c-field))] rounded-2xl py-2 px-3 text-[14px] text-on-surface focus:outline-none focus:ring-2 focus:ring-secondary-container"
                       >
                         <option value="">keep original</option>
                         {impHeaders.map((h) => (
@@ -595,9 +599,9 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                   ))}
                   <button
                     onClick={impApply}
-                    className="w-full mt-2 bg-secondary-container text-white py-2 rounded-lg font-label-md flex items-center justify-center gap-2"
+                    className="w-full mt-2 bg-secondary-container hover:bg-secondary-container-hover text-white py-3 rounded-full text-[15px] flex items-center justify-center gap-2 transition-colors"
                   >
-                    <span className="material-symbols-outlined text-[18px]">done</span>
+                    <Icon name="check" size={18} />
                     Create {impRows.length} document{impRows.length === 1 ? "" : "s"}
                   </button>
                 </div>
@@ -622,15 +626,15 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                   onClose={() => setSplitEditId(null)}
                 />
               ) : (
-                <div className="px-3 py-2 text-caption text-on-surface-variant bg-surface-container-low border-b border-outline-variant/20 shrink-0">
+                <div className="px-5 py-2 text-[13px] text-on-surface-variant shrink-0">
                   Each row = one PDF. Edit only what changes. Hover a column, click ⋯ to edit only part of it.
                 </div>
               )}
               <div className="overflow-auto flex-1">
               <table className="w-full border-collapse text-left">
-                <thead className="sticky top-0 z-10 bg-surface-container-high">
+                <thead className="sticky top-0 z-10 bg-[rgb(var(--c-sidebar))]">
                   <tr>
-                    <th className="w-12 px-2 py-2.5 text-center text-caption text-on-surface-variant border-b border-outline-variant/20">
+                    <th className="w-12 px-2 py-2.5 text-center text-caption text-on-surface-variant border-b border-white/10">
                       Copy
                     </th>
                     {pickedSpans.map((s) => (
@@ -638,7 +642,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                         key={s.id}
                         onMouseEnter={() => setHoverId(s.id)}
                         onMouseLeave={() => setHoverId((h) => (h === s.id ? null : h))}
-                        className="group min-w-[150px] px-3 py-2.5 border-b border-outline-variant/20"
+                        className="group min-w-[140px] px-3 py-2.5 border-b border-white/10"
                       >
                         <div className="flex items-center gap-1">
                           <span
@@ -661,25 +665,25 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                                 : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 text-on-surface-variant hover:text-secondary-container"
                             }`}
                           >
-                            <span className="material-symbols-outlined text-[16px]">more_horiz</span>
+                            <Icon name="dots" size={16} />
                           </button>
                           <button
                             onClick={() => togglePick(s.id)}
                             title="Remove this field"
                             className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 text-on-surface-variant hover:text-error transition-all"
                           >
-                            <span className="material-symbols-outlined text-[16px]">close</span>
+                            <Icon name="close" size={16} />
                           </button>
                         </div>
                       </th>
                     ))}
-                    <th className="w-8 border-b border-outline-variant/20"></th>
+                    <th className="w-8 border-b border-white/10"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row, r) => (
                     <tr key={r} className="group hover:bg-surface-container-high/40">
-                      <td className="px-2 text-center text-caption text-on-surface-variant border-b border-outline-variant/10">
+                      <td className="px-2 text-center text-caption text-on-surface-variant border-b border-white/[0.06]">
                         {r + 1}
                       </td>
                       {pickedSpans.map((s) => {
@@ -687,7 +691,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                         const changed = val !== original(s.id);
                         const lbl = labelOf(s.id);
                         return (
-                          <td key={s.id} className="border-b border-outline-variant/10 p-0">
+                          <td key={s.id} className="border-b border-white/[0.06] p-0">
                             <div className="flex items-stretch">
                               {lbl && (
                                 <span
@@ -702,7 +706,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                                 onChange={(e) => setCell(r, s.id, withLabel(s.id, e.target.value))}
                                 onFocus={() => setHoverId(s.id)}
                                 placeholder={valueOf(s.id, original(s.id))}
-                                className={`flex-1 min-w-0 bg-transparent px-3 py-2 text-body-md text-on-surface focus:outline-none focus:bg-surface-container-lowest focus:ring-1 focus:ring-inset focus:ring-secondary-container ${
+                                className={`flex-1 min-w-0 bg-transparent px-3 py-2 text-body-md text-on-surface focus:outline-none focus:bg-[rgb(var(--c-field))] focus:ring-2 focus:ring-inset focus:ring-secondary-container ${
                                   changed ? "text-accent-cyan" : ""
                                 }`}
                               />
@@ -710,14 +714,14 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                           </td>
                         );
                       })}
-                      <td className="px-1 text-center border-b border-outline-variant/10">
+                      <td className="px-1 text-center border-b border-white/[0.06]">
                         <div className="flex items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-opacity">
                           <button
                             onClick={() => dupDoc(r)}
                             title="Duplicate this copy"
                             className="p-1 text-on-surface-variant hover:text-secondary transition-colors"
                           >
-                            <span className="material-symbols-outlined text-[16px]">content_copy</span>
+                            <Icon name="copy" size={16} />
                           </button>
                           {rows.length > 1 && (
                             <button
@@ -725,7 +729,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                               title="Delete this copy"
                               className="p-1 text-on-surface-variant hover:text-error transition-colors"
                             >
-                              <span className="material-symbols-outlined text-[16px]">close</span>
+                              <Icon name="close" size={16} />
                             </button>
                           )}
                         </div>
@@ -736,9 +740,9 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
               </table>
               <button
                 onClick={addDoc}
-                className="text-secondary text-label-md flex items-center gap-1 hover:underline px-3 py-2"
+                className="text-accent-cyan text-[14px] flex items-center gap-1.5 hover:underline px-5 py-3"
               >
-                <span className="material-symbols-outlined text-[16px]">add</span> Add another copy
+                <Icon name="plus" size={16} /> Add another copy
               </button>
               {!pageHasPicks && pickedSpans.length > 0 && (
                 <p className="px-3 pb-2 text-caption text-on-surface-variant">
@@ -751,7 +755,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
         </div>
 
         {/* Footer: generate */}
-        <div className="p-4 border-t border-outline-variant/30 bg-surface/80 backdrop-blur-xl space-y-2">
+        <div className="p-4 pt-3 space-y-2.5 bg-[rgb(var(--c-sidebar))]">
           {file && <FontPanel file={file} />}
           {error && <Notice tone="error">{error}</Notice>}
           {result && (
@@ -764,15 +768,15 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
           {picked.length > 0 && (
             <div className="flex items-center gap-2 px-0.5 text-caption text-on-surface-variant">
               <span className="flex items-center gap-1.5 shrink-0">
-                <span className="material-symbols-outlined text-[14px]">folder_zip</span>
+                <Icon name="zip" size={14} />
                 Output
               </span>
-              <div className="flex items-center gap-1 bg-surface-container-low rounded-lg p-0.5 border border-outline-variant/20">
+              <div className="flex items-center gap-1 bg-black/25 rounded-full p-1">
                 <button
                   onClick={() => setOutputMode("zip")}
-                  className={`px-2.5 py-1 rounded-md text-[12px] transition-all ${
+                  className={`px-3.5 py-1.5 rounded-full text-[13px] transition-all ${
                     outputMode === "zip"
-                      ? "bg-surface-variant text-on-surface shadow-sm"
+                      ? "bg-primary text-on-primary"
                       : "text-on-surface-variant hover:text-on-surface"
                   }`}
                 >
@@ -780,9 +784,9 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                 </button>
                 <button
                   onClick={() => setOutputMode("merged")}
-                  className={`px-2.5 py-1 rounded-md text-[12px] transition-all ${
+                  className={`px-3.5 py-1.5 rounded-full text-[13px] transition-all ${
                     outputMode === "merged"
-                      ? "bg-surface-variant text-on-surface shadow-sm"
+                      ? "bg-primary text-on-primary"
                       : "text-on-surface-variant hover:text-on-surface"
                   }`}
                 >
@@ -794,13 +798,13 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
           {picked.length > 0 && outputMode === "zip" && (
             <label className="flex items-center gap-2 px-0.5 text-caption text-on-surface-variant">
               <span className="flex items-center gap-1.5 shrink-0">
-                <span className="material-symbols-outlined text-[14px]">sell</span>
+                <Icon name="tag" size={14} />
                 Name files by
               </span>
               <select
                 value={filenameValid ? filenameId : ""}
                 onChange={(e) => setFilenameId(e.target.value ? Number(e.target.value) : null)}
-                className="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                className="flex-1 min-w-0 bg-[rgb(var(--c-field))] rounded-2xl py-2 px-3 text-[14px] text-on-surface focus:outline-none focus:ring-2 focus:ring-secondary-container"
               >
                 <option value="">Row number — row_0001.pdf</option>
                 {pickedSpans.map((s) => (
@@ -815,7 +819,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
             <div className="flex items-center justify-between px-0.5">
               {!cloudEnabled ? (
                 <span className="text-caption text-on-surface-variant flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[14px]">cloud_done</span>
+                  <Icon name="cloud" size={14} />
                   Saved on this device
                 </span>
               ) : cloudProjectId ? (
@@ -823,7 +827,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                   className="text-caption text-secondary flex items-center gap-1"
                   title="This is a saved template — your changes sync automatically."
                 >
-                  <span className="material-symbols-outlined text-[14px]">cloud_done</span>
+                  <Icon name="cloud" size={14} />
                   Synced to your account
                 </span>
               ) : (
@@ -833,9 +837,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
                   title="Keep this template + setup in your account (any device)"
                   className="text-caption text-secondary hover:underline flex items-center gap-1 disabled:opacity-50"
                 >
-                  <span className={`material-symbols-outlined text-[14px] ${saveBusy ? "animate-spin" : ""}`}>
-                    {saveBusy ? "progress_activity" : "cloud_upload"}
-                  </span>
+                  <Icon name={saveBusy ? "spinner" : "cloudup"} size={14} spin={saveBusy} />
                   {saveBusy ? "Saving…" : "Save to account"}
                 </button>
               )}
@@ -848,7 +850,7 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
             </div>
           )}
           {saveNote && (
-            <Notice tone={saveNote.ok ? "success" : "error"} icon={saveNote.ok ? "cloud_done" : "warning"}>
+            <Notice tone={saveNote.ok ? "success" : "error"} icon={saveNote.ok ? "cloud" : "warning"}>
               {saveNote.text}
             </Notice>
           )}
@@ -857,17 +859,17 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
               onClick={() => showPreview(previewIdx ?? 0)}
               disabled={previewBusy || busy || !picked.length || !rows.length}
               title="See what one generated document looks like"
-              className="shrink-0 px-3 py-2.5 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors font-label-md text-sm flex items-center gap-1.5 disabled:opacity-40"
+              className="shrink-0 px-5 py-3 rounded-full bg-black/25 text-on-surface hover:bg-[rgb(var(--c-field))] transition-colors text-[15px] flex items-center gap-2 disabled:opacity-40"
             >
-              <span className="material-symbols-outlined text-[18px]">visibility</span>
+              <Icon name="eye" size={18} />
               {previewBusy ? "…" : "Preview"}
             </button>
             <button
               onClick={process}
               disabled={busy || !picked.length || !rows.length}
-              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
+              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover hover:shadow-[0_8px_22px_rgba(79,117,254,0.35)] text-white py-3 rounded-full text-[15px] transition-all flex justify-center items-center gap-2 disabled:opacity-40"
             >
-              <span className="material-symbols-outlined text-[18px]">bolt</span>
+              <Icon name="bolt" size={18} />
               {busy
                 ? "Generating…"
                 : `Generate ${rows.length || ""} PDF${rows.length === 1 ? "" : "s"}`}

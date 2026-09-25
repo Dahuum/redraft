@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import Icon from "./Icon.jsx";
 
 let toasts = [];
 const listeners = new Set();
@@ -37,16 +38,16 @@ export default function ToastHost() {
       {items.map((t) => (
         <div
           key={t.id}
-          className="animate-drop pointer-events-auto flex max-w-[384px] items-center gap-3 rounded-xl border border-outline-variant/50 bg-surface-container-high px-4 py-2.5 shadow-panel"
+          className="ink-scope animate-drop pointer-events-auto flex max-w-[400px] items-center gap-3 rounded-full bg-[rgb(var(--c-sidebar))] text-on-surface pl-5 pr-3 py-2.5 shadow-[0_18px_44px_-12px_rgb(0_0_0/0.5)]"
         >
-          <span className="min-w-0 text-caption text-on-surface">{t.message}</span>
+          <span className="min-w-0 text-[14px] leading-5 text-on-surface">{t.message}</span>
           {t.actionLabel && (
             <button
               onClick={() => {
                 t.onAction?.();
                 dismiss(t.id);
               }}
-              className="shrink-0 font-label-md text-[13px] font-semibold text-secondary hover:underline"
+              className="shrink-0 rounded-full bg-[#f6f1ea] px-3.5 py-1.5 text-[13px] font-semibold text-[#2d2323] hover:bg-white transition-colors"
             >
               {t.actionLabel}
             </button>
@@ -54,9 +55,9 @@ export default function ToastHost() {
           <button
             onClick={() => dismiss(t.id)}
             aria-label="Dismiss"
-            className="text-on-surface-variant hover:text-on-surface"
+            className="w-8 h-8 shrink-0 rounded-full grid place-items-center text-on-surface-variant hover:bg-white/10 hover:text-on-surface transition-colors"
           >
-            <span className="material-symbols-outlined text-[16px]">close</span>
+            <Icon name="close" size={16} />
           </button>
         </div>
       ))}
