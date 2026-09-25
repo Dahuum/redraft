@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { spanAt } from "../lib/spans.js";
+import { usePdfRender, useZoomMotion } from "../lib/pdfRender.js";
 import Icon from "./Icon.jsx";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 /**
  * Renders a PDF page with PDF.js and overlays clickable span boxes.
@@ -46,76 +43,23 @@ export default function PdfCanvas({
   // ---- Inline editor: rendered next to the selected span (document-first editing) ----
   selectedPopover = null, // (span, below:boolean) => node
   liveEdits = false, // draw edited text on the page as it is typed (until a real Preview replaces it)
+  onZoomFactor = null, // (factor) => void, Ctrl+wheel / pinch over the board
 }) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
-  const renderTaskRef = useRef(null);
+  const rootRef = useRef(null);
   const drag = useRef(null); // { id, mode:'move'|'resize', sx, sy, ox, oy, ow, ratio }
   const spanDrag = useRef(null); // { id, sx, sy, ox, oy } — dragging an existing span
-  const [scale, setScale] = useState(1); // CSS px per PDF point
-  const [dims, setDims] = useState({ w: 0, h: 0 }); // CSS pixel size
-  const [err, setErr] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [hoverId, setHoverId] = useState(null); // span under the pointer (discoverability)
 
-  useEffect(() => {
-    let cancelled = false;
-    if (!data) return;
-
-    async function render() {
-      setErr(null);
-      setLoading(true);
-      try {
-        // Clone the bytes: pdf.js may detach the underlying ArrayBuffer.
-        const bytes =
-          data instanceof Uint8Array ? data.slice() : new Uint8Array(data.slice(0));
-        const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-        const page = await pdf.getPage(pageIndex + 1);
-
-        const unscaled = page.getViewport({ scale: 1 });
-        const fit = Math.min(maxWidth / unscaled.width, 2.2);
-        const cssScale = Math.max(fit, 0.2);
-        const viewport = page.getViewport({ scale: cssScale });
-        const dpr = window.devicePixelRatio || 1;
-
-        if (cancelled) return;
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        canvas.width = Math.floor(viewport.width * dpr);
-        canvas.height = Math.floor(viewport.height * dpr);
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-
-        const ctx = canvas.getContext("2d");
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-        if (renderTaskRef.current) {
-          try { renderTaskRef.current.cancel(); } catch { /* noop */ }
-        }
-        const task = page.render({ canvasContext: ctx, viewport });
-        renderTaskRef.current = task;
-        await task.promise;
-
-        if (cancelled) return;
-        setScale(cssScale);
-        setDims({ w: viewport.width, h: viewport.height });
-      } catch (e) {
-        if (!cancelled && e?.name !== "RenderingCancelledException") {
-          setErr("Couldn't render this PDF page.");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    render();
-    return () => {
-      cancelled = true;
-      if (renderTaskRef.current) {
-        try { renderTaskRef.current.cancel(); } catch { /* noop */ }
-      }
-    };
-  }, [data, pageIndex, maxWidth]);
+  // Rendering and zoom motion live in lib/pdfRender.js. `scale` (CSS px per PDF point) and `dims`
+  // follow maxWidth immediately, so overlays are always in step with the page; the sharp bitmap
+  // catches up a moment later without ever blanking the canvas.
+  const { view, cssScale, w: dimsW, h: dimsH, painted, err } = usePdfRender({ data, pageIndex, maxWidth, canvasRef });
+  const scale = cssScale;
+  const dims = { w: dimsW, h: dimsH };
+  const shownIndex = view ? view.index : pageIndex; // overlays follow the page that is actually on screen
+  useZoomMotion({ rootRef, w: dimsW, h: dimsH, pageKey: view ? view.index : -1, onZoomFactor });
 
   // Drag / resize overlays. Listeners live for the component's life and read
   // the drag ref, so there's no add/remove churn or stale-closure leak.
@@ -158,9 +102,9 @@ export default function PdfCanvas({
   const sampleBg = (px, py) => {
     const canvas = canvasRef.current;
     if (!canvas || !scale) return "#ffffff";
-    const dpr = window.devicePixelRatio || 1;
-    const x = Math.max(0, Math.min(canvas.width - 1, Math.round(px * scale * dpr)));
-    const y = Math.max(0, Math.min(canvas.height - 1, Math.round(py * scale * dpr)));
+    const k = dims.w ? canvas.width / dims.w : 1; // bitmap pixels per CSS pixel (may be capped below devicePixelRatio)
+    const x = Math.max(0, Math.min(canvas.width - 1, Math.round(px * scale * k)));
+    const y = Math.max(0, Math.min(canvas.height - 1, Math.round(py * scale * k)));
     try {
       const d = canvas.getContext("2d").getImageData(x, y, 1, 1).data;
       return `rgb(${d[0]},${d[1]},${d[2]})`;
@@ -206,20 +150,21 @@ export default function PdfCanvas({
     const wrap = wrapRef.current;
     if (!wrap || !scale) return;
     const rect = wrap.getBoundingClientRect();
-    const fx = (e.clientX - rect.left) / scale;
-    const fy = (e.clientY - rect.top) / scale;
+    const kx = dims.w && rect.width ? dims.w / rect.width : 1; // <1 or >1 only while a zoom animation runs
+    const fx = ((e.clientX - rect.left) * kx) / scale;
+    const fy = ((e.clientY - rect.top) * kx) / scale;
     if (placement) {
       onPlace(fx, fy);
       return;
     }
     onOverlaySelect(null); // click on the page clears any overlay selection
-    onSelect(spanAt(spans, pageIndex, fx, fy));
+    onSelect(spanAt(spans, shownIndex, fx, fy));
   }
 
-  const pageSpans = spans.filter((s) => s.page === pageIndex);
+  const pageSpans = spans.filter((s) => s.page === shownIndex);
 
   return (
-    <div className="relative inline-block">
+    <div ref={rootRef} className="relative inline-block paper-shadow rounded-sm h-fit">
       {err && (
         <div className="p-6 text-sm text-red-600 bg-red-50 rounded-lg border border-red-100">
           ⚠️ {err}
@@ -231,19 +176,20 @@ export default function PdfCanvas({
         onPointerMove={(e) => {
           if (placement || spanDrag.current || drag.current || e.pointerType === "touch" || !scale) return setHoverId(null);
           const rect = wrapRef.current.getBoundingClientRect();
-          setHoverId(spanAt(spans, pageIndex, (e.clientX - rect.left) / scale, (e.clientY - rect.top) / scale));
+          const kx = dims.w && rect.width ? dims.w / rect.width : 1;
+          setHoverId(spanAt(spans, shownIndex, ((e.clientX - rect.left) * kx) / scale, ((e.clientY - rect.top) * kx) / scale));
         }}
         onPointerLeave={() => setHoverId(null)}
         className={`relative select-none ${placement ? "cursor-crosshair" : "cursor-pointer"}`}
         style={{ width: dims.w || undefined, height: dims.h || undefined }}
       >
-        <canvas ref={canvasRef} className="block rounded-lg shadow-card" />
+        <canvas ref={canvasRef} className="block rounded-lg shadow-card" style={{ width: dims.w || undefined, height: dims.h || undefined }} />
 
         {/* Highlight overlay — pointer-events are passed through to the wrapper */}
         <div className="absolute inset-0 pointer-events-none">
           {/* Full-area band highlights (whole rows / sections) */}
           {highlightRects
-            .filter((r) => (r.page ?? 0) === pageIndex)
+            .filter((r) => (r.page ?? 0) === shownIndex)
             .map((r) => {
               const styles = {
                 faint: { border: "1px solid rgba(79,117,254,.30)", background: "transparent" },
@@ -395,7 +341,7 @@ export default function PdfCanvas({
         {/* Added-content overlays (interactive: place / drag / resize / edit) */}
         <div className="absolute inset-0 pointer-events-none">
           {overlays
-            .filter((o) => (o.page ?? 0) === pageIndex)
+            .filter((o) => (o.page ?? 0) === shownIndex)
             .map((o) => {
               const sel = o.id === overlaySelectedId;
               if (o.kind === "text") {
@@ -611,7 +557,7 @@ export default function PdfCanvas({
           </div>
         )}
 
-        {loading && (
+        {!painted && !err && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/60 text-sm text-muted">
             Rendering…
           </div>

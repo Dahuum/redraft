@@ -548,16 +548,15 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
 
         <div ref={canvasBoxRef} className="flex-1 overflow-auto px-6 pt-16 pb-20 flex justify-center">
           {file && data ? (
-            <div className="paper-shadow rounded-sm h-fit">
-              <PdfCanvas
-                data={data}
-                pageIndex={pageIndex}
-                spans={spans}
-                highlightRects={highlightRects}
-                onSelect={onCanvasSelect}
-                maxWidth={pdfWidth}
-              />
-            </div>
+            <PdfCanvas
+              data={data}
+              pageIndex={pageIndex}
+              spans={spans}
+              highlightRects={highlightRects}
+              onSelect={onCanvasSelect}
+              maxWidth={pdfWidth}
+              onZoomFactor={(f) => setZoom((z) => Math.min(2.5, Math.max(0.4, +(z * f).toFixed(3))))}
+            />
           ) : (
             <div className="self-center text-center text-on-surface-variant">
               <Icon name="doc" size={40} className="opacity-40" />

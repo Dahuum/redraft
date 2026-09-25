@@ -460,17 +460,16 @@ export default function BulkWorkspace({ file, spans, data, pages, cloudProjectId
 
         <div ref={canvasBoxRef} className="flex-1 overflow-auto px-6 pt-16 pb-20 flex justify-center">
           {file && data ? (
-            <div className="paper-shadow rounded-sm h-fit">
-              <PdfCanvas
-                data={previewIdx != null ? previewData : data}
-                pageIndex={pageIndex}
-                spans={spans}
-                selectedId={previewIdx != null ? null : hoverId}
-                editedIds={previewIdx != null ? new Set() : new Set(picked)}
-                onSelect={previewIdx != null ? () => {} : togglePick}
-                maxWidth={pdfWidth}
-              />
-            </div>
+            <PdfCanvas
+              data={previewIdx != null ? previewData : data}
+              pageIndex={pageIndex}
+              spans={spans}
+              selectedId={previewIdx != null ? null : hoverId}
+              editedIds={previewIdx != null ? new Set() : new Set(picked)}
+              onSelect={previewIdx != null ? () => {} : togglePick}
+              maxWidth={pdfWidth}
+              onZoomFactor={(f) => setZoom((z) => Math.min(2.5, Math.max(0.4, +(z * f).toFixed(3))))}
+            />
           ) : (
             <div className="self-center text-center text-on-surface-variant">
               <Icon name="doc" size={40} className="opacity-40" />
