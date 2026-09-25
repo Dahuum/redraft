@@ -536,7 +536,7 @@ class _Metrics:
     def _type0_xref(self, name):
         for pno in range(self.doc.page_count):
             for f in self.doc[pno].get_fonts(full=True):
-                if f[3].split("+")[-1] == name and f[2] == "Type0":
+                if S._fname(f) == name and f[2] == "Type0":
                     return f[0]
         return None
 
@@ -1176,7 +1176,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
     # The page's font resources BEFORE anything is deleted: when the
     # paragraph is the only text in a font, the redaction prunes that font
     # from /Resources, and there is then nothing to set the new lines in.
-    fonts_before = {f[4]: (f[0], f[3].split("+")[-1]) for f in page.get_fonts(full=True)
+    fonts_before = {f[4]: (f[0], S._fname(f)) for f in page.get_fonts(full=True)
                     if f[4]}
 
     links_before = page.get_links()

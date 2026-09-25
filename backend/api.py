@@ -690,6 +690,74 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
             if any(in_box(u, b) for b in other_boxes):
                 continue
             return "overlaps_neighbour"
+    return _crowds_neighbour(before, after, sd, other_boxes)
+
+
+def _crowds_neighbour(before: bytes, after: bytes, sd: dict, other_boxes=()) -> str | None:
+    """Did the new text end up touching a word that used to have room?
+
+    Words that merely NEAR each other are not overlapping, so the word checks above pass
+    them — and MuPDF even fuses glyphs drawn edge to edge into one word ("1" + "Zoé" ->
+    "1Zoé"), which hides both. Measured on an annex row: a value too wide for its cell
+    was redrawn at 68% size and ended 1 pt from the QTY column beside it, where the
+    original left 57 pt. That is not an edit anyone would make by hand.
+
+    A span that is new is compared, on its own line, with every span that stayed put:
+    if the field originally had at least 0.4 em of clear space to that span and the new
+    text leaves less than 0.15 em, the edit is refused.
+    """
+    pno = sd.get("page", 0)
+    try:
+        db = fitz.open(stream=before, filetype="pdf")
+        da = fitz.open(stream=after, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if pno >= db.page_count or pno >= da.page_count:
+            return None
+        acc = getattr(fitz, "TEXT_ACCURATE_BBOXES", 0)
+
+        def spans(doc):
+            out = []
+            for b in doc[pno].get_text("dict", flags=acc)["blocks"]:
+                for ln in b.get("lines", ()):
+                    for sp in ln["spans"]:
+                        if sp["text"].strip():
+                            out.append((sp["text"], sp["bbox"], sp["size"]))
+            return out
+        sb, sa = spans(db), spans(da)
+    finally:
+        db.close()
+        da.close()
+    tol = 0.6
+    x0, y0, x1, y1 = sd["bbox"]
+
+    def same(a, b):
+        return a[0] == b[0] and all(abs(p - q) <= tol for p, q in zip(a[1], b[1]))
+
+    fresh = [a for a in sa if not any(same(a, b) for b in sb)]
+    stayed = [a for a in sa if any(same(a, b) for b in sb)]
+
+    def line_overlap(a, b):
+        ov = min(a[3], b[3]) - max(a[1], b[1])
+        return ov > 0.5 * min(a[3] - a[1], b[3] - b[1])
+
+    for f in fresh:
+        fb = f[1]
+        em = float(f[2] or 10.0)
+        for u in stayed:
+            ub = u[1]
+            if not line_overlap(fb, ub):
+                continue
+            if any(in_b[0] - tol <= ub[0] and ub[2] <= in_b[2] + tol
+                   and min(ub[3], in_b[3]) - max(ub[1], in_b[1]) > 0 for in_b in other_boxes):
+                continue
+            new_gap = max(ub[0] - fb[2], fb[0] - ub[2])
+            if new_gap >= 0.15 * em:
+                continue
+            old_gap = max(ub[0] - x1, x0 - ub[2])
+            if old_gap >= 0.4 * em:
+                return "crowds_neighbour"
     return None
 
 
@@ -948,6 +1016,10 @@ _UNSHIPPABLE_MSG = {
         "This value is longer than the space it sits in, and redrawing it "
         "would print it over the text beside it. The field was left as it "
         "was — shorten the value, or give it a line of its own."),
+    "crowds_neighbour": (
+        "This value is longer than the space it sits in, and fitting it would leave it "
+        "touching the text beside it, which had clear space before. The field was left as "
+        "it was — shorten the value, or give it a line of its own."),
     "moves_column": (
         "This value is longer than its table cell, and making room for it "
         "would push the rest of the row out of line with the columns above "
