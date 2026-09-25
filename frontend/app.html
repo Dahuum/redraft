@@ -4,19 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Redraft Editor</title>
-    <!-- Apply saved theme before paint to avoid a flash (dark is the default) -->
+    <!-- Apply saved theme before paint to avoid a flash (light is the default) -->
     <script>
       try {
-        if (localStorage.getItem("redraft-theme") === "light")
+        if (localStorage.getItem("redraft-theme") !== "dark")
           document.documentElement.setAttribute("data-theme", "light");
       } catch (e) {}
     </script>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 58 58'><rect x='3' y='3' width='52' height='52' rx='15' fill='%238aa0ff' stroke='%232d2323' stroke-width='3.5'/><path d='M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z' fill='white' stroke='%232d2323' stroke-width='3.2' stroke-linejoin='round'/></svg>" />
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Plus+Jakarta+Sans:wght@600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Rubik:wght@500;700;800;900&family=Patrick+Hand+SC&display=swap"
       rel="stylesheet"
     />
     <!-- Signature-style script fonts for typed signatures -->
@@ -24,12 +24,7 @@
       href="https://fonts.googleapis.com/css2?family=Alex+Brush&family=Allura&family=Mr+Dafoe&family=Herr+Von+Muellerhoff&family=Pinyon+Script&family=Yellowtail&display=swap"
       rel="stylesheet"
     />
-    <!-- Material Symbols -->
-    <link
-      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
-      rel="stylesheet"
-    />
-    <!-- Product analytics (PostHog) — same config as the landing. Safe no-op
+<!-- Product analytics (PostHog) — same config as the landing. Safe no-op
          until a real phc_ key is set. See frontend/public/analytics.js. -->
     <script>
       window.REDRAFT_PH = { key: "phc_ywKonRpoQMCmsfQVykKc6YeYffCgLswjf8gH9mDVuS3R", host: "https://us.i.posthog.com" };
@@ -37,7 +32,7 @@
     <script src="/analytics.js"></script>
   </head>
   <body
-    class="text-on-surface font-body-md text-body-md overflow-x-hidden selection:bg-[#00f5ff]/20 selection:text-[#00f5ff]"
+    class="text-on-surface font-body-md text-body-md overflow-x-hidden selection:bg-[#4f75fe]/25 selection:text-on-surface"
   >
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>

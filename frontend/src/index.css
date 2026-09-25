@@ -69,9 +69,11 @@
   --color-secondary-fixed-dim: #b4c5ff;
   --color-tertiary-container: #140904;
 
-  --radius: 0.25rem;
-  --radius-lg: 0.5rem;
-  --radius-xl: 0.75rem;
+  --radius: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
   --radius-full: 9999px;
 
   --spacing-unit: 4px;
@@ -86,14 +88,15 @@
   --spacing-gutter: 24px;
   --spacing-xl: 40px;
 
-  --font-display-md: "Plus Jakarta Sans";
-  --font-display-lg: "Plus Jakarta Sans";
+  --font-display-md: "Rubik";
+  --font-display-lg: "Rubik";
+  --font-hand: "Patrick Hand SC";
   --font-caption: "Inter";
   --font-body-md: "Inter";
   --font-body-lg: "Inter";
   --font-label-md: "Inter";
-  --font-headline-lg-mobile: "Plus Jakarta Sans";
-  --font-headline-lg: "Plus Jakarta Sans";
+  --font-headline-lg-mobile: "Rubik";
+  --font-headline-lg: "Rubik";
 
   --text-display-md: 48px;
   --text-display-md--line-height: 1.1;
@@ -136,70 +139,91 @@
    opacity modifiers like bg-primary/50 via color-mix(), which works on any
    valid color value, not just this specific channel format).
    ─────────────────────────────────────────────────────────────────────────── */
-:root {
+:root,
+.ink-scope {
   color-scheme: dark;
-  --c-page: 15 19 28; /* #0f131c */
-  --c-background: 19 19 20; /* #131314 */
-  --c-surface: 19 19 20;
-  --c-surface-variant: 53 52 53; /* #353435 */
-  --c-surface-dim: 19 19 20;
-  --c-surface-bright: 58 57 58; /* #3a393a */
-  --c-surface-container-lowest: 14 14 15; /* #0e0e0f */
-  --c-surface-container-low: 28 27 28; /* #1c1b1c */
-  --c-surface-container: 32 31 32; /* #201f20 */
-  --c-surface-container-high: 42 42 42; /* #2a2a2a */
-  --c-surface-container-highest: 53 52 53; /* #353435 */
-  --c-on-surface: 229 226 226; /* #e5e2e2 */
-  --c-on-surface-variant: 198 198 204; /* #c6c6cc */
-  --c-on-background: 229 226 226;
-  --c-outline: 144 144 150; /* #909096 */
-  --c-outline-variant: 69 71 75; /* #45474b */
-  --c-primary: 195 198 210; /* #c3c6d2 */
-  --c-on-primary: 44 48 57; /* #2c3039 */
-  --c-on-primary-container: 118 122 133; /* #767a85 */
-  --c-secondary: 180 197 255; /* #b4c5ff */
-  --c-secondary-container: 0 83 219; /* #0053db */
-  --c-secondary-container-hover: 0 62 168; /* #003ea8 */
-  --c-on-secondary: 0 42 120; /* #002a78 */
-  --c-on-secondary-container: 205 215 255; /* #cdd7ff */
-  --c-error: 255 180 171; /* #ffb4ab */
-  --c-error-container: 147 0 10; /* #93000a */
-  --c-on-error: 105 0 5; /* #690005 */
-  --c-on-error-container: 255 218 214; /* #ffdad6 */
-  --c-accent-cyan: 0 245 255; /* #00f5ff */
+  /* Warm-ink dark, matched to the landing page's dark theme. */
+  --c-page: 18 14 14; /* #120e0e */
+  --c-background: 27 21 21;
+  --c-surface: 27 21 21; /* #1b1515 */
+  --c-surface-variant: 62 52 52;
+  --c-surface-dim: 18 14 14;
+  --c-surface-bright: 58 48 48;
+  --c-surface-container-lowest: 14 11 11;
+  --c-surface-container-low: 33 26 26;
+  --c-surface-container: 41 34 34; /* #292222 */
+  --c-surface-container-high: 50 41 41;
+  --c-surface-container-highest: 62 52 52;
+  --c-on-surface: 246 241 234; /* #f6f1ea */
+  --c-on-surface-variant: 190 182 174;
+  --c-on-background: 246 241 234;
+  --c-outline: 125 115 110;
+  --c-outline-variant: 66 56 54;
+  --c-primary: 246 241 234;
+  --c-on-primary: 45 35 35;
+  --c-on-primary-container: 160 150 144;
+  --c-secondary: 138 160 255; /* #8aa0ff */
+  --c-secondary-container: 79 117 254;
+  --c-secondary-container-hover: 99 133 255;
+  --c-on-secondary: 20 30 90;
+  --c-on-secondary-container: 255 255 255;
+  --c-error: 255 150 140;
+  --c-error-container: 110 30 30;
+  --c-on-error: 60 0 0;
+  --c-on-error-container: 255 218 214;
+  --c-accent-cyan: 138 160 255;
+  --c-yellow: 255 187 0;
+  --c-tint-yellow: 56 48 15;
+  --c-tint-blue: 27 33 64;
+  --c-tint-sand: 42 34 32;
+  --c-tint-mint: 20 48 38;
+  --c-tint-coral: 92 40 36;
+  --c-sidebar: 45 35 35; /* #2d2323, the Homerun product-frame ink */
+  --c-field: 66 55 55; /* input rows on the ink sidebar */
+  --c-field-hover: 78 66 66;
 }
 
 [data-theme="light"] {
   color-scheme: light;
-  --c-page: 248 250 252; /* slate-50  #f8fafc */
-  --c-background: 248 250 252;
-  --c-surface: 255 255 255; /* #ffffff */
-  --c-surface-variant: 226 232 240; /* slate-200 */
-  --c-surface-dim: 238 242 247;
+  /* Homerun-derived: sand page, cream sheets, warm ink, one blue. */
+  --c-page: 238 233 223; /* #eee9df */
+  --c-background: 251 249 245; /* #fbf9f5 */
+  --c-surface: 251 249 245;
+  --c-surface-variant: 243 241 237; /* #f3f1ed */
+  --c-surface-dim: 238 233 223;
   --c-surface-bright: 255 255 255;
   --c-surface-container-lowest: 255 255 255;
-  --c-surface-container-low: 248 250 252; /* slate-50 */
-  --c-surface-container: 241 245 249; /* slate-100 */
-  --c-surface-container-high: 226 232 240; /* slate-200 */
-  --c-surface-container-highest: 219 226 234;
-  --c-on-surface: 15 23 42; /* slate-900 */
-  --c-on-surface-variant: 71 85 105; /* slate-600 */
-  --c-on-background: 15 23 42;
-  --c-outline: 148 163 184; /* slate-400 */
-  --c-outline-variant: 203 213 225; /* slate-300 */
-  --c-primary: 15 23 42; /* dark fill on light */
-  --c-on-primary: 255 255 255;
-  --c-on-primary-container: 100 116 139; /* slate-500 */
-  --c-secondary: 37 99 235; /* blue-600 */
-  --c-secondary-container: 37 99 235;
-  --c-secondary-container-hover: 29 78 216; /* blue-700 */
+  --c-surface-container-low: 247 244 238;
+  --c-surface-container: 243 241 237; /* #f3f1ed */
+  --c-surface-container-high: 238 235 232; /* #eeebe8 */
+  --c-surface-container-highest: 230 225 215;
+  --c-on-surface: 45 35 35; /* #2d2323 */
+  --c-on-surface-variant: 115 107 107; /* #736b6b */
+  --c-on-background: 45 35 35;
+  --c-outline: 160 152 146;
+  --c-outline-variant: 224 218 207; /* #e0dacf */
+  --c-primary: 45 35 35;
+  --c-on-primary: 251 249 245;
+  --c-on-primary-container: 115 107 107;
+  --c-secondary: 79 117 254; /* #4f75fe */
+  --c-secondary-container: 79 117 254;
+  --c-secondary-container-hover: 63 99 232; /* #3f63e8 */
   --c-on-secondary: 255 255 255;
-  --c-on-secondary-container: 239 246 255;
-  --c-error: 220 38 38; /* red-600 */
-  --c-error-container: 254 226 226; /* red-100 */
+  --c-on-secondary-container: 255 255 255;
+  --c-error: 214 69 69;
+  --c-error-container: 253 232 230;
   --c-on-error: 255 255 255;
-  --c-on-error-container: 153 27 27; /* red-800 */
-  --c-accent-cyan: 8 145 178; /* cyan-600 */
+  --c-on-error-container: 140 30 30;
+  --c-accent-cyan: 79 117 254; /* legacy token name, now the one blue */
+  --c-yellow: 255 187 0; /* #ffbb00 */
+  --c-tint-yellow: 247 231 166;
+  --c-tint-blue: 217 226 255;
+  --c-tint-sand: 233 226 211;
+  --c-tint-mint: 208 240 226;
+  --c-tint-coral: 253 224 217;
+  --c-sidebar: 45 35 35;
+  --c-field: 66 55 55;
+  --c-field-hover: 78 66 66;
 }
 
 /* HeroUI theme bridge — maps HeroUI's own semantic variables to the SAME
@@ -224,15 +248,15 @@
   --default: rgb(var(--c-surface-container-high));
   --default-foreground: rgb(var(--c-on-surface));
   --accent: rgb(var(--c-accent-cyan));
-  --accent-foreground: #080c14;
+  --accent-foreground: #ffffff;
   --field-background: rgb(var(--c-surface-container-low));
   --field-foreground: rgb(var(--c-on-surface));
   --field-placeholder: rgb(var(--c-on-surface-variant));
   --field-border: rgb(var(--c-outline-variant));
-  --success: #10b981;
-  --success-foreground: #052e21;
-  --warning: #f59e0b;
-  --warning-foreground: #3d2600;
+  --success: #2fb37a;
+  --success-foreground: #ffffff;
+  --warning: #ffbb00;
+  --warning-foreground: #2d2323;
   --danger: rgb(var(--c-error));
   --danger-foreground: rgb(var(--c-on-error));
   --segment: rgb(var(--c-surface-container-low));
@@ -259,10 +283,6 @@ html.theme-switching,
 html.theme-switching * {
   transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease,
     fill 0.3s ease, stroke 0.3s ease, box-shadow 0.3s ease !important;
-}
-
-.material-symbols-outlined {
-  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
 }
 
 /* Custom scrollbar. The thumb is inset from the track via a transparent
@@ -304,7 +324,7 @@ html.theme-switching * {
   --shadow-paper: 0 12px 32px -10px rgb(var(--c-shadow) / 0.55);
 }
 [data-theme="light"] {
-  --c-shadow: 15 23 42; /* slate-900 — soft neutral shadow on light */
+  --c-shadow: 45 35 35; /* warm ink */
   --shadow-soft: 0 1px 2px rgb(var(--c-shadow) / 0.06), 0 6px 16px -6px rgb(var(--c-shadow) / 0.12);
   --shadow-panel: 0 14px 36px -14px rgb(var(--c-shadow) / 0.14);
   --shadow-paper: 0 12px 32px -10px rgb(var(--c-shadow) / 0.18);
@@ -321,13 +341,13 @@ html.theme-switching * {
   box-shadow: var(--shadow-paper);
 }
 .editable-field {
-  border-bottom: 1px dashed rgba(37, 99, 235, 0.4);
-  background: rgba(37, 99, 235, 0.05);
+  border-bottom: 1px dashed rgba(79, 117, 254, 0.5);
+  background: rgba(79, 117, 254, 0.07);
   transition: all 0.2s;
 }
 .editable-field:hover {
-  background: rgba(37, 99, 235, 0.1);
-  border-color: rgba(37, 99, 235, 0.8);
+  background: rgba(79, 117, 254, 0.13);
+  border-color: rgba(79, 117, 254, 0.85);
   cursor: pointer;
 }
 
@@ -359,10 +379,7 @@ html.theme-switching * {
     transform: scale(0.97);
   }
 
-  .material-symbols-outlined {
-    transition: color 180ms ease, transform 180ms ease;
   }
-}
 
 /* Entrance animations (applied via .animate-* classes on mount) */
 @keyframes rd-fade {
@@ -388,3 +405,14 @@ html.theme-switching * {
   .animate-pop  { animation: rd-pop 0.2s ease both; }
   .animate-drop { animation: rd-drop 0.22s ease both; }
 }
+
+/* The inline edit box floats over the page, so it follows the page theme, not the ink sidebar. */
+.pop-scope { --c-field: 255 255 255; --c-field-hover: 249 247 242; }
+html[data-theme="dark"] .pop-scope, html:not([data-theme]) .pop-scope { --c-field: 50 41 41; --c-field-hover: 62 52 52; }
+
+/* Keyboard focus: one visible ring, everywhere (mouse clicks do not show it). */
+:where(button, a, [role="button"], [role="tab"], summary, select):focus-visible {
+  outline: 2.5px solid #4f75fe;
+  outline-offset: 2px;
+}
+input:focus-visible, textarea:focus-visible { outline: none; }

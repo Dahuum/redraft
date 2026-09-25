@@ -7,19 +7,18 @@
 <meta name="description" content="Upload your PDF, let AI reconstruct it perfectly, edit anything — text, numbers, layout — and export a clean result in seconds." />
 <script>
   try {
-    if (localStorage.getItem("redraft-theme") === "light")
+    if (localStorage.getItem("redraft-theme") !== "dark")
       document.documentElement.setAttribute("data-theme", "light");
   } catch (e) {}
 </script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rubik:wght@800;900&family=Gelasio:wght@700&family=Patrick+Hand+SC&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css" />
-<link rel="stylesheet" href="/tour.css" />
 <link rel="stylesheet" href="/theme.css" />
 <link rel="stylesheet" href="/modal.css" />
-<link rel="stylesheet" href="/figma-preview/fig-assets.css" />
+<link rel="stylesheet" href="/landing-homerun.css" />
 <script>
   window.REDRAFT_SB = {
     url: "https://gjqnllmvqncfnlunjzrp.supabase.co",
@@ -34,289 +33,267 @@
 </script>
 <script src="/analytics.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-<script src="/figma-preview/Components.bundle.js"></script>
 </head>
 <body data-screen-label="Redraft Landing">
 
-<!-- ─────────── NAVIGATION ─────────── -->
-<header class="nav-wrap">
-  <nav class="nav" aria-label="Primary">
-    <a href="#" class="brand">
-      <span class="brand__mark" aria-hidden="true"></span>
-      <span class="brand__name">Redraft</span>
-    </a>
-    <ul class="nav__links">
-      <li><a href="#product">Preview</a></li>
-      <li><a href="#mission">Info</a></li>
-      <li><a href="#features">Tools</a></li>
-      <li><a href="#pricing">Pricing</a></li>
-      <!-- The collapsed bar has room for the brand, Get Started and the
-           burger, and nothing else. Sign In lives here whenever the burger is
-           up, and the theme toggle joins it at phone width. -->
-      <li class="nav__links-cta nav__links-cta--signin"><button class="nav__signin" data-modal="signin">Sign In</button></li>
-      <li class="nav__links-cta nav__links-cta--theme">
-        <button class="theme-toggle" aria-label="Toggle light/dark mode">
-        <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="5"></circle>
-          <line x1="12" y1="1" x2="12" y2="3"></line>
-          <line x1="12" y1="21" x2="12" y2="23"></line>
-          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-          <line x1="1" y1="12" x2="3" y2="12"></line>
-          <line x1="21" y1="12" x2="23" y2="12"></line>
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-        </svg>
-        <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-        </svg>
-        </button>
-        <span>Light / dark</span>
-      </li>
-    </ul>
-    <div class="nav__cta">
-      <div id="nav-signin-root" data-heroui-scope><button class="nav__signin" data-modal="signin">Sign In</button></div>
-      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark mode">
-        <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="5"></circle>
-          <line x1="12" y1="1" x2="12" y2="3"></line>
-          <line x1="12" y1="21" x2="12" y2="23"></line>
-          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-          <line x1="1" y1="12" x2="3" y2="12"></line>
-          <line x1="21" y1="12" x2="23" y2="12"></line>
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-        </svg>
-        <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-        </svg>
+<!-- ─────────── NAVIGATION (Homerun banner: white pill, 980 wide) ─────────── -->
+<header class="hr-nav" id="hrNav">
+  <div class="hr-nav__bar">
+    <a class="hr-brand" href="#top" aria-label="Redraft home"><svg class="hr-brand__ico" viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#8aa0ff" stroke-width="3.5"/><path d="M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z" fill="#fff" stroke-width="3.2" stroke-linejoin="round"/></svg><span>Redraft</span></a>
+    <nav class="hr-nav__links" id="hrLinks" aria-label="Primary">
+      <div class="hr-dd">
+        <button class="hr-nav__link" aria-expanded="false" aria-haspopup="true">Product<svg viewBox="0 0 13 13" aria-hidden="true"><path d="M2.5 4.8 6.5 8.6l4-3.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="hr-dd__menu">
+          <a href="/edit-pdf">Edit any PDF</a><a href="/mail-merge">Bulk from a spreadsheet</a><a href="/new">Start from text</a><a href="/templates">Templates</a>
+        </div>
+      </div>
+      <a class="hr-nav__link" href="#pricing">Pricing</a>
+      <div class="hr-dd">
+        <button class="hr-nav__link" aria-expanded="false" aria-haspopup="true">Use cases<svg viewBox="0 0 13 13" aria-hidden="true"><path d="M2.5 4.8 6.5 8.6l4-3.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="hr-dd__menu">
+          <a href="/templates">Contracts and agreements</a><a href="/templates">Certificates and letters</a><a href="/mail-merge">Invoices and statements</a>
+        </div>
+      </div>
+      <div class="hr-dd">
+        <button class="hr-nav__link" aria-expanded="false" aria-haspopup="true">Learn<svg viewBox="0 0 13 13" aria-hidden="true"><path d="M2.5 4.8 6.5 8.6l4-3.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="hr-dd__menu">
+          <a href="#product">How it works</a><a href="#resources">Resources</a><a href="/app.html">Try the editor</a>
+        </div>
+      </div>
+      <div class="hr-nav__cta hr-nav__cta--drawer">
+        <button class="hr-pill hr-pill--white" data-modal="signin">Log in</button>
+        <button class="hr-pill hr-pill--blue" data-modal="signup">Start for free</button>
+      </div>
+    </nav>
+    <div class="hr-nav__cta">
+      <button class="theme-toggle" aria-label="Toggle light/dark mode">
+        <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+        <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
       </button>
-      <div id="nav-getstarted-root" data-heroui-scope><button class="btn btn--primary btn--pill" data-modal="signup">Get Started</button></div>
+      <button class="hr-pill hr-pill--white hr-nav__login" data-modal="signin">Log in</button>
+      <button class="hr-pill hr-pill--blue hr-nav__start" data-modal="signup">Start for free</button>
     </div>
-    <button class="nav__burger" aria-label="Open menu" aria-expanded="false">
-      <span></span><span></span><span></span>
-    </button>
-  </nav>
+    <button class="hr-burger" aria-label="Open menu" aria-expanded="false" aria-controls="hrLinks"><span></span><span></span><span></span></button>
+  </div>
 </header>
 
-<!-- ─────────── HERO ─────────── -->
-<section class="hero">
-  <div class="hero__glow" aria-hidden="true"></div>
+<!-- icon sprite for the illustrations -->
+<main class="hr-page" id="top">
+<div class="hr-wrap">
 
-  <!-- Floating mini doc cards (decorative, desktop only) -->
-  <div class="floating" aria-hidden="true">
-    <!-- LEFT cluster -->
-    <article class="doc-card doc-card--certificate" style="--x:42px; --y:73px; --rot:-3deg;">
-      <header class="doc-card__head">
-        <span class="doc-card__icon"><img src="/assets/icon-certificate.svg" alt="" /></span>
-        <span class="doc-card__title">Certificate</span>
-      </header>
-      <div class="doc-card__body doc-card__body--cert">
-        <div class="cert-badge"><span class="cert-badge__diamond"></span></div>
-        <div class="bar bar--md"></div>
-        <div class="bar bar--sm bar--dark"></div>
-      </div>
-    </article>
-
-    <article class="doc-card doc-card--invoice" style="--x:88px; --y:142px; --rot:-3deg;">
-      <header class="doc-card__head doc-card__head--split">
-        <span class="doc-card__icon-wrap">
-          <span class="doc-card__icon"><img src="/assets/icon-invoice.svg" alt="" /></span>
-          <span class="doc-card__title">Invoice</span>
-        </span>
-        <span class="tag tag--success">Ready</span>
-      </header>
-      <div class="doc-card__body doc-card__body--rows">
-        <div class="row"><div class="bar bar--40"></div><div class="bar bar--24"></div></div>
-        <div class="row"><div class="bar bar--48"></div><div class="bar bar--32"></div></div>
-      </div>
-    </article>
-
-    <article class="doc-card doc-card--report" style="--x:24px; --y:203px; --rot:2deg;">
-      <header class="doc-card__head">
-        <span class="doc-card__icon"><img src="/assets/icon-report.svg" alt="" /></span>
-        <span class="doc-card__title">Report</span>
-      </header>
-      <div class="doc-card__body doc-card__body--bars">
-        <span class="mini-bar" style="height:14px"></span>
-        <span class="mini-bar" style="height:22px"></span>
-        <span class="mini-bar mini-bar--accent" style="height:32px"></span>
-      </div>
-    </article>
-
-    <article class="doc-card doc-card--idcard" style="--x:65px; --y:279px; --rot:-3deg;">
-      <header class="doc-card__head">
-        <span class="doc-card__icon"><img src="/assets/icon-idcard.svg" alt="" /></span>
-        <span class="doc-card__title">ID Card</span>
-      </header>
-      <div class="doc-card__body doc-card__body--id">
-        <span class="avatar-placeholder"></span>
-        <div class="id-lines">
-          <div class="bar bar--full"></div>
-          <div class="bar bar--two-thirds bar--dark"></div>
-        </div>
-      </div>
-    </article>
-
-    <!-- RIGHT cluster -->
-    <article class="doc-card doc-card--spreadsheet right" style="--x:78px; --y:78px; --rot:3deg;">
-      <header class="doc-card__head">
-        <span class="doc-card__icon"><img src="/assets/icon-invoice.svg" alt="" /></span>
-        <span class="doc-card__title">Spreadsheet</span>
-      </header>
-      <div class="doc-card__body doc-card__body--grid">
-        <span></span><span></span><span></span>
-        <span></span><span></span><span></span>
-      </div>
-    </article>
-
-    <article class="doc-card doc-card--contract right" style="--x:123px; --y:156px; --rot:3deg;">
-      <header class="doc-card__head doc-card__head--split">
-        <span class="doc-card__icon-wrap">
-          <span class="doc-card__icon"><img src="/assets/icon-contract.svg" alt="" /></span>
-          <span class="doc-card__title">Contract</span>
-        </span>
-        <span class="meta">2 pages</span>
-      </header>
-      <div class="doc-card__body doc-card__body--dotrows">
-        <div class="dotrow"><span class="dot"></span><div class="bar bar--64"></div></div>
-        <div class="dotrow"><span class="dot"></span><div class="bar bar--40"></div></div>
-      </div>
-    </article>
-
-    <article class="doc-card doc-card--form right" style="--x:58px; --y:230px; --rot:-1deg;">
-      <header class="doc-card__head">
-        <span class="doc-card__icon"><img src="/assets/icon-form.svg" alt="" /></span>
-        <span class="doc-card__title">Form</span>
-      </header>
-      <div class="doc-card__body doc-card__body--inputs">
-        <div class="input-stub"></div>
-        <div class="input-stub input-stub--short"></div>
-      </div>
-    </article>
-
-    <article class="doc-card doc-card--agreement right" style="--x:101px; --y:296px; --rot:1deg;">
-      <header class="doc-card__head">
-        <span class="doc-card__icon"><img src="/assets/icon-agreement.svg" alt="" /></span>
-        <span class="doc-card__title">Agreement</span>
-      </header>
-      <div class="doc-card__body doc-card__body--center">
-        <span class="tag tag--success tag--pill">Signed ✓</span>
-      </div>
-    </article>
-  </div>
-
-  <div class="hero__inner">
-    <a href="#" class="eyebrow eyebrow--badge">
-      <span class="eyebrow__icon" aria-hidden="true"></span><!--
-   --><span class="eyebrow__long">Edit, sign &amp; generate PDFs — no Adobe needed</span><!--
-   --><span class="eyebrow__short">Edit, sign &amp; generate PDFs</span>
-    </a>
-    <h1 class="hero__title">
-      Edit any PDF.<br />
-      <span class="hero__title-gradient">Exactly how you want it.</span>
-    </h1>
-    <p class="hero__sub">
-      Upload a PDF and change any text or number in place, add your signature,
-      or generate hundreds of documents from a spreadsheet — a clean result in seconds.
-    </p>
-
-    <div class="hero__actions">
-      <div id="hero-primary-cta-root" data-heroui-scope><button class="btn btn--primary btn--lg" data-modal="signup">Start Editing Free</button></div>
-      <div id="hero-secondary-cta-root" data-heroui-scope>
-        <a href="#product" class="btn btn--ghost btn--lg">
-          See how it works
-          <svg width="14" height="14" viewBox="0 0 13.333 13.333" fill="currentColor" aria-hidden="true">
-            <path d="M 10.146 7.5 L 0 7.5 L 0 5.833 L 10.146 5.833 L 5.479 1.167 L 6.667 0 L 13.333 6.667 L 6.667 13.333 L 5.479 12.167 L 10.146 7.5 L 10.146 7.5" />
-          </svg>
-        </a>
+  <!-- ───── hero ───── -->
+  <section class="hr-hero" aria-label="Redraft">
+    <div class="hr-hero__copy">
+      <h1 class="hr-h1">
+        <span class="hr-line"><svg class="hr-ico" viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#ff8a3d" stroke="#2d2323" stroke-width="3.5"/><path d="M19 15h14l8 8v20H19z" fill="#fff" stroke="#2d2323" stroke-width="3.2" stroke-linejoin="round"/><path d="M33 15v8h8M24 31h11M24 37h8" fill="none" stroke="#2d2323" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>Edit any PDF.</span>
+        <span class="hr-line">Exactly how<svg class="hr-ico" viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#ffc21a" stroke="#2d2323" stroke-width="3.5"/><path d="M17 42l3-10 17-17a4 4 0 0 1 6 6L26 38z" fill="#fff" stroke="#2d2323" stroke-width="3.2" stroke-linejoin="round"/><path d="M34 18l6 6" stroke="#2d2323" stroke-width="3" stroke-linecap="round"/></svg></span>
+        <span class="hr-line">you want it.<svg class="hr-ico" viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#8aa0ff" stroke="#2d2323" stroke-width="3.5"/><path d="M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z" fill="#fff" stroke="#2d2323" stroke-width="3.2" stroke-linejoin="round"/></svg></span>
+      </h1>
+      <p class="hr-lead">Change any text or number in your PDF, in the document's own font. <br>Sign it, or generate hundreds from a spreadsheet, in seconds.</p>
+      <div class="hr-actions">
+        <a href="#product" class="hr-pill hr-pill--sand"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M10 8.6v6.8l5.6-3.4z"/></svg>See how it works</a>
+        <button class="hr-pill hr-pill--blue" data-modal="signup">Start editing for free</button>
       </div>
     </div>
 
-    <div class="social-proof">
-      <div class="avatar-stack" aria-hidden="true">
-        <span style="width:28px;height:28px;border-radius:50%;border:2px solid var(--bg);background:linear-gradient(135deg,#3b82f6,#8b5cf6);display:inline-block"></span>
-        <span style="width:28px;height:28px;border-radius:50%;border:2px solid var(--bg);background:linear-gradient(135deg,#06b6d4,#3b82f6);display:inline-block;margin-left:-10px"></span>
-        <span style="width:28px;height:28px;border-radius:50%;border:2px solid var(--bg);background:linear-gradient(135deg,#8b5cf6,#ec4899);display:inline-block;margin-left:-10px"></span>
+    <div class="hr-shell" id="product" data-tabs>
+      <div class="hr-shell__stage">
+        <img class="is-on" src="/lp/home-light.webp" width="1440" height="855" alt="Redraft home: drop a PDF, or start from text" />
+        <img src="/lp/edit-light.webp" width="1440" height="855" alt="Redraft editor: the total on an invoice being changed in a box next to it, with a before and after" loading="lazy" />
+        <img src="/lp/sign-light.webp" width="1440" height="855" alt="Redraft editor: drawing a signature" loading="lazy" />
+        <img src="/lp/bulk-light.webp" width="1440" height="855" alt="Redraft bulk generator: two fields picked on the invoice, three rows of new values, Generate 3 PDFs" loading="lazy" />
+        <img src="/lp/annex-light.webp" width="1440" height="855" alt="Redraft annex automation: six detected lines on an annex, linked to client data" loading="lazy" />
+        <img src="/lp/text-light.webp" width="1440" height="855" alt="Redraft start from text: a pasted agreement about to become a clean PDF" loading="lazy" />
       </div>
-      <span>Already used by 50+ freelancers and businesses</span>
-    </div>
-  </div>
-</section>
-
-<!-- ─────────── PRODUCT SHOWCASE (single framed preview) ─────────── -->
-<section class="showcase" id="product" aria-label="Product preview" data-screen-label="Showcase">
-
-  <figure class="showcase__frame showcase__frame--figma" id="showcase-frame">
-    <div id="figma-preview-root" style="width:100%;line-height:0;"></div>
-  </figure>
-
-</section>
-
-<!-- ─────────── MISSION ─────────── -->
-<section class="mission" id="mission" data-screen-label="Mission">
-  <p class="eyebrow">OUR MISSION</p>
-  <p class="mission__copy reveal-text">
-    We believe working with documents should be effortless and open to
-    everyone. Our mission is to give you the easiest — and freest — way to
-    edit, sign, and generate the documents you need, without gatekeepers.
-  </p>
-</section>
-
-
-<!-- ─────────── BENTO FEATURES ─────────── -->
-<section class="bento" id="features">
-  <article class="card card--feature card--tall">
-    <p class="eyebrow eyebrow--sm">BULK GENERATION</p>
-    <h3 class="card__title">Hundreds of documents.<br />From one spreadsheet.</h3>
-    <p class="card__body">
-      Pick the fields that change, map them to your Excel or CSV, and generate
-      every client's document at once — download a ZIP or one merged PDF.
-    </p>
-
-    <div class="card__art">
-      <div class="chart" aria-hidden="true">
-        <div class="chart__bar" style="--h:34%"></div>
-        <div class="chart__bar" style="--h:60%"></div>
-        <div class="chart__bar" style="--h:42%"></div>
-        <div class="chart__bar" style="--h:72%"></div>
-        <div class="chart__bar chart__bar--hi" style="--h:92%">
-          <span class="chart__pill">24%</span>
-        </div>
+      <div class="hr-tabs" role="tablist" aria-label="What Redraft does">
+        <button class="hr-tab is-on" role="tab" aria-selected="true">Upload a PDF<i></i></button>
+        <button class="hr-tab" role="tab" aria-selected="false">Edit any PDF<i></i></button>
+        <button class="hr-tab" role="tab" aria-selected="false">Add a signature<i></i></button>
+        <button class="hr-tab" role="tab" aria-selected="false">Bulk generate<i></i></button>
+        <button class="hr-tab" role="tab" aria-selected="false">Billing annexes<i></i></button>
+        <button class="hr-tab" role="tab" aria-selected="false">Start from text<i></i></button>
       </div>
     </div>
-  </article>
+  </section>
 
-  <article class="card card--feature">
-    <p class="eyebrow eyebrow--sm">EDIT &amp; SIGN</p>
-    <h3 class="card__title card__title--md">Edit any PDF, then sign it</h3>
-    <p class="card__body">
-      Click any text or number to change it in place, add text in the
-      document's own font, and drop in a signature you draw or type.
-    </p>
-    <span class="blob blob--right" aria-hidden="true"></span>
-  </article>
+  <!-- ───── hall of fame row ───── -->
+  <section class="hr-fame" aria-label="Who uses Redraft">
+    <p class="hr-fame__t">used by 50+ freelancers and businesses, on every kind of document</p>
+    <ul class="hr-fame__logos">
+      <li class="f1">INVOICES</li><li class="f2">Certificates</li><li class="f3">Contracts</li><li class="f4">Statements</li><li class="f5">attestations</li><li class="f6">Letters</li><li class="f7">Quotes</li>
+    </ul>
+  </section>
 
-  <article class="card card--feature">
-    <p class="eyebrow eyebrow--sm">START FROM TEXT</p>
-    <h3 class="card__title card__title--md">Text into a clean document</h3>
-    <p class="card__body">
-      Paste a contract or letter and get a professionally formatted,
-      editable and signable PDF in seconds — no template needed.
-    </p>
-    <span class="blob blob--left" aria-hidden="true"></span>
-  </article>
-</section>
+  <!-- ───── product rows ───── -->
+  <section class="hr-rows" id="features">
+    <article class="hr-row">
+      <div class="hr-row__text">
+        <p class="hr-eyebrow">Edit &amp; sign</p>
+        <h2 class="hr-h2">Change the number,<br>keep the page</h2>
+        <p class="hr-body">Click any text or number in a PDF and type. New words are set in the document's own font, and you can add a signature you draw or type.</p>
+        <a class="hr-pill hr-pill--ink" href="/edit-pdf">Learn more</a>
+      </div>
+      <div class="hr-row__img hr-tint-sand"><img src="/lp/edit-light.webp" width="1440" height="855" loading="lazy" alt="Redraft editor: the total on an invoice being changed in a box next to it, with a before and after" /></div>
+    </article>
+    <article class="hr-row" id="tools">
+      <div class="hr-row__text">
+        <p class="hr-eyebrow">Bulk generation</p>
+        <h2 class="hr-h2">Hundreds of documents from one spreadsheet</h2>
+        <p class="hr-body">Pick the fields that change, map them to your Excel or CSV columns, and download a ZIP or one merged PDF.</p>
+        <a class="hr-pill hr-pill--ink" href="/mail-merge">Learn more</a>
+      </div>
+      <div class="hr-row__img hr-tint-blue"><img src="/lp/bulk-light.webp" width="1440" height="855" loading="lazy" alt="Redraft bulk generator" /></div>
+    </article>
+    <article class="hr-row">
+      <div class="hr-row__text">
+        <p class="hr-eyebrow">Billing annexes</p>
+        <h2 class="hr-h2">One annex per client, totals redone</h2>
+        <p class="hr-body">Redraft finds the lines of an annex, links them to your client data, drops the lines a client doesn't have and recomputes the total.</p>
+        <a class="hr-pill hr-pill--ink" href="/app.html">Try it</a>
+      </div>
+      <div class="hr-row__img hr-tint-mint"><img src="/lp/annex-light.webp" width="1440" height="855" loading="lazy" alt="Redraft annex automation on a services annex" /></div>
+    </article>
+    <article class="hr-row">
+      <div class="hr-row__text">
+        <p class="hr-eyebrow">Start from text</p>
+        <h2 class="hr-h2">Text into a clean document</h2>
+        <p class="hr-body">Paste a contract or letter and get a formatted, editable and signable PDF in seconds. No template needed.</p>
+        <a class="hr-pill hr-pill--ink" href="/new">Learn more</a>
+      </div>
+      <div class="hr-row__img hr-tint-yellow"><img src="/lp/text-light.webp" width="1440" height="855" loading="lazy" alt="Redraft: paste text, get a PDF" /></div>
+    </article>
+  </section>
+
+  <!-- ───── templates (dark card) ───── -->
+  <section class="hr-dark" aria-label="Templates">
+    <p class="hr-eyebrow hr-eyebrow--yellow">Templates</p>
+    <h2 class="hr-h2 hr-h2--white">Start from a free<br>document template</h2>
+    <a class="hr-pill hr-pill--white" href="/templates">Explore all templates</a>
+    <div class="hr-tplgrid">
+      <a class="hr-tpl" href="/templates"><span>Contracts and<br>agreements</span><img class="hr-tpl__arrow" src="/lp/arrow.svg" alt="" width="29" height="30">
+        <div class="hr-tpl__img" aria-hidden="true">
+          <div class="tp tp--a">
+            <small class="tp__k">Agreement</small>
+            <b class="tp__t">Service agreement</b>
+            <i class="l w90"></i><i class="l w70"></i>
+            <b class="tp__c">Article 1 · Services</b>
+            <i class="l w80"></i><i class="l w55"></i>
+            <b class="tp__c">Article 2 · Payment</b>
+            <i class="l w85"></i>
+            <svg class="tp__sig" viewBox="0 0 120 36"><path d="M4 26c8-18 14-20 16-11s-8 17-1 17 10-15 17-15c5 0 0 12 5 12s6-9 12-9 2 9 8 9 9-6 16-8" fill="none" stroke="#2d2323" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <span class="chip chip--y" style="right:14px;top:-16px;transform:rotate(4deg)">EN</span>
+          <span class="chip chip--b" style="left:-8px;bottom:2px;transform:rotate(-3deg)">Signable</span>
+        </div></a>
+      <a class="hr-tpl" href="/templates"><span>Confidentiality<br>agreements</span><img class="hr-tpl__arrow" src="/lp/arrow.svg" alt="" width="29" height="30">
+        <div class="hr-tpl__img" aria-hidden="true">
+          <div class="tp tp--b">
+            <span class="tp__ico"><svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5" fill="#fff" stroke="#2d2323" stroke-width="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="#2d2323" stroke-width="2"/></svg></span>
+            <b class="tp__t">Non-disclosure<br>agreement</b>
+            <i class="l w90"></i><i class="l w60"></i>
+            <div class="tp__parties"><span><small>Party A</small><i></i></span><span><small>Party B</small><i></i></span></div>
+          </div>
+          <span class="chip chip--r" style="right:12px;top:-14px;transform:rotate(-4deg)">Mutual</span>
+          <span class="chip chip--y" style="left:-8px;bottom:2px;transform:rotate(3deg)">EN</span>
+        </div></a>
+      <a class="hr-tpl" href="/templates"><span>Letters and<br>certificates</span><img class="hr-tpl__arrow" src="/lp/arrow.svg" alt="" width="29" height="30">
+        <div class="hr-tpl__img" aria-hidden="true">
+          <div class="tp tp--c">
+            <small class="tp__k">Certificat</small>
+            <b class="tp__t">Attestation<br>de travail</b>
+            <i class="l w90"></i><i class="l w75"></i><i class="l w50"></i>
+            <span class="tp__seal"><svg viewBox="0 0 58 58"><circle cx="29" cy="29" r="24" fill="#ff8a3d" stroke="#2d2323" stroke-width="3.5"/><path d="M18 30l8 8 15-17" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+          <span class="chip chip--b" style="right:12px;top:-16px;transform:rotate(4deg)">FR</span>
+          <span class="chip chip--y" style="left:-8px;bottom:2px;transform:rotate(-3deg)">Ready to fill</span>
+        </div></a>
+    </div>
+  </section>
+
+  <!-- ───── resources: heading + tabbed slider ───── -->
+  <section class="hr-res" id="resources" aria-label="Resources">
+    <p class="hr-eyebrow hr-eyebrow--blue hr-eyebrow--center">Learn</p>
+    <h2 class="hr-h2 hr-h2--xl">Resources that help you<br>work with documents</h2>
+    <p class="hr-big">New to editing PDFs? Every tool has a page that shows how it works, <br>and the templates are free to start from.</p>
+    <div class="hr-seg" role="tablist" aria-label="Resource type"><button class="is-on" role="tab" aria-selected="true" data-res="tools">Tools</button><button role="tab" aria-selected="false" data-res="tpls">Templates</button></div>
+    <div class="hr-slider" data-slider>
+      <div class="hr-track is-on" data-panel="tools">
+        <a class="hr-gcard hr-gcard--pink" href="/edit-pdf"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="66" y="22" width="110" height="146" rx="12" fill="#fff" stroke="#1f1717" stroke-width="5"/><path d="M88 62h66M88 84h66M88 106h40" stroke="#1f1717" stroke-width="5" stroke-linecap="round"/><path d="M150 170l-6-24 52-52a15 15 0 0 1 22 22l-52 52z" fill="#ffc21a" stroke="#1f1717" stroke-width="5" stroke-linejoin="round"/></svg></div><div class="hr-gcard__txt"><h3>Edit any PDF,<br>keep the font</h3><p>Click any text or number and change it in the document's own font.</p></div></a>
+        <a class="hr-gcard hr-gcard--teal" href="/mail-merge"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="42" y="50" width="100" height="126" rx="10" fill="#fff" stroke="#1f1717" stroke-width="5" transform="rotate(-8 92 113)"/><rect x="82" y="34" width="100" height="126" rx="10" fill="#fff" stroke="#1f1717" stroke-width="5" transform="rotate(2 132 97)"/><rect x="122" y="48" width="100" height="126" rx="10" fill="#8aa0ff" stroke="#1f1717" stroke-width="5" transform="rotate(10 172 111)"/><path d="M146 92h50M146 112h50M146 132h34" stroke="#1f1717" stroke-width="5" stroke-linecap="round" transform="rotate(10 172 111)"/></svg></div><div class="hr-gcard__txt"><h3>Mail merge,<br>but for PDFs</h3><p>Map a spreadsheet, get a ZIP or one merged PDF.</p></div></a>
+        <a class="hr-gcard hr-gcard--yellow" href="/new"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="60" y="28" width="120" height="152" rx="12" fill="#fff" stroke="#1f1717" stroke-width="5"/><path d="M82 66h76M82 88h76M82 110h76M82 132h44" stroke="#1f1717" stroke-width="5" stroke-linecap="round"/><path d="M196 44l6 17 17 6-17 6-6 17-6-17-17-6 17-6z" fill="#ff8a3d" stroke="#1f1717" stroke-width="5" stroke-linejoin="round"/></svg></div><div class="hr-gcard__txt"><h3>Turn text into a<br>clean PDF</h3><p>Paste a contract or letter and get a formatted, signable document.</p></div></a>
+        <a class="hr-gcard hr-gcard--green" href="/templates"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="40" y="46" width="92" height="120" rx="10" fill="#ffc21a" stroke="#1f1717" stroke-width="5" transform="rotate(-9 86 106)"/><rect x="84" y="34" width="92" height="120" rx="10" fill="#fff" stroke="#1f1717" stroke-width="5"/><path d="M102 66h56M102 86h56M102 106h34" stroke="#1f1717" stroke-width="5" stroke-linecap="round"/><rect x="128" y="50" width="92" height="120" rx="10" fill="#f0616d" stroke="#1f1717" stroke-width="5" transform="rotate(9 174 110)"/></svg></div><div class="hr-gcard__txt"><h3>Free document<br>templates</h3><p>Start from a service agreement, an NDA or a work certificate.</p></div></a>
+      </div>
+      <div class="hr-track" data-panel="tpls">
+        <a class="hr-gcard hr-gcard--pink" href="/templates"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="60" y="28" width="120" height="152" rx="12" fill="#fff" stroke="#1f1717" stroke-width="5"/><path d="M82 66h76M82 88h76M82 110h50" stroke="#1f1717" stroke-width="5" stroke-linecap="round"/><path d="M150 150l10 10 22-26" fill="none" stroke="#2fb37a" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="hr-gcard__txt"><h3>Service<br>agreement</h3><p>A simple agreement between a provider and a client.</p></div></a>
+        <a class="hr-gcard hr-gcard--teal" href="/templates"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="60" y="28" width="120" height="152" rx="12" fill="#fff" stroke="#1f1717" stroke-width="5"/><rect x="92" y="78" width="56" height="44" rx="8" fill="#ffc21a" stroke="#1f1717" stroke-width="5"/><path d="M104 78v-12a16 16 0 0 1 32 0v12" fill="none" stroke="#1f1717" stroke-width="5"/></svg></div><div class="hr-gcard__txt"><h3>Non-disclosure<br>agreement</h3><p>A short mutual NDA for early conversations.</p></div></a>
+        <a class="hr-gcard hr-gcard--yellow" href="/templates"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="60" y="28" width="120" height="152" rx="12" fill="#fff" stroke="#1f1717" stroke-width="5"/><path d="M82 64h76M82 84h76M82 104h76M82 124h44" stroke="#1f1717" stroke-width="5" stroke-linecap="round"/><circle cx="168" cy="146" r="22" fill="#8aa0ff" stroke="#1f1717" stroke-width="5"/></svg></div><div class="hr-gcard__txt"><h3>Contrat de<br>prestation</h3><p>Un contrat de prestation de service, en français.</p></div></a>
+        <a class="hr-gcard hr-gcard--green" href="/templates"><div class="hr-gcard__art"><svg viewBox="0 0 260 210" aria-hidden="true"><rect x="60" y="28" width="120" height="152" rx="12" fill="#fff" stroke="#1f1717" stroke-width="5"/><path d="M82 64h76M82 84h76M82 104h50" stroke="#1f1717" stroke-width="5" stroke-linecap="round"/><path d="M150 150l8-16 8 16z M158 134v-18" fill="#f0616d" stroke="#1f1717" stroke-width="5" stroke-linejoin="round"/></svg></div><div class="hr-gcard__txt"><h3>Attestation<br>de travail</h3><p>Une attestation d'emploi à remettre à un salarié.</p></div></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── real-life edits (marquee) ───── -->
+  <section class="hr-club" aria-label="Real-life edits">
+    <p class="hr-eyebrow hr-eyebrow--center hr-eyebrow--dark">Real-life edits</p>
+    <h2 class="hr-h2 hr-h2--xl">Fix it in a minute</h2>
+    <p class="hr-big">Documents change after they are sent. <br>Redraft lets you change them without rebuilding them.</p>
+    <a class="hr-pill hr-pill--outline" href="#product">See how it works</a>
+    <div class="hr-marq" aria-hidden="false">
+      <div class="hr-marq__t">
+        <article class="hr-q"><p>The total on an invoice needs one more line.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#ff8a3d"></span><div><b>Invoices</b><small>Change a number, keep the layout</small></div></div></article>
+        <article class="hr-q"><p>A name is misspelled on a certificate, and it is on 300 copies.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#8aa0ff"></span><div><b>Certificates</b><small>One template, a spreadsheet of names</small></div></div></article>
+        <article class="hr-q"><p>A date moved in a contract that is already signed off.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#ffc21a"></span><div><b>Contracts</b><small>Edit in place, in the same font</small></div></div></article>
+        <article class="hr-q"><p>A statement has a new address, and nothing else changes.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#3cb8aa"></span><div><b>Statements</b><small>Change one line, nothing shifts</small></div></div></article>
+        <article class="hr-q"><p>The total on an invoice needs one more line.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#ff8a3d"></span><div><b>Invoices</b><small>Change a number, keep the layout</small></div></div></article>
+        <article class="hr-q"><p>A name is misspelled on a certificate, and it is on 300 copies.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#8aa0ff"></span><div><b>Certificates</b><small>One template, a spreadsheet of names</small></div></div></article>
+        <article class="hr-q"><p>A date moved in a contract that is already signed off.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#ffc21a"></span><div><b>Contracts</b><small>Edit in place, in the same font</small></div></div></article>
+        <article class="hr-q"><p>A statement has a new address, and nothing else changes.</p><div class="hr-q__by"><span class="hr-q__av" style="background:#3cb8aa"></span><div><b>Statements</b><small>Change one line, nothing shifts</small></div></div></article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── grid: formats / free / stats ───── -->
+  <section class="hr-grid" aria-label="Good to know">
+   <div class="hr-grid__r1">
+    <article class="hr-gtile hr-gtile--dark">
+      <h3>Formats you already use</h3>
+      <p>Bring the file you have. Pick the spreadsheet you send to.</p>
+      <div class="hr-fmt" aria-hidden="true">
+        <div class="hr-fmt__row"><span><i style="background:#2fb37a">CSV</i>Spreadsheet rows</span><span><i style="background:#4a95e8">XLS</i>Excel files</span><span><i style="background:#f0616d">PDF</i>Your document</span><span><i style="background:#2fb37a">CSV</i>Spreadsheet rows</span><span><i style="background:#4a95e8">XLS</i>Excel files</span></div>
+        <div class="hr-fmt__row hr-fmt__row--b"><span><i style="background:#ffc21a;color:#2d2323">ZIP</i>One file per row</span><span><i style="background:#8aa0ff">TXT</i>Pasted text</span><span><i style="background:#ff8a3d">PDF</i>One merged PDF</span><span><i style="background:#ffc21a;color:#2d2323">ZIP</i>One file per row</span><span><i style="background:#8aa0ff">TXT</i>Pasted text</span></div>
+      </div>
+    </article>
+    <article class="hr-gtile hr-gtile--blue">
+      <h3>Free in beta</h3>
+      <p>Every plan is free right now, with no credit card.</p>
+      <svg class="hr-badge" viewBox="0 0 200 200" aria-hidden="true"><defs><path id="hrCirc" d="M100,100 m-72,0 a72,72 0 1,1 144,0 a72,72 0 1,1 -144,0"/></defs><circle cx="100" cy="100" r="92" fill="none" stroke="#fff" stroke-width="3"/><circle cx="100" cy="100" r="56" fill="none" stroke="#fff" stroke-width="3"/><text font-family="Rubik, sans-serif" font-weight="900" font-size="19" letter-spacing="3" fill="#fff"><textPath href="#hrCirc">REDRAFT · EDIT ANY PDF · REDRAFT · EDIT ANY PDF ·</textPath></text><path d="M78 74h30l14 14v38H78z" fill="none" stroke="#fff" stroke-width="5" stroke-linejoin="round"/><path d="M108 74v14h14M88 104h24M88 114h16" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/></svg>
+    </article>
+   </div>
+   <div class="hr-grid__r2">
+    <article class="hr-gtile hr-gtile--stat">
+      <span class="hr-gtile__tag">Free plan</span>
+      <b class="hr-num">30</b>
+      <div class="hr-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      <p>documents a month, with editing, signatures and start-from-text included</p>
+    </article>
+    <article class="hr-gtile hr-gtile--stat">
+      <span class="hr-gtile__tag">Privacy</span>
+      <b class="hr-num">0</b>
+      <div class="hr-lockrow" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></div>
+      <p>files stored. Everything is processed in memory and never kept</p>
+    </article>
+   </div>
+  </section>
+
+</div>
+</main>
 
 <!-- ─────────── PRICING ─────────── -->
 <section class="pricing" id="pricing" data-screen-label="Pricing">
   <div class="pricing__inner">
 
     <header class="pricing__header">
-      <p class="eyebrow eyebrow--sm">PRICING</p>
+      <p class="eyebrow eyebrow--sm">Pricing</p>
     </header>
 
     <!-- Billing toggle hidden during beta (everything is free) -->
@@ -387,77 +364,47 @@
 </section>
 
 <!-- ─────────── CLOSING CTA ─────────── -->
-<section class="cta-band" id="get-started" data-screen-label="Get started">
-  <div class="cta-band__inner">
-    <p class="eyebrow eyebrow--sm">GET STARTED</p>
-    <h2 class="cta-band__title"><span>Your first edited PDF is</span> <span>about a minute away.</span></h2>
-    <p class="cta-band__sub">
-      Create a free account to save your work, reuse templates across devices,
-      and unlock bulk generation. Or try the editor first — no account needed.
-    </p>
-    <div class="cta-band__actions">
-      <button class="btn btn--primary btn--lg" data-modal="signup">Create a free account</button>
-      <a href="/app.html" class="btn btn--ghost btn--lg">Try the editor first →</a>
+<section class="hr-page hr-page--end" id="get-started" data-screen-label="Get started">
+  <div class="hr-cta">
+    <div class="hr-cta__icons" aria-hidden="true">
+      <svg viewBox="0 0 58 58"><rect x="3" y="3" width="52" height="52" rx="15" fill="#ff8a3d" stroke="#fbf9f5" stroke-width="3.5"/><path d="M19 15h14l8 8v20H19z" fill="#fff" stroke="#2d2323" stroke-width="3.2" stroke-linejoin="round"/><path d="M33 15v8h8M24 31h11M24 37h8" fill="none" stroke="#2d2323" stroke-width="3" stroke-linecap="round"/></svg>
+      <svg viewBox="0 0 58 58"><rect x="3" y="3" width="52" height="52" rx="15" fill="#ffc21a" stroke="#fbf9f5" stroke-width="3.5"/><path d="M17 42l3-10 17-17a4 4 0 0 1 6 6L26 38z" fill="#fff" stroke="#2d2323" stroke-width="3.2" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 58 58"><rect x="3" y="3" width="52" height="52" rx="15" fill="#8aa0ff" stroke="#fbf9f5" stroke-width="3.5"/><path d="M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z" fill="#fff" stroke="#2d2323" stroke-width="3.2" stroke-linejoin="round"/></svg>
     </div>
-    <p class="cta-band__note">
-      Free while we're in beta · no credit card · files processed in memory, never stored
-    </p>
+    <h2 class="hr-h1 hr-h1--cta">Start your<br>free Redraft<br>edit today</h2>
+    <button class="hr-pill hr-pill--blue" data-modal="signup">Create a free account</button>
+    <a class="hr-cta__alt" href="/app.html">or try the editor first, no account needed</a>
+    <ul class="hr-fine"><li>Free while we're in beta</li><li>No credit card needed</li></ul>
   </div>
 </section>
 
 <!-- ─────────── FOOTER ─────────── -->
-<footer class="footer">
-  <div class="footer__top">
-    <div class="footer__brand">
-      <a href="#" class="brand brand--lg">
-        <span class="brand__mark brand__mark--lg" aria-hidden="true"></span>
-        <span class="brand__name brand__name--lg">Redraft</span>
-      </a>
-      <p class="footer__blurb">
-        At Redraft, we are dedicated to simplifying your
-        professional journey by enhancing team collaboration and
-        driving business success, regardless of your company's scale.
-      </p>
-    </div>
-
-    <div class="footer__cols">
-      <div class="footer__col">
-        <h4>Product</h4>
-        <ul>
-          <li><a href="#features">Features</a></li>
-          <li><a href="#tools">Tools</a></li>
-          <li><a href="#pricing">Pricing</a></li>
-          <li><button class="footer__link-btn" data-modal="signup">Create a free account</button></li>
-          <li><button class="footer__link-btn" data-modal="signin">Sign in</button></li>
-        </ul>
-      </div>
-      <div class="footer__col">
-        <h4>Legal</h4>
-        <ul>
-          <li><a href="#privacy">Privacy Policy</a></li>
-          <li><a href="#terms">Terms of Service</a></li>
-          <li><a href="#cookies">Cookie Policy</a></li>
-        </ul>
-      </div>
-      <div class="footer__col">
-        <h4>Socials</h4>
-        <ul>
-          <li><a href="#twitter">Twitter</a></li>
-          <li><a href="#linkedin">LinkedIn</a></li>
-          <li><a href="#instagram">Instagram</a></li>
-        </ul>
-      </div>
+<footer class="hr-foot">
+  <div class="hr-foot__grid">
+    <div><h4>Product</h4><ul>
+      <li><a href="/edit-pdf">Edit any PDF</a></li>
+      <li><a href="/mail-merge">Bulk from a spreadsheet</a></li>
+      <li><a href="/new">Start from text</a></li>
+      <li><a href="/templates">Templates</a></li>
+      <li><a href="#pricing">Pricing</a></li></ul></div>
+    <div><h4>Learn</h4><ul>
+      <li><a href="#product">How it works</a></li>
+      <li><a href="#resources">Resources</a></li>
+      <li><a href="/app.html">Try the editor</a></li></ul>
+      <h4 class="hr-foot__sub">Legal</h4><ul>
+      <li><a href="#privacy">Privacy</a></li>
+      <li><a href="#terms">Terms</a></li>
+      <li><a href="#cookies">Cookies</a></li></ul></div>
+    <div><h4>About Redraft</h4><ul>
+      <li><a href="#top">Home</a></li>
+      <li><button data-modal="signin">Log in</button></li>
+      <li><button data-modal="signup">Create an account</button></li></ul></div>
+    <div class="hr-foot__news"><h4>Get started</h4>
+      <p>Create a free account to save your work and unlock bulk generation. Files are processed in memory and never stored.</p>
+      <div class="hr-form" data-modal="signup" role="button" tabindex="0"><span>Your email</span><button data-modal="signup">Sign up</button></div>
     </div>
   </div>
-
-  <div class="footer__bottom">
-    <span>© 2024 Redraft. Powering the future of document intelligence.</span>
-    <span class="footer__credit">
-      Designed with
-      <span class="footer__credit-icon" aria-hidden="true"></span>
-      by Casablanca
-    </span>
-  </div>
+  <p class="hr-foot__copy">© 2026 Redraft</p>
 </footer>
 
 <!-- ── Auth modals ── -->
@@ -466,7 +413,7 @@
   <!-- Top bar inside overlay -->
   <div class="auth-overlay__nav">
     <a href="#" class="brand" onclick="closeModal(); return false;">
-      <span class="brand__mark"></span>
+      <svg class="auth-brand-ico" viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#8aa0ff" stroke-width="3.5"/><path d="M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z" fill="#fff" stroke-width="3.2" stroke-linejoin="round"/></svg>
       <span class="brand__name">Redraft</span>
     </a>
     <button class="theme-toggle" id="modal-theme-toggle" aria-label="Toggle light/dark mode">
@@ -484,7 +431,7 @@
     <!-- Step: login -->
     <div class="modal-step" data-step="login">
       <h1 class="auth-heading">Welcome back</h1>
-      <p class="auth-sub">Sign in to your account to continue.</p>
+      <p class="auth-sub">Sign in to pick up where you left off.</p>
       <form class="auth-form" id="form-signin" novalidate>
         <div class="auth-field">
           <label class="auth-label" for="si-email">Email</label>
@@ -596,32 +543,58 @@
     </div>
   </div>
 
+  <!-- Art panel: our own picture for the login screen (documents in a folder, like a bouquet in a vase) -->
+  <aside class="auth-art" aria-hidden="true">
+    <svg class="auth-art__svg" viewBox="-70 -30 840 990" preserveAspectRatio="xMidYMid slice" role="presentation">
+      <defs>
+        <radialGradient id="aaGlow" cx="50%" cy="72%" r="62%"><stop offset="0" stop-color="#5a4a4a"/><stop offset="1" stop-color="#2d2323" stop-opacity="0"/></radialGradient>
+        <g id="aaSheet">
+          <rect x="240" y="210" width="220" height="360" rx="18" fill="#fbf9f5"/>
+          <rect x="262" y="330" width="120" height="9" rx="4.5" fill="#d9d2c4"/>
+          <rect x="262" y="352" width="176" height="9" rx="4.5" fill="#e6e0d3"/>
+          <rect x="262" y="374" width="150" height="9" rx="4.5" fill="#e6e0d3"/>
+          <rect x="262" y="410" width="176" height="46" rx="10" fill="#f0ebe0"/>
+          <rect x="262" y="476" width="100" height="9" rx="4.5" fill="#e6e0d3"/>
+        </g>
+      </defs>
+      <rect x="-70" y="-30" width="840" height="990" fill="#2d2323"/>
+      <rect x="-70" y="-30" width="840" height="990" fill="url(#aaGlow)"/>
+      <g class="auth-art__stars" fill="#ff8a3d" stroke="#2d2323" stroke-width="3" stroke-linejoin="round">
+        <path d="M118 176l9 26 26 9-26 9-9 26-9-26-26-9 26-9z"/>
+        <path d="M588 128l7 20 20 7-20 7-7 20-7-20-20-7 20-7z" fill="#ffbb00"/>
+        <path d="M604 470l6 17 17 6-17 6-6 17-6-17-17-6 17-6z" fill="#8aa0ff"/>
+        <path d="M84 520l5 14 14 5-14 5-5 14-5-14-14-5 14-5z" fill="#ffbb00"/>
+      </g>
+      <circle cx="176" cy="330" r="9" fill="#8aa0ff"/><circle cx="548" cy="300" r="7" fill="#ff8a3d"/><circle cx="520" cy="628" r="8" fill="#ffbb00"/><circle cx="150" cy="690" r="6" fill="#3cb8aa"/>
+      <g class="auth-art__fan">
+        <g transform="rotate(-38 350 640)"><use href="#aaSheet"/><path d="M240 228a18 18 0 0 1 18-18h184a18 18 0 0 1 18 18v66H240z" fill="#3cb8aa"/><circle cx="300" cy="252" r="12" fill="#fbf9f5"/></g>
+        <g transform="rotate(-19 350 640)"><use href="#aaSheet"/><path d="M240 228a18 18 0 0 1 18-18h184a18 18 0 0 1 18 18v66H240z" fill="#ff8a6b"/><rect x="262" y="236" width="90" height="12" rx="6" fill="#fbf9f5"/><rect x="262" y="258" width="60" height="9" rx="4.5" fill="#fbf9f5" opacity=".7"/></g>
+        <g transform="rotate(19 350 640)"><use href="#aaSheet"/><path d="M240 228a18 18 0 0 1 18-18h184a18 18 0 0 1 18 18v66H240z" fill="#4f75fe"/><rect x="262" y="236" width="80" height="12" rx="6" fill="#fbf9f5"/><rect x="262" y="258" width="110" height="9" rx="4.5" fill="#fbf9f5" opacity=".7"/></g>
+        <g transform="rotate(38 350 640)"><use href="#aaSheet"/><path d="M240 228a18 18 0 0 1 18-18h184a18 18 0 0 1 18 18v66H240z" fill="#ffbb00"/><rect x="262" y="236" width="100" height="12" rx="6" fill="#2d2323"/><rect x="262" y="258" width="70" height="9" rx="4.5" fill="#2d2323" opacity=".55"/></g>
+        <g><use href="#aaSheet"/><path d="M240 228a18 18 0 0 1 18-18h184a18 18 0 0 1 18 18v66H240z" fill="#123d36"/><rect x="262" y="234" width="120" height="14" rx="7" fill="#f2c14e"/><rect x="262" y="258" width="76" height="9" rx="4.5" fill="#fbf9f5" opacity=".7"/>
+          <g transform="translate(378 424)"><circle r="30" fill="#ff8a3d" stroke="#2d2323" stroke-width="5"/><path d="M-13 1l9 9 17-19" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></g></g>
+      </g>
+      <g>
+        <path d="M168 612h96l26 30h220a28 28 0 0 1 28 28v128a28 28 0 0 1-28 28H168a28 28 0 0 1-28-28V640a28 28 0 0 1 28-28z" fill="#4f75fe" stroke="#2d2323" stroke-width="6" stroke-linejoin="round"/>
+        <path d="M140 672a28 28 0 0 1 28-28h364a28 28 0 0 1 28 28v126a28 28 0 0 1-28 28H168a28 28 0 0 1-28-28z" fill="#6f8cff" stroke="#2d2323" stroke-width="6"/>
+        <path d="M204 760c26-40 44-44 52-24s-18 44 4 44 30-40 52-40 4 32 30 32 34-26 60-36" fill="none" stroke="#fbf9f5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+      <g transform="rotate(38 560 350)">
+        <path d="M540 170h40v250l-20 40-20-40z" fill="#ffbb00" stroke="#2d2323" stroke-width="6" stroke-linejoin="round"/>
+        <path d="M540 170a20 20 0 0 1 40 0v14h-40z" fill="#ff8a3d" stroke="#2d2323" stroke-width="6" stroke-linejoin="round"/>
+        <path d="M549 424l11 30 11-30z" fill="#2d2323"/>
+      </g>
+    </svg>
+    <p class="auth-art__tag">Edit it exactly how you want.</p>
+  </aside>
+  <p class="auth-copy">© 2026 Redraft</p>
+
 </div>
 <!-- ── /Auth modals ── -->
 
 <script type="module" src="/src/landing-main.jsx"></script>
 <script src="/app.js" defer></script>
 <script src="/modal.js" defer></script>
-<script>
-  (function mountFigmaPreview() {
-    var root = document.getElementById('figma-preview-root');
-    if (!root || !window.Screen) return;
-    ReactDOM.createRoot(root).render(React.createElement(window.Screen));
-    // Scale the rendered component to fill the container width
-    function scalePreview() {
-      var child = root.firstElementChild;
-      if (!child) return;
-      var naturalW = 916; // Figma frame width
-      var containerW = root.offsetWidth;
-      var scale = containerW / naturalW;
-      child.style.transform = 'scale(' + scale + ')';
-      child.style.transformOrigin = 'top left';
-      root.style.height = (612.716 * scale) + 'px';
-    }
-    // Wait for React to render then scale
-    setTimeout(scalePreview, 50);
-    window.addEventListener('resize', scalePreview);
-  })();
-</script>
+<script src="/landing-homerun.js" defer></script>
 </body>
 </html>

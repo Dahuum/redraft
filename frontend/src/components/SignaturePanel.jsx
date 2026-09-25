@@ -3,6 +3,7 @@ import SignaturePad from "signature_pad";
 import { cloudEnabled, listSignatures, saveSignature, deleteSignature } from "../lib/cloud.js";
 import { toast } from "./Toast.jsx";
 import Notice from "./Notice.jsx";
+import Icon from "./Icon.jsx";
 
 // Real signature-style script fonts (loaded in app.html) — not casual handwriting.
 const SIG_FONTS = [
@@ -257,26 +258,26 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
   }
 
   const TABS = [
-    ["draw", "gesture", "Draw"],
+    ["draw", "sign", "Draw"],
     ["type", "keyboard", "Type"],
-    ["saved", "bookmarks", saved.length ? `Saved (${saved.length})` : "Saved"],
+    ["saved", "bookmark", saved.length ? `Saved (${saved.length})` : "Saved"],
   ];
 
   return (
-    <div className="p-4 space-y-4 animate-fade">
+    <div className="px-4 pb-4 pt-1 space-y-4 animate-fade">
       {/* Mode tabs */}
-      <div className="flex items-center gap-1 bg-surface-container-low rounded-lg p-1 border border-outline-variant/20">
+      <div className="flex items-center gap-1 bg-black/25 rounded-full p-1">
         {TABS.map(([k, icon, lbl]) => (
           <button
             key={k}
             onClick={() => setMode(k)}
-            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md font-label-md text-sm transition-all ${
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-[14px] transition-all ${
               mode === k
-                ? "bg-surface-variant text-on-surface shadow-sm"
+                ? "bg-primary text-on-primary"
                 : "text-on-surface-variant hover:text-on-surface"
             }`}
           >
-            <span className="material-symbols-outlined text-[16px]">{icon}</span>
+            <Icon name={icon} size={16} />
             {lbl}
           </button>
         ))}
@@ -285,47 +286,45 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
       {/* Draw */}
       {mode === "draw" && (
         <div className="space-y-3">
-          <p className="text-caption text-on-surface-variant">
+          <p className="text-[14px] leading-5 text-on-surface-variant">
             Draw your signature — it auto-smooths when you lift the pen. Tap Smooth for more.
           </p>
           <div
-            className="relative rounded-xl bg-white border border-outline-variant/40 shadow-inner overflow-hidden"
+            className="relative rounded-2xl bg-white overflow-hidden"
             style={{ height: 180 }}
           >
-            <div className="absolute left-6 right-6 bottom-10 border-b border-dashed border-outline-variant pointer-events-none" />
-            <span className="absolute left-6 bottom-4 text-[11px] text-on-surface-variant/70 pointer-events-none">
+            <div className="absolute left-6 right-6 bottom-10 border-b-2 border-dashed border-[#2d2323]/25 pointer-events-none" />
+            <span className="absolute left-6 bottom-4 text-[12px] text-[#736b6b] pointer-events-none">
               Sign here
             </span>
             <canvas ref={canvasRef} className="absolute inset-0 w-full h-full touch-none cursor-crosshair" />
             {!hasInk && (
-              <span className="material-symbols-outlined absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60%] text-[40px] text-on-surface-variant/30 pointer-events-none">
-                gesture
-              </span>
+              <Icon name="sign" size={40} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[60%] text-on-surface-variant/30 pointer-events-none" />
             )}
           </div>
           <div className="flex gap-2">
             <button
               onClick={clearPad}
-              className="px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface-variant hover:text-on-surface text-label-md flex items-center gap-1.5 transition-colors"
+              className="px-4 py-2.5 rounded-full bg-black/25 text-on-surface hover:bg-[rgb(var(--c-field))] text-[14px] flex items-center gap-1.5 transition-colors"
             >
-              <span className="material-symbols-outlined text-[16px]">ink_eraser</span>
+              <Icon name="eraser" size={16} />
               Clear
             </button>
             <button
               onClick={beautify}
               disabled={!hasInk}
               title="Smooth out the strokes"
-              className="px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface-variant hover:text-on-surface text-label-md flex items-center gap-1.5 transition-colors disabled:opacity-40"
+              className="px-4 py-2.5 rounded-full bg-black/25 text-on-surface hover:bg-[rgb(var(--c-field))] text-[14px] flex items-center gap-1.5 transition-colors disabled:opacity-40"
             >
-              <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
+              <Icon name="wand" size={16} />
               Smooth
             </button>
             <button
               onClick={saveDrawn}
               disabled={!hasInk}
-              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
+              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-white py-2.5 rounded-full text-[14px] flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
             >
-              <span className="material-symbols-outlined text-[18px]">check</span>
+              <Icon name="check" size={18} />
               Save signature
             </button>
           </div>
@@ -339,15 +338,15 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Your name"
-            className="w-full bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-2 px-3 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+            className="w-full bg-[rgb(var(--c-field))] rounded-2xl py-3 px-4 text-[15px] text-on-surface placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-secondary-container"
           />
 
           {/* WYSIWYG preview of the selected style */}
-          <div className="rounded-xl bg-white border border-outline-variant/40 h-24 flex items-center justify-center overflow-hidden px-3">
+          <div className="rounded-2xl bg-white h-24 flex items-center justify-center overflow-hidden px-3">
             {preview ? (
               <img src={preview} alt="signature preview" className="max-h-20 max-w-full object-contain" />
             ) : (
-              <span className="text-on-surface-variant/70 text-sm">Type your name to preview</span>
+              <span className="text-[#736b6b] text-[14px]">Type your name to preview</span>
             )}
           </div>
 
@@ -367,10 +366,8 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
               <button
                 key={f.name}
                 onClick={() => setFontIdx(i)}
-                className={`rounded-lg bg-white border h-14 flex items-center justify-center overflow-hidden transition-all ${
-                  fontIdx === i
-                    ? "border-secondary-container ring-1 ring-secondary-container"
-                    : "border-outline-variant/40 hover:border-outline-variant"
+                className={`rounded-2xl bg-white h-14 flex items-center justify-center overflow-hidden transition-all ${
+                  fontIdx === i ? "ring-2 ring-secondary-container" : "hover:ring-2 hover:ring-white/30"
                 }`}
               >
                 <span
@@ -386,9 +383,9 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
           <button
             onClick={saveTyped}
             disabled={!name.trim()}
-            className="w-full bg-secondary-container hover:bg-secondary-container-hover text-white py-2 rounded-lg font-label-md text-sm flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
+            className="w-full bg-secondary-container hover:bg-secondary-container-hover text-white py-3 rounded-full text-[15px] flex justify-center items-center gap-2 transition-colors disabled:opacity-40"
           >
-            <span className="material-symbols-outlined text-[18px]">check</span>
+            <Icon name="check" size={18} />
             Save signature
           </button>
         </div>
@@ -398,8 +395,8 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
       {mode === "saved" && (
         <div className="space-y-3">
           {saved.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-outline-variant/50 p-8 text-center text-on-surface-variant">
-              <span className="material-symbols-outlined text-[32px] opacity-40">signature</span>
+            <div className="rounded-2xl border-2 border-dashed border-outline-variant p-8 text-center text-on-surface-variant">
+              <Icon name="sign" size={32} className="opacity-40" />
               <p className="mt-2 text-body-md text-on-surface">No saved signatures yet.</p>
               <p className="text-caption">Draw or type one — it stays here for next time.</p>
             </div>
@@ -408,23 +405,23 @@ export default function SignaturePanel({ onPlace, cloud = cloudEnabled }) {
               {saved.map((s) => (
                 <div
                   key={s.id}
-                  className="group flex items-center gap-3 rounded-xl bg-white border border-outline-variant/40 p-2"
+                  className="group flex items-center gap-3 rounded-2xl bg-white p-2 pl-3"
                 >
                   <img src={s.url} alt="signature" className="h-12 flex-1 object-contain min-w-0" />
                   <button
                     onClick={() => place(s.url, s.ratio)}
                     title="Place on document"
-                    className="shrink-0 px-3 py-1.5 rounded-lg bg-secondary-container text-white text-label-md flex items-center gap-1.5 hover:bg-secondary-container-hover transition-colors"
+                    className="shrink-0 px-4 py-2 rounded-full bg-secondary-container text-white text-[14px] flex items-center gap-1.5 hover:bg-secondary-container-hover transition-colors"
                   >
-                    <span className="material-symbols-outlined text-[16px]">ink_pen</span>
+                    <Icon name="pen" size={16} />
                     Place
                   </button>
                   <button
                     onClick={() => removeSig(s)}
                     title="Delete"
-                    className="shrink-0 w-8 h-8 rounded-lg text-on-surface-variant hover:text-error hover:bg-error/10 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-all"
+                    className="shrink-0 w-9 h-9 rounded-full text-[#736b6b] hover:text-[#d64545] hover:bg-[#d64545]/10 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-all"
                   >
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
+                    <Icon name="trash" size={18} />
                   </button>
                 </div>
               ))}

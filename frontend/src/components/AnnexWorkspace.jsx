@@ -7,6 +7,8 @@ import ImportSource from "./ImportSource.jsx";
 import FontPanel from "./FontPanel.jsx";
 import { annexModel, annexGenerate } from "../api.js";
 import { getTemplate, saveTemplate } from "../lib/templates.js";
+import Icon from "./Icon.jsx";
+import { fitWidth } from "../lib/fit.js";
 
 const MAX_ROWS = 500;
 
@@ -97,6 +99,7 @@ const ADJUST_COLS = [
 export default function AnnexWorkspace({ file, spans, data, pages }) {
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
+  const [boxH, setBoxH] = useState(0);
   const [pageIndex, setPageIndex] = useState(0);
   const [zoom, setZoom] = useState(1);
 
@@ -188,7 +191,10 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
   useEffect(() => {
     const el = canvasBoxRef.current;
     if (!el) return;
-    const update = () => setBoxW(el.clientWidth);
+    const update = () => {
+      setBoxW(el.clientWidth);
+      setBoxH(el.clientHeight);
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -275,7 +281,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, groups, hoverLine, hoverSection, hoverHeader, headerFields, spanById]);
 
-  const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
+  const pdfWidth = fitWidth({ boxW, boxH, pages, pageIndex, zoom });
   const mappedCount = Object.values(mapping).filter(Boolean).length;
   const headerMappedCount = Object.values(headerMapping).filter(Boolean).length;
 
@@ -516,9 +522,9 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
 
   return (
     // Stacks below lg — see EditorWorkspace for why the scroll moves here.
-    <div className="flex-1 flex flex-col lg:flex-row gap-4 p-3 sm:p-4 overflow-y-auto lg:overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
+    <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3 px-3 pb-3 sm:px-4 sm:pb-4 overflow-y-auto lg:overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
       {/* Left: the annex with detected lines highlighted */}
-      <div className="flex-none h-[55vh] min-h-[300px] lg:flex-[0.58] lg:h-auto lg:min-h-0 bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative">
+      <div className="flex-none h-[55vh] min-h-[300px] lg:flex-1 lg:min-w-0 lg:h-auto lg:min-h-0 rounded-[28px] bg-[rgb(var(--c-tint-sand))] flex flex-col overflow-hidden relative">
         <CanvasToolbar
           pageIndex={pageIndex}
           pageCount={pageCount}
@@ -527,10 +533,8 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           setZoom={setZoom}
         />
 
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 bg-surface/90 backdrop-blur-md border border-outline-variant/50 rounded-full px-3 py-1 text-caption text-on-surface-variant shadow-lg flex items-center gap-1.5">
-          <span className="material-symbols-outlined text-[14px] text-accent-cyan">
-            {reused ? "bookmark" : "rule"}
-          </span>
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-surface/95 backdrop-blur-md rounded-full px-4 py-2 text-[13px] sm:text-[14px] text-on-surface shadow-panel flex items-center gap-2 max-w-[92%] whitespace-nowrap overflow-hidden">
+          <Icon name={reused ? "bookmark" : "rule"} size={14} className="text-accent-cyan" />
           {adjusting
             ? armCol
               ? `Click a ${armCol} cell on the page…`
@@ -542,9 +546,9 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
             : "Reading the annex…"}
         </div>
 
-        <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-on-surface/[0.04]">
+        <div ref={canvasBoxRef} className="flex-1 overflow-auto px-6 pt-16 pb-20 flex justify-center">
           {file && data ? (
-            <div className="paper-shadow rounded-sm mt-12 mb-10 h-fit">
+            <div className="paper-shadow rounded-sm h-fit">
               <PdfCanvas
                 data={data}
                 pageIndex={pageIndex}
@@ -556,7 +560,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
             </div>
           ) : (
             <div className="self-center text-center text-on-surface-variant">
-              <span className="material-symbols-outlined text-[40px] opacity-40">description</span>
+              <Icon name="doc" size={40} className="opacity-40" />
               <p className="mt-2 text-body-md">Open an annex in the PDF Editor tab to start.</p>
             </div>
           )}
@@ -564,12 +568,12 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
       </div>
 
       {/* Right: the lines + data linking */}
-      <div className="flex-none lg:flex-[0.42] min-h-[45vh] lg:min-h-0 bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden">
-        <div className="px-4 pt-4 pb-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md">
+      <div className="ink-scope flex-none lg:w-[540px] min-h-[45vh] lg:min-h-0 rounded-[28px] bg-[rgb(var(--c-sidebar))] text-on-surface flex flex-col overflow-hidden">
+        <div className="px-5 pt-5 pb-3">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <h2 className="font-display-md text-xl font-bold tracking-tight">Annex automation</h2>
-              <p className="text-caption text-on-surface-variant mt-0.5">
+              <h2 className="font-display-md font-black text-[24px] leading-none tracking-[-0.4px]">Annex automation</h2>
+              <p className="text-[13px] leading-5 text-on-surface-variant mt-2">
                 One annex per client. A line whose column is <b>0</b> or empty is removed; the
                 Total&nbsp;HT recomputes.
               </p>
@@ -580,22 +584,22 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                   onClick={openAdjust}
                   title="Fix what was auto-detected"
                   aria-label="Adjust layout"
-                  className="shrink-0 px-2.5 py-2 rounded-lg border border-outline-variant/40 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50 transition-colors"
+                  className="shrink-0 px-2.5 py-2 rounded-2xl border border-white/15 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50 transition-colors"
                 >
-                  <span className="material-symbols-outlined text-[16px]">tune</span>
+                  <Icon name="tune" size={16} />
                 </button>
                 <button
                   onClick={() => {
                     setShowImport((v) => !v);
                     setError(null);
                   }}
-                  className={`shrink-0 px-3 py-1.5 rounded-lg border text-label-md flex items-center gap-1.5 transition-colors ${
+                  className={`shrink-0 px-3 py-1.5 rounded-2xl border text-label-md flex items-center gap-1.5 transition-colors ${
                     showImport
-                      ? "bg-accent-cyan/10 border-accent-cyan/30 text-accent-cyan"
-                      : "border-outline-variant/40 text-on-surface-variant hover:text-on-surface"
+                      ? "bg-secondary-container border-transparent text-white"
+                      : "border-white/15 text-on-surface-variant hover:text-on-surface"
                   }`}
                 >
-                  <span className="material-symbols-outlined text-[16px]">table_chart</span>
+                  <Icon name="table" size={16} />
                   {dataLoaded ? `${impRows.length} clients` : "Load data"}
                 </button>
               </div>
@@ -608,15 +612,15 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           <>
           {modelStatus === "loading" && (
             <div className="h-full flex flex-col items-center justify-center text-on-surface-variant animate-fade">
-              <span className="material-symbols-outlined text-[40px] animate-pulse">rule</span>
+              <Icon name="rule" size={40} className="animate-pulse" />
               <p className="mt-2 text-body-md">Reading the annex…</p>
             </div>
           )}
 
           {modelStatus === "error" && (
             <div className="p-4">
-              <div className="rounded-lg px-3 py-2 text-caption flex items-center gap-2 border border-error/30 bg-error/10 text-error">
-                <span className="material-symbols-outlined text-[16px]">error</span>
+              <div className="rounded-2xl px-3 py-2 text-caption flex items-center gap-2 border border-error/30 bg-error/10 text-error">
+                <Icon name="warning" size={16} />
                 {modelError}
               </div>
             </div>
@@ -624,7 +628,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
 
           {modelStatus === "ready" && items.length === 0 && headerFields.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 text-on-surface-variant">
-              <span className="material-symbols-outlined text-[40px] opacity-40">search_off</span>
+              <Icon name="searchoff" size={40} className="opacity-40" />
               <p className="mt-2 text-body-md max-w-[260px]">
                 No line items detected. This screen is built for line-item annexes (table of
                 services with quantities).
@@ -653,7 +657,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
 
           {modelStatus === "ready" && (items.length > 0 || headerFields.length > 0) && !showImport && (
             <div className="flex flex-col">
-              <div className="px-3 py-2 text-caption text-on-surface-variant bg-surface-container-low border-b border-outline-variant/20 sticky top-0 z-10">
+              <div className="px-3 py-2 text-caption text-on-surface-variant bg-black/20 border-b border-white/10 sticky top-0 z-10">
                 {dataLoaded
                   ? "Link each line to its quantity column; fields to their value column."
                   : "Load your client data above to link columns."}
@@ -669,8 +673,8 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                       key={h.key}
                       onMouseEnter={() => setHoverHeader(h.key)}
                       onMouseLeave={() => setHoverHeader((x) => (x === h.key ? null : x))}
-                      className={`flex items-center gap-2 px-3 py-2 border-b border-outline-variant/10 transition-colors ${
-                        hoverHeader === h.key ? "bg-surface-container-high/50" : ""
+                      className={`flex items-center gap-2 px-3 py-2 border-b border-white/[0.06] transition-colors ${
+                        hoverHeader === h.key ? "bg-black/25/50" : ""
                       }`}
                     >
                       <div className="flex-1 min-w-0">
@@ -693,7 +697,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                             return n;
                           })
                         }
-                        className="w-[44%] shrink-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container disabled:opacity-40"
+                        className="w-[44%] shrink-0 bg-[rgb(var(--c-field))] rounded-2xl py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container disabled:opacity-40"
                       >
                         <option value="">keep as-is</option>
                         {impHeaders.map((c) => (
@@ -722,9 +726,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                       hoverSection === gi ? "text-secondary" : "text-on-surface-variant"
                     }`}
                   >
-                    <span className="material-symbols-outlined text-[18px] opacity-70">
-                      {hoverSection === gi ? "folder_open" : "folder"}
-                    </span>
+                    <Icon name={hoverSection === gi ? "folderopen" : "folder"} size={18} className="opacity-70" />
                     <span className="text-label-md font-semibold italic truncate" title={g.section}>
                       {g.section || "—"}
                     </span>
@@ -765,7 +767,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                               return n;
                             })
                           }
-                          className="w-[44%] shrink-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container disabled:opacity-40"
+                          className="w-[44%] shrink-0 bg-[rgb(var(--c-field))] rounded-2xl py-1.5 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container disabled:opacity-40"
                         >
                           <option value="">keep as-is</option>
                           {impHeaders.map((h) => (
@@ -797,10 +799,10 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                     key={k}
                     onClick={() => setArmCol(armCol === k ? null : k)}
                     aria-pressed={armCol === k}
-                    className={`px-2.5 py-1 rounded-lg border text-label-md text-[12px] transition-colors ${
+                    className={`px-2.5 py-1 rounded-2xl border text-label-md text-[12px] transition-colors ${
                       armCol === k
                         ? "bg-secondary-container text-white border-transparent"
-                        : "border-outline-variant/50 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50"
+                        : "border-white/15 text-on-surface-variant hover:text-on-surface hover:border-accent-cyan/50"
                     }`}
                   >
                     {lbl}
@@ -809,13 +811,13 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
               </div>
               {armCol && (
                 <p className="text-caption text-accent-cyan flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[14px]">ads_click</span>
+                  <Icon name="target" size={14} />
                   Now click a “{armCol}” cell on the document.
                 </p>
               )}
 
-              <div className="space-y-2 rounded-lg border border-outline-variant/30 bg-surface-container-low p-3">
-                <div className="flex flex-wrap gap-x-4 gap-y-1.5 pb-2 border-b border-outline-variant/20">
+              <div className="space-y-2 rounded-2xl border border-white/10 bg-black/20 p-3">
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5 pb-2 border-b border-white/10">
                   <NumField
                     label="Table top y>"
                     value={draftTmpl.tableRegion?.yTop}
@@ -865,7 +867,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                   onClick={redetectFresh}
                   disabled={scanning}
                   title="Throw this layout away and auto-detect from scratch"
-                  className="shrink-0 px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors text-label-md text-sm disabled:opacity-40"
+                  className="shrink-0 px-3 py-2 rounded-full border border-white/15 text-on-surface hover:bg-black/25 transition-colors text-label-md text-sm disabled:opacity-40"
                 >
                   Re-detect
                 </button>
@@ -873,22 +875,16 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
                 <button
                   onClick={closeAdjust}
                   disabled={scanning}
-                  className="shrink-0 px-3 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors text-label-md text-sm disabled:opacity-40"
+                  className="shrink-0 px-3 py-2 rounded-full border border-white/15 text-on-surface hover:bg-black/25 transition-colors text-label-md text-sm disabled:opacity-40"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={applyRescan}
                   disabled={scanning || !draftTmpl}
-                  className="shrink-0 px-4 py-2 rounded-lg bg-secondary-container hover:bg-secondary-container-hover text-white font-label-md text-sm transition-all disabled:opacity-40 flex items-center gap-1.5"
+                  className="shrink-0 px-4 py-2 rounded-2xl bg-secondary-container hover:bg-secondary-container-hover text-white font-label-md text-sm transition-all disabled:opacity-40 flex items-center gap-1.5"
                 >
-                  <span
-                    className={`material-symbols-outlined text-[16px] ${
-                      scanning ? "animate-spin" : ""
-                    }`}
-                  >
-                    {scanning ? "progress_activity" : "radar"}
-                  </span>
+                  <Icon name={scanning ? "spinner" : "scan"} size={16} spin={scanning} />
                   {scanning ? "Scanning…" : "Apply & re-scan"}
                 </button>
               </div>
@@ -896,18 +892,16 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
           )}
           {adjusting && !draftTmpl && (
             <div className="h-full flex flex-col items-center justify-center gap-3 text-center p-6 text-on-surface-variant">
-              <span className="material-symbols-outlined text-[36px] opacity-40">tune</span>
+              <Icon name="tune" size={36} className="opacity-40" />
               <p className="text-body-md max-w-[280px]">
                 No saved layout to adjust yet — run the detector first, then fix what it found.
               </p>
               <button
                 onClick={redetectFresh}
                 disabled={scanning}
-                className="px-4 py-2 rounded-lg bg-secondary-container text-white text-label-md text-sm flex items-center gap-1.5 disabled:opacity-40"
+                className="px-4 py-2 rounded-2xl bg-secondary-container text-white text-label-md text-sm flex items-center gap-1.5 disabled:opacity-40"
               >
-                <span className={`material-symbols-outlined text-[16px] ${scanning ? "animate-spin" : ""}`}>
-                  {scanning ? "progress_activity" : "radar"}
-                </span>
+                <Icon name={scanning ? "spinner" : "scan"} size={16} spin={scanning} />
                 {scanning ? "Scanning…" : "Detect layout now"}
               </button>
             </div>
@@ -915,7 +909,7 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-outline-variant/30 bg-surface/80 backdrop-blur-xl space-y-2">
+        <div className="p-4 border-t border-white/10 bg-surface/80 backdrop-blur-xl space-y-2">
           {file && <FontPanel file={file} />}
           {error && <Notice tone="error">{error}</Notice>}
           {result && (
@@ -928,14 +922,12 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
             <>
               {/* Name each output file by a data column (e.g. client / Facture N°) */}
               <div className="flex items-center gap-2 text-caption">
-                <span className="material-symbols-outlined text-[15px] text-on-surface-variant">
-                  sell
-                </span>
+                <Icon name="tag" size={15} className="text-on-surface-variant" />
                 <span className="text-on-surface-variant shrink-0">Name files by</span>
                 <select
                   value={filenameCol}
                   onChange={(e) => setFilenameCol(e.target.value)}
-                  className="flex-1 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                  className="flex-1 bg-[rgb(var(--c-field))] rounded-2xl py-1 px-2 text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
                 >
                   <option value="">annex_0001.pdf …</option>
                   {impHeaders.map((h) => (
@@ -949,28 +941,24 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
               {/* Verify before download */}
               <button
                 onClick={() => setShowReview((v) => !v)}
-                className="w-full flex items-center justify-between px-3 py-2 rounded-lg border border-outline-variant/40 text-label-md text-on-surface-variant hover:text-on-surface transition-colors"
+                className="w-full flex items-center justify-between px-3 py-2 rounded-full border border-white/15 text-label-md text-on-surface-variant hover:text-on-surface transition-colors"
               >
                 <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[16px] text-accent-cyan">
-                    fact_check
-                  </span>
+                  <Icon name="rule" size={16} className="text-accent-cyan" />
                   Review {preview.length} client{preview.length === 1 ? "" : "s"} before download
                 </span>
-                <span className="material-symbols-outlined text-[18px]">
-                  {showReview ? "expand_less" : "expand_more"}
-                </span>
+                <Icon name={showReview ? "chevup" : "chevdown"} size={18} />
               </button>
               {showReview && (
-                <div className="max-h-48 overflow-auto rounded-lg border border-outline-variant/30 bg-surface-container-lowest animate-drop">
-                  <div className="px-3 py-1.5 text-caption text-on-surface-variant sticky top-0 bg-surface-container-low border-b border-outline-variant/20">
+                <div className="max-h-48 overflow-auto rounded-2xl border border-white/10 bg-[rgb(var(--c-field))] animate-drop">
+                  <div className="px-3 py-1.5 text-caption text-on-surface-variant sticky top-0 bg-black/20 border-b border-white/10">
                     Total HT before: <b className="text-on-surface">{fmtNum(masterTotal)}</b> — each
                     client recomputed
                   </div>
                   {preview.slice(0, 80).map((p, i) => (
                     <div
                       key={i}
-                      className="flex items-center gap-2 px-3 py-1.5 text-caption border-b border-outline-variant/10 last:border-0"
+                      className="flex items-center gap-2 px-3 py-1.5 text-caption border-b border-white/[0.06] last:border-0"
                     >
                       <span className="flex-1 truncate text-on-surface" title={p.name}>
                         {p.name}
@@ -1005,9 +993,9 @@ export default function AnnexWorkspace({ file, spans, data, pages }) {
               !dataLoaded ||
               (mappedCount === 0 && headerMappedCount === 0)
             }
-            className="w-full bg-secondary-container hover:bg-secondary-container-hover text-white py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
+            className="w-full bg-secondary-container hover:bg-secondary-container-hover text-white py-2.5 rounded-2xl font-label-md text-sm  transition-all flex justify-center items-center gap-2 border border-white/15 disabled:opacity-40"
           >
-            <span className="material-symbols-outlined text-[18px]">bolt</span>
+            <Icon name="bolt" size={18} />
             {busy
               ? "Generating…"
               : `Generate ${dataLoaded ? impRows.length : ""} annex${

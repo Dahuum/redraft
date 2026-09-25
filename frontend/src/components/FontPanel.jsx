@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { checkFonts, uploadFont } from "../api.js";
+import Icon from "./Icon.jsx";
 
 // status → chip styling + plain-language label
 const CHIP = {
-  match: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-  builtin: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-  substitute: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-  fallback: "bg-error/10 text-error border-error/20",
+  match: "bg-[rgb(var(--c-tint-mint))] text-on-surface",
+  builtin: "bg-[rgb(var(--c-tint-mint))] text-on-surface",
+  substitute: "bg-[rgb(var(--c-tint-yellow))] text-on-surface",
+  fallback: "bg-error-container text-on-error-container",
 };
 const LABEL = {
   match: "exact",
@@ -68,7 +69,7 @@ export default function FontPanel({ file, onChanged }) {
   const okCount = (fonts || []).length - attention.length;
 
   return (
-    <div className="rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 animate-rise">
+    <div className="rounded-2xl bg-black/20 p-3.5 animate-rise">
       <button
         type="button"
         onClick={() => attention.length && setOpen((v) => !v)}
@@ -77,7 +78,7 @@ export default function FontPanel({ file, onChanged }) {
         }`}
       >
         <span className="text-label-md text-on-surface flex items-center gap-1.5">
-          <span className="material-symbols-outlined text-[16px]">font_download</span>
+          <Icon name="text" size={16} />
           Fonts
         </span>
         <span className="flex items-center gap-1.5">
@@ -90,9 +91,7 @@ export default function FontPanel({ file, onChanged }) {
             </span>
           ) : null}
           {attention.length > 0 && (
-            <span className="material-symbols-outlined text-[18px] text-on-surface-variant">
-              {open ? "expand_less" : "expand_more"}
-            </span>
+            <Icon name={open ? "chevup" : "chevdown"} size={18} className="text-on-surface-variant" />
           )}
         </span>
       </button>
@@ -110,8 +109,8 @@ export default function FontPanel({ file, onChanged }) {
       )}
 
       {!loading && fonts && okCount > 0 && attention.length === 0 && (
-        <p className="mt-1 text-caption text-emerald-400/90 flex items-center gap-1">
-          <span className="material-symbols-outlined text-[14px]">check_circle</span>
+        <p className="mt-1 text-[13px] text-on-surface-variant flex items-center gap-1.5">
+          <Icon name="check" size={14} />
           All fonts matched.
         </p>
       )}
@@ -130,14 +129,14 @@ export default function FontPanel({ file, onChanged }) {
                   {f.font}
                 </span>
                 <span
-                  className={`shrink-0 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wide ${CHIP[f.status]}`}
+                  className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-semibold ${CHIP[f.status]}`}
                 >
                   {LABEL[f.status]}
                 </span>
                 <button
                   onClick={() => inputs.current[f.raw_font]?.click()}
                   disabled={busy === f.raw_font}
-                  className="shrink-0 text-caption px-2 py-1 rounded border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors disabled:opacity-50"
+                  className="shrink-0 text-[13px] px-3 py-1.5 rounded-full bg-[rgb(var(--c-field))] text-on-surface hover:bg-[rgb(var(--c-field-hover))] transition-colors disabled:opacity-50"
                 >
                   {busy === f.raw_font ? "uploading…" : "Upload .ttf"}
                 </button>

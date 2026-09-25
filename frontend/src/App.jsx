@@ -5,6 +5,8 @@ import { addDoc, getRecord, patchDoc, getAllRecords } from "./lib/history.js";
 import { renderThumb } from "./lib/thumb.js";
 import { usePath, parseRoute, navigate } from "./lib/router.js";
 import HomeScreen from "./components/HomeScreen.jsx";
+import Icon from "./components/Icon.jsx";
+import Brand from "./components/Brand.jsx";
 import EditorWorkspace from "./components/EditorWorkspace.jsx";
 import BulkWorkspace from "./components/BulkWorkspace.jsx";
 import AnnexWorkspace from "./components/AnnexWorkspace.jsx";
@@ -265,7 +267,7 @@ export default function App() {
   if (auth.enabled && (!auth.ready || (!auth.user && !guest))) {
     return (
       <div className="h-screen w-full flex items-center justify-center bg-background text-on-surface-variant">
-        <span className="material-symbols-outlined animate-spin text-[28px]">progress_activity</span>
+        <Icon name="spinner" size={28} spin />
       </div>
     );
   }
@@ -275,7 +277,7 @@ export default function App() {
   if (composing) {
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center gap-3 bg-background text-on-surface-variant">
-        <span className="material-symbols-outlined animate-spin text-[28px] text-accent-cyan">progress_activity</span>
+        <Icon name="spinner" size={28} spin className="text-secondary-container" />
         <p className="text-body-md">Preparing your document…</p>
       </div>
     );
@@ -298,128 +300,119 @@ export default function App() {
     );
   }
 
-  // Editor view (the approved dark "Text Fields" design)
+  // Editor view — Homerun-derived: floating pill bar, sand page, ink sidebar.
+  const docName = ed.file?.name || "Untitled document";
+  const MODES = [
+    ["editor", "PDF Editor", "Editor", "pen", `/editor/${docId}`],
+    ["bulk", "Bulk Generator", "Bulk", "layers", `/bulk/${docId}`],
+    ["annex", "Annex Automation", "Annex", "rule", `/annex/${docId}`],
+  ];
+  const modeSwitch = (cls) => (
+    <div className={`bg-surface-container rounded-full p-1 flex items-center gap-1 ${cls}`}>
+      {MODES.map(([k, long, short, icon, path]) => (
+        <button
+          key={k}
+          onClick={() => navigate(path)}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-full text-[15px] whitespace-nowrap transition-all ${
+            mode === k
+              ? "bg-surface-bright text-on-surface shadow-soft"
+              : "text-on-surface-variant hover:text-on-surface"
+          }`}
+        >
+          <Icon name={icon} size={17} />
+          <span className="lg:hidden">{short}</span>
+          <span className="hidden lg:inline">{long}</span>
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <>
       <GlobalOverlays />
-      <div className="h-screen w-full flex flex-col overflow-hidden animate-fade bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-surface-container-high via-background to-background">
-      {/* TopNavBar */}
-      <header className="bg-surface/80 backdrop-blur-xl text-primary font-label-md text-label-md h-14 w-full border-b border-outline-variant flex justify-between items-center sticky top-0 z-30 px-3 sm:px-6">
-        <button
-          onClick={() => confirmLeaveEditor() && navigate("/")}
-          title="Back to your documents"
-          className="flex items-center gap-2 text-on-surface hover:opacity-80 transition-opacity"
-        >
-          <span className="material-symbols-outlined text-[20px]">arrow_back</span>
-          <span className="font-display-md text-[17px] font-bold tracking-tight">Redraft</span>
-        </button>
-        {/* Labels collapse to their icons on phones: the brand plus three
-            labelled buttons needs ~378px and a 390px screen offers 342. */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          <ThemeToggle />
-          <button
-            onClick={handleDownload}
-            disabled={ed.nEdits === 0 || ed.busy}
-            className="h-8 px-3 rounded-md font-label-md text-[13px] bg-primary text-on-primary hover:bg-primary/90 transition-colors shadow-[0_0_15px_rgba(195,198,210,0.1)] opacity-80 active:opacity-100 inline-flex items-center gap-2 disabled:opacity-40"
-          >
-            <span className="material-symbols-outlined text-[18px]">download</span>
-            <span className="hidden sm:inline">Export PDF</span>
-          </button>
-          {plan?.auth && plan.limit != null && (
-            <span
-              title="Documents generated this month"
-              className={`h-8 px-2.5 hidden md:inline-flex items-center rounded-md font-label-md text-[12px] border ${
-                plan.used >= plan.limit
-                  ? "border-error/40 text-error bg-error/10"
-                  : "border-outline-variant text-on-surface-variant"
-              }`}
-            >
-              {plan.used}/{plan.limit} docs
-            </span>
-          )}
-          {auth.enabled && auth.user && (
+      <div className="h-screen w-full flex flex-col overflow-hidden animate-fade bg-page pt-[92px]">
+      {/* Top bar: the landing banner's floating pill */}
+      <header className="fixed top-3 left-1/2 -translate-x-1/2 z-40 w-[min(1500px,calc(100%-24px))]">
+        <div className="relative flex items-center justify-between h-[68px] pl-2.5 pr-2.5 sm:pr-3 rounded-full bg-surface/95 backdrop-blur-md shadow-[0_1px_0_rgb(var(--c-shadow)/0.04),0_12px_32px_-18px_rgb(var(--c-shadow)/0.35)]">
+          <div className="flex items-center gap-3 min-w-0">
             <button
-              onClick={auth.signOut}
-              title="Sign out"
-              className="sm:ml-1 h-8 px-2.5 sm:px-3 rounded-md font-label-md text-[13px] text-on-surface border border-outline-variant hover:bg-surface-container-high transition-colors opacity-80 active:opacity-100 inline-flex items-center gap-1.5"
+              onClick={() => confirmLeaveEditor() && navigate("/")}
+              title="Back to your documents"
+              aria-label="Back to your documents"
+              className="w-11 h-11 shrink-0 rounded-full bg-surface-container text-on-surface hover:bg-surface-container-high transition-colors grid place-items-center"
             >
-              <span className="material-symbols-outlined text-[18px]">logout</span>
-              <span className="hidden sm:inline">Sign out</span>
+              <Icon name="back" size={20} />
             </button>
-          )}
-          {auth.enabled && !auth.user && (
+            <Brand wordmark={false} size={30} className="hidden sm:inline-flex" />
+            <div className="min-w-0 leading-tight">
+              <p className="font-display-md font-black text-[17px] tracking-[-0.3px] text-on-surface hidden sm:block">Redraft</p>
+              <p className="text-[13px] text-on-surface-variant truncate max-w-[9rem] sm:max-w-[14rem]" title={docName}>{docName}</p>
+            </div>
+          </div>
+
+          {/* Centre: the three workspaces (signed in) or the unlock hint (guest) */}
+          <div className="absolute left-1/2 -translate-x-1/2 hidden md:block">
+            {guestMode ? (
+              <button
+                onClick={() => { if (confirmLeaveEditor()) window.location.href = "/"; }}
+                className="inline-flex items-center gap-2 rounded-full bg-surface-container px-4 py-2.5 text-[14px] text-on-surface-variant hover:text-on-surface transition-colors whitespace-nowrap"
+              >
+                <Icon name="unlock" size={16} className="text-secondary-container" />
+                Bulk &amp; annex unlock when you <b className="text-secondary-container font-semibold">sign in</b>
+              </button>
+            ) : (
+              modeSwitch("")
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {plan?.auth && plan.limit != null && (
+              <span
+                title="Documents generated this month"
+                className={`h-10 px-3.5 hidden lg:inline-flex items-center rounded-full text-[13px] font-semibold ${
+                  plan.used >= plan.limit
+                    ? "bg-error-container text-on-error-container"
+                    : "bg-surface-container text-on-surface-variant"
+                }`}
+              >
+                {plan.used}/{plan.limit} docs
+              </span>
+            )}
+            <ThemeToggle />
             <button
-              onClick={() => {
-                if (confirmLeaveEditor()) window.location.href = "/";
-              }}
-              title="Sign in to save your work and get more documents"
-              className="sm:ml-1 h-8 px-2.5 sm:px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-secondary-container-hover transition-colors inline-flex items-center gap-1.5"
+              onClick={handleDownload}
+              disabled={ed.nEdits === 0 || ed.busy}
+              className="h-10 px-4 sm:px-5 rounded-full text-[15px] bg-secondary-container text-white hover:bg-secondary-container-hover hover:shadow-[0_8px_22px_rgba(79,117,254,0.35)] transition-[background,box-shadow,transform] hover:-translate-y-0.5 inline-flex items-center gap-2 disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-none"
             >
-              <span className="material-symbols-outlined text-[18px]">login</span>
-              <span className="hidden sm:inline">Sign in</span>
+              <Icon name="download" size={18} />
+              <span className="hidden sm:inline">Export PDF</span>
             </button>
-          )}
+            {auth.enabled && auth.user && (
+              <button
+                onClick={auth.signOut}
+                title="Sign out"
+                aria-label="Sign out"
+                className="w-10 h-10 rounded-full bg-surface-container text-on-surface hover:bg-surface-container-high transition-colors grid place-items-center"
+              >
+                <Icon name="logout" size={18} />
+              </button>
+            )}
+            {auth.enabled && !auth.user && (
+              <button
+                onClick={() => { if (confirmLeaveEditor()) window.location.href = "/"; }}
+                title="Sign in to save your work and get more documents"
+                className="h-10 px-4 rounded-full text-[15px] bg-surface-container text-on-surface hover:bg-surface-container-high transition-colors inline-flex items-center gap-2"
+              >
+                <Icon name="login" size={18} />
+                <span className="hidden sm:inline">Sign in</span>
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Mode toggle — guests get the editor only; Bulk/Annex need sign-in */}
-      {guestMode ? (
-        <div className="w-full flex justify-center px-3 py-2.5 bg-background border-b border-outline-variant/30">
-          {/* One flowing sentence, not a flex row: as a row the link was its own
-              column and got squeezed until "sign in" broke across two lines. */}
-          <div className="max-w-full text-center text-caption text-on-surface-variant bg-surface-container-high/60 border border-outline-variant/20 rounded-2xl sm:rounded-full px-4 py-1.5">
-            <span className="material-symbols-outlined text-[15px] text-accent-cyan align-[-3px] mr-1">lock_open</span>
-            Bulk generation &amp; annex automation unlock when you{" "}
-            <button
-              onClick={() => { window.location.href = "/"; }}
-              className="text-secondary font-medium hover:underline whitespace-nowrap"
-            >
-              sign in
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="w-full flex justify-center py-3 bg-background border-b border-outline-variant/30">
-          <div className="bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
-            <button
-              onClick={() => navigate(`/editor/${docId}`)}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
-                mode === "editor"
-                  ? "bg-secondary-container text-white shadow-lg"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">edit</span>
-              <span className="sm:hidden">Editor</span>
-              <span className="hidden sm:inline">PDF Editor</span>
-            </button>
-            <button
-              onClick={() => navigate(`/bulk/${docId}`)}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
-                mode === "bulk"
-                  ? "bg-secondary-container text-white shadow-lg"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">layers</span>
-              <span className="sm:hidden">Bulk</span>
-              <span className="hidden sm:inline">Bulk Generator</span>
-            </button>
-            <button
-              onClick={() => navigate(`/annex/${docId}`)}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-full font-label-md text-sm whitespace-nowrap transition-all ${
-                mode === "annex"
-                  ? "bg-secondary-container text-white shadow-lg"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">rule</span>
-              <span className="sm:hidden">Annex</span>
-              <span className="hidden sm:inline">Annex Automation</span>
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Phones and tablets: the workspaces switch sits under the bar */}
+      {!guestMode && <div className="md:hidden px-3 pb-3 flex justify-center">{modeSwitch("max-w-full overflow-x-auto")}</div>}
 
       {mode === "editor" || guestMode ? (
         <EditorWorkspace ed={ed} onDownload={handleDownload} guest={guestMode} />

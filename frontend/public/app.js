@@ -15,7 +15,7 @@ try { window.rdTrack && window.rdTrack("landing_view"); } catch (e) {}
   const STORE  = 'redraft-theme';
 
   const saved = localStorage.getItem(STORE);
-  if (saved === 'light') root.setAttribute('data-theme', 'light');
+  if (saved !== 'dark') root.setAttribute('data-theme', 'light');
 
   const label = () => {
     const isLight = root.getAttribute('data-theme') === 'light';
@@ -76,11 +76,12 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const burger = document.querySelector('.nav__burger');
 const links  = document.querySelector('.nav__links');
 burger?.addEventListener('click', () => {
+  if (!links) return;
   const open = links.classList.toggle('nav__links--open');
   burger.setAttribute('aria-expanded', open);
 });
 const navWrap = document.querySelector('.nav-wrap');
-const onScroll = () => navWrap.classList.toggle('nav-wrap--scrolled', window.scrollY > 8);
+const onScroll = () => navWrap && navWrap.classList.toggle('nav-wrap--scrolled', window.scrollY > 8);
 onScroll();
 window.addEventListener('scroll', onScroll, { passive: true });
 

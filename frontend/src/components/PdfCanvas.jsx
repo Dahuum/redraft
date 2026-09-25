@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { spanAt } from "../lib/spans.js";
+import Icon from "./Icon.jsx";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -42,6 +43,9 @@ export default function PdfCanvas({
   edits = {}, // { spanId: newText } — so a moved+edited span shows the new text
   onSpanMove = () => {},
   onSpanMoveClear = () => {},
+  // ---- Inline editor: rendered next to the selected span (document-first editing) ----
+  selectedPopover = null, // (span, below:boolean) => node
+  liveEdits = false, // draw edited text on the page as it is typed (until a real Preview replaces it)
 }) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -52,6 +56,7 @@ export default function PdfCanvas({
   const [dims, setDims] = useState({ w: 0, h: 0 }); // CSS pixel size
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [hoverId, setHoverId] = useState(null); // span under the pointer (discoverability)
 
   useEffect(() => {
     let cancelled = false;
@@ -223,6 +228,12 @@ export default function PdfCanvas({
       <div
         ref={wrapRef}
         onClick={handleClick}
+        onPointerMove={(e) => {
+          if (placement || spanDrag.current || drag.current || e.pointerType === "touch" || !scale) return setHoverId(null);
+          const rect = wrapRef.current.getBoundingClientRect();
+          setHoverId(spanAt(spans, pageIndex, (e.clientX - rect.left) / scale, (e.clientY - rect.top) / scale));
+        }}
+        onPointerLeave={() => setHoverId(null)}
         className={`relative select-none ${placement ? "cursor-crosshair" : "cursor-pointer"}`}
         style={{ width: dims.w || undefined, height: dims.h || undefined }}
       >
@@ -235,9 +246,9 @@ export default function PdfCanvas({
             .filter((r) => (r.page ?? 0) === pageIndex)
             .map((r) => {
               const styles = {
-                faint: { border: "1px solid rgba(37,99,235,.30)", background: "transparent" },
-                strong: { border: "2px solid #2563eb", background: "rgba(37,99,235,.12)" },
-                parent: { border: "2px dashed #06b6d4", background: "rgba(6,182,212,.07)" },
+                faint: { border: "1px solid rgba(79,117,254,.30)", background: "transparent" },
+                strong: { border: "2px solid #4f75fe", background: "rgba(79,117,254,.12)" },
+                parent: { border: "2px dashed #ffbb00", background: "rgba(255,187,0,.10)" },
               };
               const st = styles[r.variant] || styles.faint;
               return (
@@ -256,6 +267,41 @@ export default function PdfCanvas({
               );
             })}
 
+          {/* Live text: the new value drawn over the original, so the change is
+              visible on the page while you type. Approximate font; Preview is exact. */}
+          {liveEdits && pageSpans.map((s) => {
+            const nt = edits[s.id];
+            if (nt === undefined || nt === s.text || moves[s.id] || s.invisible || s.rtl) return null;
+            const [x0, y0, x1, y1] = s.bbox;
+            const numeric = /\d/.test(s.text) && /^[\s\d.,%:+\-−–/()A-Za-z$€£¥]*$/.test(s.text) && s.text.replace(/[^\d]/g, "").length >= s.text.replace(/\s/g, "").length * 0.5;
+            const h = (y1 - y0) * scale;
+            return (
+              <div key={`live-${s.id}`}>
+                <div
+                  className="absolute"
+                  style={{
+                    left: (x0 - 1.5) * scale, top: (y0 - 1) * scale,
+                    width: (x1 - x0 + 3) * scale, height: (y1 - y0 + 2) * scale,
+                    background: sampleBg(x0 + 0.5, y0 + 0.5),
+                  }}
+                />
+                <div
+                  className="absolute whitespace-pre"
+                  style={{
+                    ...(numeric ? { right: dims.w - x1 * scale } : { left: x0 * scale }),
+                    top: y0 * scale,
+                    height: h, lineHeight: `${h}px`,
+                    fontSize: Math.max(6, s.size * scale),
+                    fontFamily: "Inter, system-ui, sans-serif",
+                    ...spanStyle(s),
+                  }}
+                >
+                  {nt}
+                </div>
+              </div>
+            );
+          })}
+
           {pageSpans.map((s) => {
             const [x0, y0, x1, y1] = s.bbox;
             const isSel = s.id === selectedId;
@@ -273,8 +319,8 @@ export default function PdfCanvas({
                   top: y0 * scale,
                   width: (x1 - x0) * scale,
                   height: (y1 - y0) * scale,
-                  outline: "2px solid #2563eb",
-                  background: isSel ? "rgba(37,99,235,.12)" : "rgba(37,99,235,.05)",
+                  outline: "2px solid #4f75fe",
+                  background: isSel ? "rgba(79,117,254,.12)" : "rgba(79,117,254,.05)",
                   pointerEvents: isSel ? "auto" : "none",
                   cursor: isSel ? "move" : "default",
                   transition: "background-color .15s ease, outline-color .15s ease",
@@ -320,8 +366,8 @@ export default function PdfCanvas({
                       lineHeight: 1.05,
                       fontFamily: "Inter, system-ui, sans-serif",
                       ...spanStyle(s),
-                      outline: sel ? "1.5px solid #2563eb" : "1px dashed rgba(37,99,235,.5)",
-                      background: sel ? "rgba(37,99,235,.06)" : "transparent",
+                      outline: sel ? "1.5px solid #4f75fe" : "1px dashed rgba(79,117,254,.5)",
+                      background: sel ? "rgba(79,117,254,.06)" : "transparent",
                       padding: "0 1px",
                       borderRadius: 2,
                     }}
@@ -372,8 +418,8 @@ export default function PdfCanvas({
                         fontStyle: o.italic ? "italic" : "normal",
                         padding: "1px 2px",
                         borderRadius: 2,
-                        outline: sel ? "1.5px solid #2563eb" : "1px dashed rgba(37,99,235,.45)",
-                        background: sel ? "rgba(37,99,235,.06)" : "transparent",
+                        outline: sel ? "1.5px solid #4f75fe" : "1px dashed rgba(79,117,254,.45)",
+                        background: sel ? "rgba(79,117,254,.06)" : "transparent",
                       }}
                     >
                       {o.text || "Text"}
@@ -445,7 +491,7 @@ export default function PdfCanvas({
                           title="Delete"
                           className="w-6 h-6 rounded text-error hover:bg-error/10 flex items-center justify-center"
                         >
-                          <span className="material-symbols-outlined text-[15px]">delete</span>
+                          <Icon name="trash" size={15} />
                         </button>
                       </div>
                     )}
@@ -472,7 +518,7 @@ export default function PdfCanvas({
                     alt="signature"
                     className="w-full h-full object-contain select-none pointer-events-none"
                     style={{
-                      outline: sel ? "1.5px solid #2563eb" : "1px dashed rgba(37,99,235,.35)",
+                      outline: sel ? "1.5px solid #4f75fe" : "1px dashed rgba(79,117,254,.35)",
                       borderRadius: 2,
                     }}
                   />
@@ -487,7 +533,7 @@ export default function PdfCanvas({
                         title="Delete"
                         className="absolute -top-3 -right-3 w-6 h-6 rounded-full bg-surface-container-high border border-outline-variant/50 text-error shadow-md flex items-center justify-center hover:bg-error/10 z-30"
                       >
-                        <span className="material-symbols-outlined text-[15px]">close</span>
+                        <Icon name="close" size={15} />
                       </button>
                       <div
                         onPointerDown={(e) => startResize(e, o)}
@@ -501,9 +547,66 @@ export default function PdfCanvas({
             })}
         </div>
 
+        {/* Hover outline: tells you the text under the pointer is clickable */}
+        {hoverId != null && hoverId !== selectedId && !placement && (() => {
+          const hs = pageSpans.find((x) => x.id === hoverId);
+          if (!hs || moves[hs.id]) return null;
+          const [hx0, hy0, hx1, hy1] = hs.bbox;
+          return (
+            <div
+              className="absolute pointer-events-none rounded-[3px]"
+              style={{
+                left: (hx0 - 2) * scale, top: (hy0 - 1) * scale,
+                width: (hx1 - hx0 + 4) * scale, height: (hy1 - hy0 + 2) * scale,
+                outline: "1.5px dashed rgba(79,117,254,.75)", background: "rgba(79,117,254,.06)",
+              }}
+            />
+          );
+        })()}
+
+        {/* Inline editor anchored to the selected text */}
+        {selectedPopover && selectedId != null && !placement && (() => {
+          const ps = pageSpans.find((x) => x.id === selectedId);
+          if (!ps || !dims.w) return null;
+          // Phones: a bottom sheet, so the box is never wider than the screen.
+          if (typeof window !== "undefined" && window.innerWidth < 640) {
+            return (
+              <div
+                className="fixed left-3 right-3 bottom-3 z-[60]"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {selectedPopover(ps, true, null)}
+              </div>
+            );
+          }
+          const POP_W = 360, POP_H = 262, GAP = 14;
+          const mv = moves[ps.id];
+          const [bx0, by0, bx1, by1] = ps.bbox;
+          const ox = mv ? mv.x : bx0, oy = mv ? mv.y : by0;
+          const oh = by1 - by0, ow = bx1 - bx0;
+          const left = Math.max(0, Math.min(ox * scale - 8, Math.max(0, dims.w - POP_W)));
+          // Below the text when it fits on the page, above it when it doesn't.
+          const fitsBelow = (oy + oh) * scale + GAP + POP_H <= dims.h - 8;
+          const fitsAbove = oy * scale >= POP_H + GAP;
+          const below = fitsBelow || !fitsAbove;
+          const pos = below ? { top: (oy + oh) * scale + GAP } : { bottom: dims.h - oy * scale + GAP };
+          const caretLeft = Math.max(26, Math.min((ox + ow / 2) * scale - left, POP_W - 42));
+          return (
+            <div
+              className="absolute z-30"
+              style={{ left, width: POP_W, maxWidth: "88vw", ...pos }}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              {selectedPopover(ps, below, caretLeft)}
+            </div>
+          );
+        })()}
+
         {placement && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 z-40 bg-secondary-container text-white rounded-full px-3 py-1 text-[12px] shadow-xl flex items-center gap-1.5 pointer-events-none animate-fade">
-            <span className="material-symbols-outlined text-[15px]">ads_click</span>
+            <Icon name="target" size={15} />
             Click where you want your {placement.kind === "sign" ? "signature" : "text"}
           </div>
         )}

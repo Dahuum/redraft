@@ -4,11 +4,13 @@ import CanvasToolbar from "./CanvasToolbar.jsx";
 import FontPanel from "./FontPanel.jsx";
 import SignaturePanel from "./SignaturePanel.jsx";
 import SplitField from "./SplitField.jsx";
+import Icon from "./Icon.jsx";
 
 export default function EditorWorkspace({ ed, onDownload, guest = false }) {
   const inputRef = useRef(null);
   const canvasBoxRef = useRef(null);
   const [boxW, setBoxW] = useState(0);
+  const [boxH, setBoxH] = useState(0);
   const [panel, setPanel] = useState("fields"); // "fields" | "sign"
   const [splits, setSplits] = useState({}); // { [spanId]: -1|index } — value-split overrides
   const [splitEditingId, setSplitEditingId] = useState(null);
@@ -132,7 +134,10 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
   useEffect(() => {
     const el = canvasBoxRef.current;
     if (!el) return;
-    const update = () => setBoxW(el.clientWidth);
+    const update = () => {
+      setBoxW(el.clientWidth);
+      setBoxH(el.clientHeight);
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -151,14 +156,165 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
     return t ? (t.length > 48 ? t.slice(0, 48) + "…" : t) : `Field #${s.id}`;
   };
 
-  const pdfWidth = Math.max(260, Math.round(((boxW || 640) - 48) * zoom));
+  // 100% = the WHOLE page fits the board (width and height), so the design
+  // around the document stays visible instead of one zoomed-in white slab.
+  const pg = pages && pages[pageIndex];
+  const ratio = pg && pg.width && pg.height ? pg.width / pg.height : 0.707;
+  const fitW = Math.min((boxW || 640) - 48, ((boxH || 700) - 104) * ratio);
+  const pdfWidth = Math.max(260, Math.round(fitW * zoom));
+
+  // ---- Document-first editing: the box next to the selected text ----
+  const [allOpen, setAllOpen] = useState(false); // the full field list, collapsed by default
+  const editable = (x) => !x.invisible && !x.rtl;
+
+  const changed = spans.filter((x) => edits[x.id] !== undefined && edits[x.id] !== x.text);
+
+  // Focus the inline box as soon as a piece of text is picked.
+  useEffect(() => {
+    if (selectedId == null) return;
+    const t = setTimeout(() => document.getElementById(`pop-${selectedId}`)?.focus(), 30);
+    return () => clearTimeout(t);
+  }, [selectedId, pageIndex]);
+
+  function goField(dir) {
+    const list = pageSpans.filter(editable);
+    if (!list.length) return;
+    const at = list.findIndex((x) => x.id === selectedId);
+    const next = list[(at + dir + list.length) % list.length];
+    setSelectedId(next.id);
+  }
+
+  // What changed, character-accurate: shared start/end kept, the middle marked.
+  function diffParts(a, b) {
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    let ja = a.length, jb = b.length;
+    while (ja > i && jb > i && a[ja - 1] === b[jb - 1]) { ja--; jb--; }
+    return { pre: a.slice(0, i), del: a.slice(i, ja), ins: b.slice(i, jb), post: a.slice(ja) };
+  }
+
+  function renderPopover(sp, below = true, caretLeft = 28) {
+    const now = edits[sp.id] ?? sp.text;
+    const isEdited = now !== sp.text;
+    const d = diffParts(sp.text, now);
+    const delta = now.length - sp.text.length;
+    return (
+      <div
+        className="pop-scope relative rounded-[22px] bg-surface text-on-surface p-4 animate-pop shadow-[0_24px_60px_-18px_rgb(var(--c-shadow)/0.55),0_0_0_1.5px_rgb(var(--c-on-surface)/0.9)]"
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setSelectedId(null);
+          else if (e.key === "Tab") {
+            e.preventDefault();
+            goField(e.shiftKey ? -1 : 1);
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            setSelectedId(null);
+          }
+        }}
+      >
+        {/* pointer to the text being edited */}
+        {caretLeft != null && <span
+          aria-hidden="true"
+          style={{ left: caretLeft - 7 }}
+          className={`absolute w-3.5 h-3.5 rotate-45 bg-surface ${
+            below ? "-top-[8px] shadow-[-1.5px_-1.5px_0_0_rgb(var(--c-on-surface)/0.9)]" : "-bottom-[8px] shadow-[1.5px_1.5px_0_0_rgb(var(--c-on-surface)/0.9)]"
+          }`}
+        />}
+        <div className="flex items-center justify-between pb-2.5">
+          <span className="font-hand uppercase tracking-[0.08em] text-[17px] leading-none text-secondary-container">Editing</span>
+          <span className="flex items-center gap-1.5">
+            {isEdited && (
+              <button
+                onClick={() => setFieldValue(sp.id, sp.text)}
+                className="rounded-full px-3 py-1 text-[13px] bg-surface-container text-on-surface hover:bg-surface-container-high transition-colors"
+              >
+                Undo
+              </button>
+            )}
+            <button
+              onClick={() => setSelectedId(null)}
+              aria-label="Close"
+              className="w-7 h-7 rounded-full grid place-items-center text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors"
+            >
+              <Icon name="close" size={15} />
+            </button>
+          </span>
+        </div>
+
+        <SplitField
+          inputId={`pop-${sp.id}`}
+          span={sp}
+          label="Value"
+          fullValue={now}
+          selected
+          onFocus={() => setSelectedId(sp.id)}
+          onChange={(val) => setFieldValue(sp.id, val)}
+          override={splits[sp.id]}
+          editing={splitEditingId === sp.id}
+          onEnterSplit={() => setSplitEditingId(sp.id)}
+          onSetSplit={(i) => {
+            setSplits((m) => ({ ...m, [sp.id]: i }));
+            setSplitEditingId(null);
+          }}
+          onWholeField={() => {
+            setSplits((m) => ({ ...m, [sp.id]: -1 }));
+            setSplitEditingId(null);
+          }}
+          onCloseSplit={() => setSplitEditingId(null)}
+        />
+
+        {/* Before / after, updating as you type */}
+        <div className="mt-3 rounded-2xl bg-surface-container p-3 space-y-2 text-[14px] leading-5">
+          <div className="flex items-baseline gap-3">
+            <span className="w-11 shrink-0 font-hand uppercase tracking-[0.06em] text-[14px] text-on-surface-variant">Before</span>
+            <span className="min-w-0 break-words">
+              {d.pre}
+              {d.del && (
+                <mark className="rounded px-0.5 bg-[rgb(var(--c-tint-coral))] text-on-surface line-through decoration-[1.5px]">{d.del}</mark>
+              )}
+              {d.post}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-3">
+            <span className="w-11 shrink-0 font-hand uppercase tracking-[0.06em] text-[14px] text-on-surface-variant">After</span>
+            <span className="min-w-0 break-words font-medium">
+              {isEdited ? (
+                <>
+                  {d.pre}
+                  {d.ins && <mark className="rounded px-0.5 bg-[rgb(var(--c-tint-mint))] text-on-surface">{d.ins}</mark>}
+                  {d.post}
+                </>
+              ) : (
+                <span className="text-on-surface-variant font-normal">Type to change it</span>
+              )}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <p className="text-[12px] leading-4 text-on-surface-variant">
+            {isEdited ? `${delta === 0 ? "Same length" : `${delta > 0 ? "+" : ""}${delta} character${Math.abs(delta) === 1 ? "" : "s"}`} · ` : ""}
+            Tab next · Esc close
+          </p>
+          <button
+            onClick={() => setSelectedId(null)}
+            className="shrink-0 rounded-full bg-secondary-container px-5 py-2 text-[14px] text-white hover:bg-secondary-container-hover transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const PILL = "inline-flex items-center justify-center gap-2 rounded-full text-[15px] leading-5 px-5 py-[11px] cursor-pointer select-none transition-[transform,background,box-shadow,opacity] duration-200 hover:-translate-y-0.5 disabled:opacity-40 disabled:hover:translate-y-0";
 
   return (
     // Stacks below lg. The app shell is a fixed-height, non-scrolling column
     // (h-screen + overflow-hidden), so when these panes stack THIS is the
     // element that has to scroll — side by side it must not, or the panes
     // lose their own internal scrolling.
-    <div className="flex-1 flex flex-col lg:flex-row gap-4 p-3 sm:p-4 overflow-y-auto lg:overflow-hidden max-w-[1400px] w-full mx-auto animate-rise">
+    <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3 px-3 pb-3 sm:px-4 sm:pb-4 overflow-y-auto lg:overflow-hidden max-w-[1500px] w-full mx-auto animate-rise">
       <input
         ref={inputRef}
         type="file"
@@ -167,21 +323,12 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
         onChange={(e) => e.target.files?.[0] && loadFile(e.target.files[0])}
       />
 
-      {/* Left Pane: Document Preview (65%) */}
-      <div className="flex-none h-[58vh] min-h-[320px] lg:flex-[0.65] lg:h-auto lg:min-h-0 bg-surface-container-lowest rounded-xl border border-outline-variant/30 flex flex-col overflow-hidden relative shadow-none">
-        {/* Toolbar overlay */}
-        <CanvasToolbar
-          pageIndex={pageIndex}
-          pageCount={pageCount}
-          setPageIndex={setPageIndex}
-          zoom={zoom}
-          setZoom={setZoom}
-        />
-
+      {/* Left pane: the document, on a tinted board */}
+      <div className="flex-none h-[58vh] min-h-[320px] lg:flex-1 lg:min-w-0 lg:h-auto lg:min-h-0 rounded-[28px] bg-[rgb(var(--c-tint-sand))] flex flex-col overflow-hidden relative">
         {/* Font report — surfaced after a preview/download so substitutions are visible */}
         {problemFonts.length > 0 && !hideFontNote && (
-          <div className="absolute top-14 left-1/2 z-20 flex max-w-[92%] -translate-x-1/2 items-start gap-2 rounded-lg border border-amber-500/30 bg-surface-container-high/95 px-3 py-2 text-caption text-amber-400 shadow-xl backdrop-blur-md">
-            <span className="material-symbols-outlined shrink-0 text-[16px]">warning</span>
+          <div className="absolute top-4 left-1/2 z-20 flex max-w-[92%] -translate-x-1/2 items-start gap-2.5 rounded-2xl bg-[rgb(var(--c-tint-yellow))] px-4 py-2.5 text-[14px] leading-5 text-on-surface shadow-panel">
+            <Icon name="warning" size={18} className="mt-0.5" />
             <span>
               Fonts replaced with lookalikes:{" "}
               <b className="font-semibold">
@@ -189,20 +336,16 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
               </b>
               . Upload the real files in the Fonts panel for an exact match.
             </span>
-            <button
-              onClick={() => setHideFontNote(true)}
-              aria-label="Dismiss"
-              className="shrink-0 hover:text-amber-200"
-            >
-              <span className="material-symbols-outlined text-[16px]">close</span>
+            <button onClick={() => setHideFontNote(true)} aria-label="Dismiss" className="shrink-0 mt-0.5 hover:opacity-70">
+              <Icon name="close" size={16} />
             </button>
           </div>
         )}
 
-        {/* Document Canvas */}
-        <div ref={canvasBoxRef} className="flex-1 overflow-auto p-6 flex justify-center bg-on-surface/[0.04]">
+        {/* Document canvas */}
+        <div ref={canvasBoxRef} className="flex-1 overflow-auto px-6 pt-6 pb-20 flex justify-center">
           {file && fileData ? (
-            <div className="paper-shadow rounded-sm mt-8 mb-6 h-fit">
+            <div className="paper-shadow rounded-sm h-fit">
               <PdfCanvas
                 data={previewData || fileData}
                 pageIndex={pageIndex}
@@ -226,77 +369,74 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
                 edits={edits}
                 onSpanMove={moveSpan}
                 onSpanMoveClear={clearMove}
+                selectedPopover={renderPopover}
+                liveEdits={!previewData}
               />
             </div>
           ) : (
             <button
               onClick={() => inputRef.current?.click()}
-              className="bg-white w-full max-w-[640px] min-h-[400px] paper-shadow rounded-sm text-[#1e293b] flex flex-col items-center justify-center gap-3 mt-8 mb-6 hover:opacity-90 transition-opacity"
+              className="bg-white w-full max-w-[640px] min-h-[400px] paper-shadow rounded-sm text-[#2d2323] flex flex-col items-center justify-center gap-3 mt-2 mb-6 hover:opacity-90 transition-opacity"
             >
-              <span className="material-symbols-outlined text-[40px] text-[#94a3b8]">
-                {busy ? "hourglass_top" : "upload_file"}
-              </span>
-              <p className="text-base font-semibold">
+              <Icon name={busy ? "spinner" : "upload"} size={40} spin={busy} className="text-[#2d2323]/40" />
+              <p className="font-display-md font-black text-[22px] tracking-[-0.3px]">
                 {busy ? "Reading PDF…" : "Upload a PDF to start editing"}
               </p>
-              <p className="text-sm text-[#64748b]">Drag &amp; drop or click to browse</p>
+              <p className="text-[15px] text-[#736b6b]">Drag &amp; drop or click to browse</p>
             </button>
           )}
         </div>
 
         {error && (
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-error-container text-on-error-container border border-error/30 rounded-lg px-4 py-2 text-caption shadow-xl z-20">
+          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-error-container text-on-error-container rounded-2xl px-4 py-2.5 text-[14px] shadow-panel z-20">
             {error}
           </div>
         )}
+
+        {/* Page and zoom dock */}
+        <CanvasToolbar
+          pageIndex={pageIndex}
+          pageCount={pageCount}
+          setPageIndex={setPageIndex}
+          zoom={zoom}
+          setZoom={setZoom}
+        />
       </div>
 
-      {/* Right Pane: Text Fields Sidebar (35%) */}
-      <div className="flex-none lg:flex-[0.35] min-h-[45vh] lg:min-h-0 bg-surface-container rounded-xl border border-outline-variant/30 flex flex-col shadow-panel overflow-hidden relative">
-        {/* Header: Text / Sign toggle + Find & Replace */}
-        <div className="p-3 border-b border-outline-variant/30 bg-surface/50 backdrop-blur-md sticky top-0 z-10">
+      {/* Right pane: the ink sidebar, same frame as the landing product shots */}
+      <div className="ink-scope flex-none lg:w-[360px] min-h-[45vh] lg:min-h-0 rounded-[28px] bg-[rgb(var(--c-sidebar))] text-on-surface flex flex-col overflow-hidden relative">
+        {/* Header: Text / Sign switch + Find & Replace */}
+        <div className="p-4 pb-3 sticky top-0 z-10 bg-[rgb(var(--c-sidebar))]">
           <div className="flex items-center gap-2">
-            <div className="flex-1 bg-surface-container-high p-1 rounded-full flex items-center gap-1 border border-outline-variant/20">
-              <button
-                onClick={() => setPanel("fields")}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
-                  panel === "fields"
-                    ? "bg-secondary-container text-white shadow-lg"
-                    : "text-on-surface-variant hover:text-on-surface"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[18px]">text_fields</span>
-                Text
-              </button>
-              <button
-                onClick={() => setPanel("sign")}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-1.5 rounded-full font-label-md text-sm transition-all ${
-                  panel === "sign"
-                    ? "bg-secondary-container text-white shadow-lg"
-                    : "text-on-surface-variant hover:text-on-surface"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[18px]">draw</span>
-                Sign
-              </button>
+            <div className="flex-1 bg-black/25 p-1 rounded-full flex items-center gap-1">
+              {[["fields", "text", "Text"], ["sign", "sign", "Sign"]].map(([k, icon, lbl]) => (
+                <button
+                  key={k}
+                  onClick={() => setPanel(k)}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-full text-[15px] transition-all ${
+                    panel === k ? "bg-primary text-on-primary" : "text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  <Icon name={icon} size={17} />
+                  {lbl}
+                </button>
+              ))}
             </div>
             <button
               onClick={() => setFindOpen((v) => !v)}
               title="Find & replace"
               aria-label="Find and replace"
-              className={`shrink-0 w-9 h-9 rounded-full inline-flex items-center justify-center transition-colors ${
-                findOpen
-                  ? "bg-secondary-container text-white"
-                  : "border border-outline-variant/40 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
+              className={`shrink-0 w-11 h-11 rounded-full inline-flex items-center justify-center transition-colors ${
+                findOpen ? "bg-secondary-container text-white" : "bg-black/25 text-on-surface hover:bg-[rgb(var(--c-field))]"
               }`}
             >
-              <span className="material-symbols-outlined text-[18px]">search</span>
+              <Icon name="search" size={18} />
             </button>
           </div>
 
           {findOpen && (
-            <div className="mt-2 space-y-2 animate-drop">
-              <div className="flex items-center gap-1.5">
+            <div className="mt-3 space-y-2 animate-drop">
+              <div className="flex items-center gap-2">
                 <input
                   value={findQuery}
                   onChange={(e) => setFindQuery(e.target.value)}
@@ -309,16 +449,14 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
                   }}
                   autoFocus
                   placeholder="Find in document…"
-                  className="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2.5 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                  className="flex-1 min-w-0 bg-[rgb(var(--c-field))] rounded-2xl py-2.5 px-4 text-[15px] text-on-surface placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-secondary-container"
                 />
                 <button
                   onClick={() => setCaseSensitive((v) => !v)}
                   title={caseSensitive ? "Case sensitive" : "Case insensitive"}
                   aria-label="Toggle case sensitivity"
-                  className={`shrink-0 h-8 w-8 rounded-lg border font-caption text-[12px] font-semibold transition-colors ${
-                    caseSensitive
-                      ? "border-secondary-container bg-secondary-container/10 text-secondary"
-                      : "border-outline-variant/50 text-on-surface-variant hover:text-on-surface"
+                  className={`shrink-0 h-10 w-10 rounded-full text-[13px] font-semibold transition-colors ${
+                    caseSensitive ? "bg-secondary-container text-white" : "bg-[rgb(var(--c-field))] text-on-surface-variant hover:text-on-surface"
                   }`}
                 >
                   Aa
@@ -327,40 +465,34 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
 
               {findQuery.trim() !== "" && (
                 <>
-                  <div className="flex items-center justify-between text-caption text-on-surface-variant">
+                  <div className="flex items-center justify-between text-[13px] text-on-surface-variant px-1">
                     <span>
                       {matches.length
-                        ? `Match ${matchIdx + 1} of ${matches.length} field${
-                            matches.length === 1 ? "" : "s"
-                          }`
+                        ? `Match ${matchIdx + 1} of ${matches.length} field${matches.length === 1 ? "" : "s"}`
                         : "No matching fields"}
                     </span>
-                    <span className="flex items-center gap-0.5">
+                    <span className="flex items-center gap-1">
                       <button
                         disabled={!matches.length}
                         onClick={() => goToMatch(matchIdx - 1)}
                         title="Previous match (Shift+Enter)"
                         aria-label="Previous match"
-                        className="disabled:opacity-30 hover:text-on-surface transition-colors"
+                        className="w-7 h-7 rounded-full grid place-items-center hover:bg-[rgb(var(--c-field))] disabled:opacity-30 transition-colors"
                       >
-                        <span className="material-symbols-outlined text-[16px]">
-                          keyboard_arrow_up
-                        </span>
+                        <Icon name="chevup" size={16} />
                       </button>
                       <button
                         disabled={!matches.length}
                         onClick={() => goToMatch(matchIdx + 1)}
                         title="Next match (Enter)"
                         aria-label="Next match"
-                        className="disabled:opacity-30 hover:text-on-surface transition-colors"
+                        className="w-7 h-7 rounded-full grid place-items-center hover:bg-[rgb(var(--c-field))] disabled:opacity-30 transition-colors"
                       >
-                        <span className="material-symbols-outlined text-[16px]">
-                          keyboard_arrow_down
-                        </span>
+                        <Icon name="chevdown" size={16} />
                       </button>
                     </span>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     <input
                       value={replaceWith}
                       onChange={(e) => setReplaceWith(e.target.value)}
@@ -368,13 +500,13 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
                         if (e.key === "Escape") setFindOpen(false);
                       }}
                       placeholder="Replace with…"
-                      className="flex-1 min-w-0 bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-1.5 px-2.5 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-secondary-container"
+                      className="flex-1 min-w-0 bg-[rgb(var(--c-field))] rounded-2xl py-2.5 px-4 text-[15px] text-on-surface placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-secondary-container"
                     />
                     <button
                       onClick={replaceCurrent}
                       disabled={!matches.length}
                       title="Replace in the current field"
-                      className="shrink-0 rounded-lg border border-outline-variant/50 px-2.5 py-1.5 font-label-md text-[12px] text-on-surface transition-colors hover:border-accent-cyan/50 hover:text-accent-cyan disabled:opacity-40"
+                      className="shrink-0 rounded-full bg-[rgb(var(--c-field))] px-4 py-2.5 text-[14px] text-on-surface transition-colors hover:bg-[rgb(var(--c-field-hover))] disabled:opacity-40"
                     >
                       Replace
                     </button>
@@ -382,7 +514,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
                       onClick={replaceAllMatches}
                       disabled={!matches.length}
                       title="Replace in every matching field"
-                      className="shrink-0 rounded-lg bg-secondary-container px-2.5 py-1.5 font-label-md text-[12px] text-white transition-colors hover:bg-secondary-container-hover disabled:opacity-40"
+                      className="shrink-0 rounded-full bg-secondary-container px-4 py-2.5 text-[14px] text-white transition-colors hover:bg-secondary-container-hover disabled:opacity-40"
                     >
                       All
                     </button>
@@ -399,94 +531,156 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
             <SignaturePanel cloud={!guest} onPlace={(data, ratio) => setPlacement({ kind: "sign", data, ratio })} />
           </div>
         ) : (
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="flex-1 overflow-y-auto px-4 pb-4 pt-1 space-y-4">
+          {/* How it works: only until something is selected or changed */}
+          {file && selectedId == null && changed.length === 0 && (
+            <div className="rounded-2xl bg-black/20 p-4">
+              <p className="font-display-md font-black text-[19px] leading-tight tracking-[-0.3px]">Click any text on the page.</p>
+              <p className="mt-1.5 text-[14px] leading-[21px] text-on-surface-variant">
+                An edit box opens right where it is. Type the new value; Tab jumps to the next field.
+              </p>
+            </div>
+          )}
+
           <button
             onClick={() => setPlacement(placement?.kind === "text" ? null : { kind: "text" })}
             disabled={!file}
-            className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg border text-label-md text-sm transition-colors disabled:opacity-40 ${
+            className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl border-2 border-dashed text-[15px] transition-colors disabled:opacity-40 ${
               placement?.kind === "text"
-                ? "border-accent-cyan/40 bg-accent-cyan/10 text-accent-cyan"
-                : "border-outline-variant/50 text-on-surface hover:bg-surface-container-high"
+                ? "border-secondary-container bg-secondary-container/15 text-on-surface"
+                : "border-outline-variant text-on-surface hover:border-on-surface/50"
             }`}
           >
-            <span className="material-symbols-outlined text-[18px]">
-              {placement?.kind === "text" ? "ads_click" : "add"}
-            </span>
+            <Icon name={placement?.kind === "text" ? "target" : "plus"} size={18} />
             {placement?.kind === "text" ? "Click on the document…" : "Add text"}
           </button>
           {file && !guest && <FontPanel file={file} onChanged={() => nEdits > 0 && preview()} />}
-          {/* "Upload a PDF" is wrong once one IS open — and a scanned page
-              reaches exactly that state with no fields at all, so the user was
-              told to do the thing they had just done. */}
-          {pageSpans.length === 0 && (
-            <p className="text-caption text-on-surface-variant">
-              {!file
-                ? "Upload a PDF to see its editable text fields here."
-                : spans.length === 0
-                ? "There's no editable text on this document — it looks like a scan or an image. You can still add text and a signature on top of it with the buttons above."
-                : "No editable text on this page. Use the page arrows above to look at the others."}
+
+          {/* Changes */}
+          {changed.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between px-1 pb-2">
+                <h3 className="font-display-md font-black text-[16px] tracking-[-0.2px]">Changes</h3>
+                <span className="rounded-full bg-black/25 px-2.5 py-0.5 text-[12px] text-on-surface-variant">{changed.length}</span>
+              </div>
+              <div className="space-y-2">
+                {changed.map((x) => (
+                  <div key={x.id} className={`group flex items-stretch rounded-2xl bg-[rgb(var(--c-field))] overflow-hidden ${selectedId === x.id ? "ring-2 ring-secondary-container" : ""}`}>
+                    <button
+                      onClick={() => {
+                        setPageIndex(x.page);
+                        setSelectedId(x.id);
+                      }}
+                      className="flex-1 min-w-0 text-left px-4 py-2.5 hover:bg-[rgb(var(--c-field-hover))] transition-colors"
+                    >
+                      <span className="block truncate text-[12px] text-on-surface-variant line-through">{x.text}</span>
+                      <span className="block truncate text-[15px]">{edits[x.id]}</span>
+                    </button>
+                    <button
+                      onClick={() => setFieldValue(x.id, x.text)}
+                      title="Undo this change"
+                      aria-label="Undo this change"
+                      className="shrink-0 w-11 grid place-items-center text-on-surface-variant hover:text-on-surface hover:bg-[rgb(var(--c-field-hover))] transition-colors"
+                    >
+                      <Icon name="reset" size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* All fields: the classic list, for scans, keyboard users and bulk edits */}
+          {file && spans.length > 0 && (
+            <div>
+              <button
+                onClick={() => setAllOpen((v) => !v)}
+                aria-expanded={allOpen}
+                className="w-full flex items-center justify-between rounded-2xl bg-black/20 px-4 py-3 text-[15px] hover:bg-black/30 transition-colors"
+              >
+                <span>All fields on this page</span>
+                <span className="flex items-center gap-2 text-on-surface-variant">
+                  <span className="text-[13px]">{pageSpans.length}</span>
+                  <Icon name={allOpen ? "chevup" : "chevdown"} size={17} />
+                </span>
+              </button>
+              {allOpen && (
+                <div className="mt-3 space-y-3.5 animate-drop">
+                  {pageSpans.length === 0 && (
+                    <p className="text-[14px] leading-6 text-on-surface-variant">
+                      No editable text on this page. Use the page arrows below the document to look at the others.
+                    </p>
+                  )}
+                  {pageSpans.map((sp) => (
+                    <SplitField
+                      key={sp.id}
+                      span={sp}
+                      label={fieldLabel(sp)}
+                      fullValue={edits[sp.id] ?? sp.text}
+                      selected={selectedId === sp.id}
+                      onFocus={() => setSelectedId(sp.id)}
+                      onChange={(val) => setFieldValue(sp.id, val)}
+                      override={splits[sp.id]}
+                      editing={splitEditingId === sp.id}
+                      onEnterSplit={() => setSplitEditingId(sp.id)}
+                      onSetSplit={(i) => {
+                        setSplits((m) => ({ ...m, [sp.id]: i }));
+                        setSplitEditingId(null);
+                      }}
+                      onWholeField={() => {
+                        setSplits((m) => ({ ...m, [sp.id]: -1 }));
+                        setSplitEditingId(null);
+                      }}
+                      onCloseSplit={() => setSplitEditingId(null)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* A scan has no fields at all: say so instead of an empty list */}
+          {file && spans.length === 0 && (
+            <p className="text-[14px] leading-6 text-on-surface-variant">
+              There's no editable text on this document. It looks like a scan or an image. You can still add text and a
+              signature on top of it.
             </p>
           )}
-          {pageSpans.map((s) => (
-            <SplitField
-              key={s.id}
-              span={s}
-              label={fieldLabel(s)}
-              fullValue={edits[s.id] ?? s.text}
-              selected={selectedId === s.id}
-              onFocus={() => setSelectedId(s.id)}
-              onChange={(val) => setFieldValue(s.id, val)}
-              override={splits[s.id]}
-              editing={splitEditingId === s.id}
-              onEnterSplit={() => setSplitEditingId(s.id)}
-              onSetSplit={(i) => {
-                setSplits((m) => ({ ...m, [s.id]: i }));
-                setSplitEditingId(null);
-              }}
-              onWholeField={() => {
-                setSplits((m) => ({ ...m, [s.id]: -1 }));
-                setSplitEditingId(null);
-              }}
-              onCloseSplit={() => setSplitEditingId(null)}
-            />
-          ))}
-
-          {/* Status Chip */}
-          <div className="mt-6 bg-secondary-container/10 border border-secondary-container/20 rounded-lg p-3 flex items-center gap-3">
-            <span className="material-symbols-outlined text-secondary-container text-[18px]">edit</span>
-            <span className="text-label-md text-[13px] text-secondary-container">
-              {nEdits} field(s) modified
-            </span>
-          </div>
+          {!file && <p className="text-[14px] leading-6 text-on-surface-variant">Upload a PDF to start editing.</p>}
         </div>
         )}
 
-        {/* Footer Controls */}
-        <div className="p-5 border-t border-outline-variant/30 bg-surface/80 backdrop-blur-xl flex flex-col gap-3 sticky bottom-0">
-          <div className="flex gap-3">
+        {/* Footer controls */}
+        <div className="p-4 pt-3 flex flex-col gap-2.5 sticky bottom-0 bg-[rgb(var(--c-sidebar))]">
+          <div
+            className={`rounded-full px-4 py-2 text-[14px] flex items-center gap-2 ${
+              nEdits > 0 ? "bg-[#f7e7a6] text-[#2d2323] font-medium" : "bg-black/20 text-on-surface-variant"
+            }`}
+          >
+            <Icon name="pen" size={16} />
+            {nEdits === 0 ? "No changes yet" : `${nEdits} ${nEdits === 1 ? "field" : "fields"} modified`}
+          </div>
+          <div className="flex gap-2.5">
             <button
               onClick={preview}
               disabled={nEdits === 0 || busy}
-              className="flex-1 bg-secondary-container hover:bg-secondary-container-hover text-on-secondary-container py-2.5 rounded-lg font-label-md text-sm shadow-[0_0_20px_rgba(0,83,219,0.3)] transition-all flex justify-center items-center gap-2 border border-outline-variant/50 disabled:opacity-40"
+              className={`${PILL} flex-1 bg-secondary-container text-white hover:bg-secondary-container-hover hover:shadow-[0_8px_22px_rgba(79,117,254,0.35)]`}
             >
-              <span className="material-symbols-outlined text-[18px]">visibility</span>
+              <Icon name={busy ? "spinner" : "eye"} size={18} spin={busy} />
               {busy ? "Working…" : "Preview"}
             </button>
-            <button
-              onClick={resetAll}
-              className="flex-1 bg-transparent border border-outline-variant hover:bg-surface-container-high text-on-surface py-2.5 rounded-lg font-label-md text-sm transition-all flex justify-center items-center gap-2"
-            >
-              <span className="material-symbols-outlined text-[18px]">refresh</span>
-              Reset All
+            <button onClick={resetAll} className={`${PILL} flex-1 bg-black/25 text-on-surface hover:bg-[rgb(var(--c-field))]`}>
+              <Icon name="reset" size={18} />
+              Reset all
             </button>
           </div>
           <button
             onClick={doDownload}
             disabled={!hasChanges || busy}
-            className="w-full bg-transparent border border-outline-variant hover:bg-surface-container-high text-on-surface py-2.5 rounded-lg font-label-md text-sm transition-all flex justify-center items-center gap-2 disabled:opacity-40"
+            className={`${PILL} w-full bg-primary text-on-primary`}
           >
-            <span className="material-symbols-outlined text-[18px]">file_download</span>
-            Download Edited PDF
+            <Icon name="download" size={18} />
+            Download edited PDF
           </button>
         </div>
       </div>

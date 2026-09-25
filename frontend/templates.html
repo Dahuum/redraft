@@ -11,70 +11,20 @@
       document.documentElement.setAttribute("data-theme", "light");
   } catch (e) {}
 </script>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 58 58'><rect x='3' y='3' width='52' height='52' rx='15' fill='%238aa0ff' stroke='%232d2323' stroke-width='3.5'/><path d='M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z' fill='white' stroke='%232d2323' stroke-width='3.2' stroke-linejoin='round'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rubik:wght@700;900&family=Patrick+Hand+SC&display=swap" rel="stylesheet" />
 <script>
   window.REDRAFT_PH = { key: "phc_ywKonRpoQMCmsfQVykKc6YeYffCgLswjf8gH9mDVuS3R", host: "https://us.i.posthog.com" };
 </script>
 <script src="/analytics.js"></script>
-<style>
-  :root {
-    --bg:#080c14; --card:#0e131d; --card2:#131a26; --ink:#e7ebf3; --muted:#9aa4b5;
-    --line:#232c3b; --accent:#00f5ff; --accent-ink:#04121a; --brand:#2563eb;
-  }
-  :root[data-theme="light"] {
-    --bg:#eef1f6; --card:#ffffff; --card2:#f6f8fb; --ink:#101725; --muted:#5a6474;
-    --line:#e2e6ee; --accent:#0aa5ad; --accent-ink:#ffffff; --brand:#2563eb;
-  }
-  * { box-sizing:border-box; }
-  html,body { margin:0; }
-  body {
-    background:radial-gradient(ellipse at top, rgba(37,99,235,.10), transparent 60%), var(--bg);
-    color:var(--ink); min-height:100vh; line-height:1.5;
-    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    display:flex; flex-direction:column; align-items:center; padding:32px 20px 64px;
-  }
-  a { color:inherit; }
-  .nav { width:100%; max-width:960px; display:flex; align-items:center; justify-content:space-between; margin-bottom:28px; }
-  .brand { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:20px; letter-spacing:-.02em; text-decoration:none; color:var(--ink); }
-  .nav .links a { text-decoration:none; color:var(--muted); font-size:14px; font-weight:500; margin-left:18px; }
-  .nav .links a:hover { color:var(--ink); }
-  header.hero { width:100%; max-width:960px; margin-bottom:26px; }
-  h1 { font-family:"Plus Jakarta Sans",sans-serif; font-weight:800; font-size:30px; letter-spacing:-.02em; margin:0 0 8px; }
-  .sub { color:var(--muted); font-size:15.5px; margin:0; max-width:640px; }
-  .grid { width:100%; max-width:960px; display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:16px; }
-  .tpl {
-    background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px;
-    display:flex; flex-direction:column; cursor:pointer; transition:transform .12s, border-color .15s, box-shadow .15s;
-  }
-  .tpl:hover { transform:translateY(-2px); border-color:var(--accent); box-shadow:0 16px 40px rgba(0,0,0,.24); }
-  .tpl .emoji { font-size:26px; }
-  .tpl .lang { margin-left:auto; font-size:10.5px; font-weight:700; letter-spacing:.06em; color:var(--muted);
-               border:1px solid var(--line); border-radius:999px; padding:3px 8px; }
-  .tpl .top { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
-  .tpl h3 { font-size:16px; font-weight:700; margin:0 0 5px; }
-  .tpl p { color:var(--muted); font-size:13px; margin:0 0 16px; flex:1; }
-  .tpl .row { display:flex; align-items:center; gap:8px; }
-  .open { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:7px; background:var(--accent);
-          color:var(--accent-ink); border:none; border-radius:10px; font:inherit; font-weight:700; font-size:13.5px;
-          padding:10px 12px; cursor:pointer; transition:filter .15s; }
-  .open:hover { filter:brightness(1.06); }
-  .link { border:1px solid var(--line); background:transparent; color:var(--ink); border-radius:10px; padding:10px 12px;
-          font:inherit; font-size:13px; cursor:pointer; white-space:nowrap; }
-  .link:hover { border-color:var(--accent); }
-  .foot { color:var(--muted); font-size:12.5px; margin-top:34px; text-align:center; }
-  .foot a { color:var(--ink); }
-</style>
+<link rel="stylesheet" href="/pages.css" />
 </head>
 <body>
   <div class="nav">
-    <a class="brand" href="/">Redraft</a>
-    <div class="links">
-      <a href="/new">Start from text</a>
-      <a href="/app">Open the editor →</a>
-    </div>
+    <a class="brand" href="/"><svg viewBox="0 0 58 58" aria-hidden="true"><rect x="3" y="3" width="52" height="52" rx="15" fill="#8aa0ff" stroke-width="3.5"/><path d="M29 13l3.6 10.4L43 27l-10.4 3.6L29 41l-3.6-10.4L15 27l10.4-3.6z" fill="#fff" stroke-width="3.2" stroke-linejoin="round"/></svg>Redraft</a>
+    <div class="links"><a href="/templates">Templates</a><a href="/new">Start from text</a><a class="pill" href="/app">Open the editor</a></div>
   </div>
 
   <header class="hero">
@@ -92,6 +42,7 @@
 
     // Prose templates — the compose engine turns blank-line paragraphs into
     // justified text and "Article …" / ALL-CAPS lines into bold headings.
+    var ICONS = {"📝": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6.5 3.5h7L18 8v11.5a1 1 0 0 1-1 1H6.5a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z\"/><path d=\"M13.5 3.5V8H18M8.5 12.5h7M8.5 16h5\"/></svg>", "🤝": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 4 20.5 8.5 12 13 3.5 8.5z\"/><path d=\"m3.5 12.5 8.5 4.5 8.5-4.5M3.5 16.5 12 21l8.5-4.5\"/></svg>", "⚖️": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 4.2 21 19.5H3z\"/><path d=\"M12 10v4.5M12 17.2v.1\"/></svg>", "📋": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.5 7h9M4.5 12h6M4.5 17h9\"/><path d=\"m15.5 12.5 2 2 3.5-4\"/></svg>", "💼": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 12.5V5.5A1.5 1.5 0 0 1 5.5 4h7l8 8-8.5 8.5z\"/><circle cx=\"8.5\" cy=\"8.5\" r=\"1.2\"/></svg>", "🔒": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"5\" y=\"10.5\" width=\"14\" height=\"9.5\" rx=\"2.5\"/><path d=\"M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5\"/></svg>"};
     var TEMPLATES = [
       {
         emoji: "📝", lang: "FR", name: "Contrat de prestation",
@@ -164,7 +115,7 @@
 
       var top = document.createElement("div");
       top.className = "top";
-      var em = document.createElement("span"); em.className = "emoji"; em.textContent = t.emoji;
+      var em = document.createElement("span"); em.className = "emoji"; em.innerHTML = ICONS[t.emoji] || ICONS["📝"];
       var lang = document.createElement("span"); lang.className = "lang"; lang.textContent = t.lang;
       top.appendChild(em); top.appendChild(lang);
 

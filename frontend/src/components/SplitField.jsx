@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { effectiveSplit } from "../lib/split.js";
+import Icon from "./Icon.jsx";
 
 /**
  * One editable text field in the PDF editor, with optional label/value split.
@@ -21,7 +22,9 @@ export default function SplitField({
   onSetSplit,
   onWholeField,
   onCloseSplit,
+  inputId, // defaults to field-<id>; the inline editor uses its own so ids never collide
 }) {
+  const fid = inputId || `field-${span.id}`;
   const [hover, setHover] = useState(null);
   const split = effectiveSplit(override, span.text);
   const labelPart = split != null ? span.text.slice(0, split) : "";
@@ -46,7 +49,7 @@ export default function SplitField({
       <div className="space-y-1.5 animate-drop">
         <div className="flex items-center justify-between text-caption">
           <span className="text-on-surface-variant flex items-center gap-1">
-            <span className="material-symbols-outlined text-[14px] text-accent-cyan">content_cut</span>
+            <Icon name="scissors" size={14} className="text-accent-cyan" />
             Click where the value begins
           </span>
           <div className="flex items-center gap-3">
@@ -60,14 +63,14 @@ export default function SplitField({
         </div>
         <div
           onMouseLeave={() => setHover(null)}
-          className="rounded-lg border border-secondary-container/50 bg-surface-container-lowest px-2 py-2 text-sm leading-relaxed flex flex-wrap select-none"
+          className="rounded-2xl bg-[rgb(var(--c-field))] ring-2 ring-secondary-container/60 px-4 py-3 text-[15px] leading-relaxed flex flex-wrap select-none"
         >
           {chars.map((c, i) => (
             <span
               key={i}
               onMouseEnter={() => setHover(i)}
               onClick={() => onSetSplit(i)}
-              className={`whitespace-pre cursor-pointer ${i === mark ? "shadow-[inset_2px_0_0_0_#00f5ff]" : ""} ${
+              className={`whitespace-pre cursor-pointer ${i === mark ? "shadow-[inset_2px_0_0_0_#4f75fe]" : ""} ${
                 i < mark ? "text-on-surface-variant/45" : "text-accent-cyan"
               }`}
             >
@@ -77,7 +80,7 @@ export default function SplitField({
           <span
             onMouseEnter={() => setHover(chars.length)}
             onClick={() => onSetSplit(chars.length)}
-            className={`w-3 cursor-pointer ${mark === chars.length ? "shadow-[inset_2px_0_0_0_#00f5ff]" : ""}`}
+            className={`w-3 cursor-pointer ${mark === chars.length ? "shadow-[inset_2px_0_0_0_#4f75fe]" : ""}`}
           >
             &nbsp;
           </span>
@@ -99,11 +102,9 @@ export default function SplitField({
       <div className="space-y-1.5">
         <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant">
           <span className="truncate">{label}</span>
-          <span className="material-symbols-outlined text-[16px] shrink-0" title="Scanned page">
-            document_scanner
-          </span>
+          <span className="shrink-0" title="Scanned page"><Icon name="scan" size={16} /></span>
         </div>
-        <div className="rounded-lg border border-outline-variant/50 bg-surface-container-high/40 px-3 py-2">
+        <div className="rounded-2xl bg-black/20 px-4 py-3">
           <p className="text-sm text-on-surface-variant/70 truncate" title={span.text}>
             {span.text}
           </p>
@@ -122,11 +123,9 @@ export default function SplitField({
       <div className="space-y-1.5">
         <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant">
           <span className="truncate">{label}</span>
-          <span className="material-symbols-outlined text-[16px] shrink-0" title="Right-to-left text">
-            lock
-          </span>
+          <span className="shrink-0" title="Right-to-left text"><Icon name="lock" size={16} /></span>
         </div>
-        <div className="rounded-lg border border-outline-variant/50 bg-surface-container-high/40 px-3 py-2">
+        <div className="rounded-2xl bg-black/20 px-4 py-3">
           <p dir="rtl" className="text-sm text-on-surface-variant/70 truncate" title={span.text}>
             {span.text}
           </p>
@@ -142,8 +141,8 @@ export default function SplitField({
 
   return (
     <div className="space-y-1.5 group">
-      <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant group-focus-within:text-secondary-container transition-colors">
-        <label htmlFor={`field-${span.id}`} className="truncate">
+      <div className="flex justify-between items-center text-[13px] px-1 text-on-surface-variant group-focus-within:text-on-surface transition-colors">
+        <label htmlFor={fid} className="truncate">
           {label}
         </label>
         <button
@@ -151,33 +150,31 @@ export default function SplitField({
           title="Split — edit only part of this field"
           className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 transition-opacity text-on-surface-variant hover:text-secondary-container shrink-0"
         >
-          <span className="material-symbols-outlined text-[16px]">more_horiz</span>
+          <Icon name="dots" size={16} />
         </button>
       </div>
       <div
-        className={`flex items-stretch rounded-lg border shadow-sm overflow-hidden transition-all ${
-          selected
-            ? "border-secondary-container ring-1 ring-secondary-container"
-            : "border-outline-variant/50 hover:bg-surface-container-high"
+        className={`flex items-stretch rounded-2xl bg-[rgb(var(--c-field))] overflow-hidden transition-all ${
+          selected ? "ring-2 ring-secondary-container" : "hover:bg-[rgb(var(--c-field-hover))]"
         }`}
       >
         {split != null && (
           <span
             title={labelPart}
             style={valueStyle}
-            className="shrink-0 max-w-[46%] truncate px-2 py-2 text-sm bg-surface-container-high text-on-surface-variant/70 border-r border-outline-variant/40 select-none flex items-center"
+            className="shrink-0 max-w-[46%] truncate pl-4 pr-2 py-2.5 text-[15px] text-on-surface-variant/70 select-none flex items-center"
           >
             {labelPart}
           </span>
         )}
         <input
-          id={`field-${span.id}`}
+          id={fid}
           type="text"
           value={valuePart}
           onFocus={onFocus}
           onChange={(e) => onChange(split != null ? labelPart + e.target.value : e.target.value)}
           style={valueStyle}
-          className="flex-1 min-w-0 bg-surface-container-lowest py-2 px-3 text-sm text-on-surface focus:outline-none"
+          className="flex-1 min-w-0 bg-transparent py-2.5 px-4 text-[15px] text-on-surface focus:outline-none"
         />
       </div>
     </div>

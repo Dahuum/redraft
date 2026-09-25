@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Icon from "./Icon.jsx";
 
 /**
  * A click-to-split bar for the Bulk table. Shows a field's original text; click
@@ -13,7 +14,7 @@ export default function SplitPicker({ text, split, title, onSet, onWhole, onClos
     <div className="px-3 py-2.5 bg-surface-container-high border-b border-outline-variant/30 shrink-0 animate-drop">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between text-caption mb-1.5 gap-1 sm:gap-2">
         <span className="text-on-surface-variant flex items-start sm:items-center gap-1 min-w-0">
-          <span className="material-symbols-outlined text-[14px] text-accent-cyan shrink-0">content_cut</span>
+          <Icon name="scissors" size={14} className="text-accent-cyan shrink-0" />
           {/* This sentence is the only instruction in the panel, so on a phone
               it wraps instead of truncating; from sm up it truncates as before. */}
           <span className="sm:truncate">Split “{title}” — click where the value begins</span>
@@ -36,7 +37,7 @@ export default function SplitPicker({ text, split, title, onSet, onWhole, onClos
             key={i}
             onMouseEnter={() => setHover(i)}
             onClick={() => onSet(i)}
-            className={`whitespace-pre cursor-pointer ${i === mark ? "shadow-[inset_2px_0_0_0_#00f5ff]" : ""} ${
+            className={`whitespace-pre cursor-pointer ${i === mark ? "shadow-[inset_2px_0_0_0_#4f75fe]" : ""} ${
               i < mark ? "text-on-surface-variant/45" : "text-accent-cyan"
             }`}
           >
@@ -46,7 +47,7 @@ export default function SplitPicker({ text, split, title, onSet, onWhole, onClos
         <span
           onMouseEnter={() => setHover(chars.length)}
           onClick={() => onSet(chars.length)}
-          className={`w-3 cursor-pointer ${mark === chars.length ? "shadow-[inset_2px_0_0_0_#00f5ff]" : ""}`}
+          className={`w-3 cursor-pointer ${mark === chars.length ? "shadow-[inset_2px_0_0_0_#4f75fe]" : ""}`}
         >
           &nbsp;
         </span>

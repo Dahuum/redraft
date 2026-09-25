@@ -5,16 +5,23 @@ import { renderThumb } from "../lib/thumb.js";
 import { composeDoc } from "../api.js";
 import ThemeToggle from "./ThemeToggle.jsx";
 import { toast } from "./Toast.jsx";
-import { Tabs, Button, Dropdown, Avatar, Label } from "@heroui/react";
+import { Tabs, Dropdown, Avatar, Label } from "@heroui/react";
+import Icon from "./Icon.jsx";
+import Brand from "./Brand.jsx";
 
 const STATUS = {
-  Draft: "bg-accent-cyan/10 text-accent-cyan",
-  Final: "bg-emerald-500/10 text-emerald-400",
-  Review: "bg-amber-500/10 text-amber-400",
+  Draft: "bg-[rgb(var(--c-tint-yellow))] text-on-surface",
+  Final: "bg-[rgb(var(--c-tint-mint))] text-on-surface",
+  Review: "bg-[rgb(var(--c-tint-blue))] text-on-surface",
 };
 
+const PILL = "inline-flex items-center justify-center gap-2 rounded-full font-normal text-[16px] leading-5 px-[26px] py-[14px] cursor-pointer select-none transition-[transform,background,box-shadow] duration-200 hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0";
+const PILL_BLUE = `${PILL} bg-secondary-container text-white hover:bg-secondary-container-hover hover:shadow-[0_8px_22px_rgba(79,117,254,0.35)]`;
+const PILL_SAND = `${PILL} bg-surface-container-high text-on-surface hover:bg-surface-variant`;
+const HEAD = "font-display-md font-black tracking-[-0.5px] text-on-surface";
+
 /**
- * Home / landing screen — "Midnight Executive Workspace" design.
+ * Home screen — the Homerun-derived design system (sand page, cream sheets, one blue).
  * Drop Zone + Browse Files perform the real upload (`onUpload`); Recent Activity
  * is the real, persistent history (`onOpen` reopens a doc).
  */
@@ -175,6 +182,24 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
     }
   }
 
+  const browse = () => inputRef.current?.click();
+  const openComposer = () => {
+    setTxtError(null);
+    setShowText(true);
+  };
+  const dropProps = {
+    onDragOver: (e) => {
+      e.preventDefault();
+      setDrag(true);
+    },
+    onDragLeave: () => setDrag(false),
+    onDrop: (e) => {
+      e.preventDefault();
+      setDrag(false);
+      pick(e.dataTransfer.files?.[0]);
+    },
+  };
+
   return (
     <>
       <input
@@ -185,320 +210,273 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
         onChange={(e) => pick(e.target.files?.[0])}
       />
 
-      {/* Top Toolbar */}
-      <nav className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-lg h-14 bg-page/90 backdrop-blur-md border-b border-outline-variant/30 shadow-sm transition-all duration-300">
-        <div className="flex items-center gap-md">
-          <div className="flex items-center gap-xs">
-            <div className="font-display-md text-[18px] font-bold text-on-surface tracking-tight">
-              Redraft
-            </div>
+      {/* Top bar — the landing page's banner: a floating white pill */}
+      <header className="fixed top-3 left-1/2 -translate-x-1/2 z-50 w-[min(1100px,calc(100%-24px))]">
+        <nav className="relative flex items-center justify-between h-[68px] pl-5 md:pl-6 pr-2.5 rounded-full bg-surface/95 backdrop-blur-md shadow-[0_1px_0_rgb(var(--c-shadow)/0.04),0_12px_32px_-18px_rgb(var(--c-shadow)/0.35)]">
+          <div className="flex items-center gap-3 min-w-0">
+            <Brand />
+            <span className="hidden lg:block h-5 w-px bg-outline-variant" />
+            <span className="hidden lg:block text-[15px] text-on-surface-variant">Personal workspace</span>
           </div>
-          <div className="h-4 w-[1px] bg-on-surface/10 mx-xs hidden md:block"></div>
-          <span className="hidden md:flex items-center text-on-surface-variant font-label-md text-sm">
-            Personal Workspace
-          </span>
-        </div>
 
-        {/* Center Mode Toggle */}
-        <Tabs
-          className="absolute left-1/2 -translate-x-1/2 hidden md:flex"
-          selectedKey={tab}
-          onSelectionChange={(key) => setTab(key)}
-        >
-          <Tabs.ListContainer className="rounded-lg bg-surface-container-low border border-outline-variant/30">
-            <Tabs.List
-              aria-label="View"
-              className="p-1 **:data-[slot=tabs-tab]:rounded-md **:data-[slot=tabs-tab]:font-label-md **:data-[slot=tabs-tab]:text-sm **:data-[slot=tabs-tab]:px-md **:data-[slot=tabs-tab]:py-1.5 **:data-[slot=tabs-indicator]:rounded-md **:data-[slot=tabs-indicator]:bg-surface-variant **:data-[slot=tabs-indicator]:shadow-sm"
-            >
-              <Tabs.Tab id="editor">
-                Editor
-                <Tabs.Indicator />
-              </Tabs.Tab>
-              <Tabs.Tab id="history">
-                History
-                <Tabs.Indicator />
-              </Tabs.Tab>
-            </Tabs.List>
-          </Tabs.ListContainer>
-        </Tabs>
-
-        {/* Trailing Actions */}
-        <div className="flex items-center gap-sm">
-          <ThemeToggle />
-          {guest ? (
-            <button
-              onClick={() => { window.location.href = "/"; }}
-              title="Sign in to save your work and unlock bulk & annex"
-              className="ml-xs h-8 px-3 rounded-md font-label-md text-[13px] bg-secondary-container text-white hover:bg-secondary-container-hover transition-colors inline-flex items-center gap-1.5"
-            >
-              <span className="material-symbols-outlined text-[18px]">login</span>
-              Sign in
-            </button>
-          ) : (
-            <Dropdown>
-              <Dropdown.Trigger
-                title="Account"
-                className="ml-xs rounded-full border border-outline-variant/50 hover:border-accent-cyan/50 transition-colors"
+          <Tabs
+            className="absolute left-1/2 -translate-x-1/2 hidden md:flex"
+            selectedKey={tab}
+            onSelectionChange={(key) => setTab(key)}
+          >
+            <Tabs.ListContainer className="rounded-2xl bg-surface-container">
+              <Tabs.List
+                aria-label="View"
+                className="p-1 **:data-[slot=tabs-tab]:rounded-xl **:data-[slot=tabs-tab]:text-[15px] **:data-[slot=tabs-tab]:px-5 **:data-[slot=tabs-tab]:py-2 **:data-[slot=tabs-indicator]:rounded-xl **:data-[slot=tabs-indicator]:bg-surface-bright **:data-[slot=tabs-indicator]:shadow-soft"
               >
-                <Avatar>
-                  <Avatar.Image
-                    alt="User avatar"
-                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuB9e-ZXz4fzaPxmxwTxGC9xj1jqiInEDBT2XXjBgtn-vxeUTE16SE0kP3OjWlRkgFfldtdBAQIUQCD5dNw9WEj5QBET7PAyCxMvBx_MUR9T41yFpF2TlDAzn4Gsg3QkdkBTEF2ZAW9-UD53iYpnqII1e7J01kKRLHKzUV6ZNoT36qZOe5TfhgEXyrisP0wfj_qaPOrTmwjEfsQryO0AqyRI_cU99QHfdgPgSY4zxt6n3vaBGHOPk1-1imzfYgKQJwQ_LW0gub_-NdWd"
-                  />
-                  <Avatar.Fallback>U</Avatar.Fallback>
-                </Avatar>
-              </Dropdown.Trigger>
-              <Dropdown.Popover placement="bottom end">
-                <Dropdown.Menu onAction={() => onSignOut?.()}>
-                  <Dropdown.Item id="log-out" textValue="Log out">
-                    <span className="material-symbols-outlined text-[18px]">logout</span>
-                    <Label>Log out</Label>
-                  </Dropdown.Item>
-                </Dropdown.Menu>
-              </Dropdown.Popover>
-            </Dropdown>
-          )}
-        </div>
-      </nav>
+                <Tabs.Tab id="editor">
+                  Editor
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                <Tabs.Tab id="history">
+                  History
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
 
-      {/* Main Workspace Canvas */}
-      <main className="pt-20 min-h-screen flex flex-col px-lg pb-lg md:px-xl md:pb-xl max-w-[1100px] mx-auto w-full relative z-10 animate-fade">
-        {/* Ambient Glow. Capped to the container: a fixed 600px circle centred
-            on a 390px screen reaches x=495, and a transformed box still counts
-            as scrollable overflow — the whole page panned 105px sideways. */}
-        <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[min(600px,100%)] h-[600px] bg-accent-cyan/5 rounded-full blur-[120px] pointer-events-none -z-10"></div>
-
-        <div className="flex-1 flex flex-col w-full mx-auto">
-          {/* Guest banner — edit/sign/download work now; sign-in unlocks more */}
-          {guest && (
-            <div className="mb-md flex items-center gap-2 rounded-xl border border-secondary-container/30 bg-secondary-container/10 px-4 py-2.5 text-caption text-on-surface">
-              <span className="material-symbols-outlined text-[18px] text-secondary shrink-0">info</span>
-              <span className="flex-1">
-                You're using Redraft as a guest — edit, sign &amp; download work right away.{" "}
-                <b>Sign in</b> to save your work and unlock bulk generation &amp; annex automation.
-              </span>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            {guest ? (
               <button
                 onClick={() => { window.location.href = "/"; }}
-                className="shrink-0 px-3 py-1 rounded-md bg-secondary-container text-white font-label-md text-[12px] hover:bg-secondary-container-hover transition-colors"
+                title="Sign in to save your work and unlock bulk & annex"
+                className={`${PILL_BLUE} !px-5 !py-[11px] !text-[15px]`}
               >
+                <Icon name="login" size={18} />
                 Sign in
               </button>
-            </div>
-          )}
-          {/* Drop Zone (Primary Action Area) */}
-          {tab === "editor" && (
-            <div
-              onClick={() => inputRef.current?.click()}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDrag(true);
-              }}
-              onDragLeave={() => setDrag(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setDrag(false);
-                pick(e.dataTransfer.files?.[0]);
-              }}
-              className={`relative w-full rounded-2xl bg-surface-container-low/40 backdrop-blur-xl border transition-all duration-300 group cursor-pointer overflow-hidden flex flex-col items-center justify-center py-[60px] px-lg mb-lg shadow-panel mt-2 ${
-                drag
-                  ? "border-accent-cyan/30 bg-surface-container-low/60"
-                  : "border-outline-variant/30 hover:border-accent-cyan/30 hover:bg-surface-container-low/60"
-              }`}
-            >
-              <div className="absolute inset-0 rounded-2xl ring-1 ring-inset ring-on-surface/10 group-hover:ring-accent-cyan/20 transition-all pointer-events-none"></div>
-              <div className="w-14 h-14 rounded-2xl bg-surface-container flex items-center justify-center mb-md shadow-soft border border-outline-variant/30 group-hover:-translate-y-1 transition-transform duration-300">
-                <span className="material-symbols-outlined text-[28px] text-on-surface-variant group-hover:text-accent-cyan transition-colors">
-                  {busy ? "hourglass_top" : "upload_file"}
-                </span>
-              </div>
-              <h2 className="font-display-md text-[20px] text-on-surface mb-xs font-semibold tracking-tight">
-                {busy ? "Reading PDF…" : "Drop PDF here"}
-              </h2>
-              <p className="font-body-md text-sm text-on-surface-variant mb-md text-center max-w-[24rem]">
-                Edit values in place, generate hundreds of documents from a spreadsheet, or
-                automate billing annexes — all from one PDF.
+            ) : (
+              <Dropdown>
+                <Dropdown.Trigger
+                  title="Account"
+                  className="w-10 h-10 rounded-full bg-surface-container text-on-surface hover:bg-surface-container-high grid place-items-center transition-colors"
+                >
+                  <Avatar className="!bg-transparent !text-on-surface">
+                    <Avatar.Fallback className="!bg-transparent"><Icon name="user" size={20} /></Avatar.Fallback>
+                  </Avatar>
+                </Dropdown.Trigger>
+                <Dropdown.Popover placement="bottom end">
+                  <Dropdown.Menu onAction={() => onSignOut?.()}>
+                    <Dropdown.Item id="log-out" textValue="Log out">
+                      <Icon name="logout" size={18} />
+                      <Label>Log out</Label>
+                    </Dropdown.Item>
+                  </Dropdown.Menu>
+                </Dropdown.Popover>
+              </Dropdown>
+            )}
+          </div>
+        </nav>
+      </header>
+
+      <main className="pt-[112px] pb-16 px-3 md:px-6 min-h-screen max-w-[1148px] mx-auto w-full animate-fade">
+        {/* Guest note — edit/sign/download work now; sign-in unlocks more */}
+        {guest && (
+          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[28px] md:rounded-full bg-surface pl-2.5 pr-2.5 py-2.5 text-[15px] text-on-surface">
+            <span className="shrink-0 rounded-full bg-[rgb(var(--c-tint-yellow))] px-3 py-1 text-[13px] font-semibold">Guest</span>
+            <span className="flex-1 min-w-[16rem] leading-6 text-on-surface-variant">
+              Edit, sign &amp; download work right away.{" "}
+              <b className="text-on-surface font-semibold">Sign in</b> to save your work and unlock bulk generation &amp; annex automation.
+            </span>
+          </div>
+        )}
+
+        {/* Drop zone */}
+        {tab === "editor" && (
+          <section
+            {...dropProps}
+            className="relative grid md:grid-cols-[1.05fr_0.95fr] gap-6 md:gap-8 rounded-[32px] bg-surface p-5 md:p-10"
+          >
+            <div className="flex flex-col justify-center gap-5 md:pr-2 py-2">
+              <p className="font-hand uppercase tracking-[0.06em] text-[22px] leading-none text-secondary-container">
+                Your workspace
               </p>
-              <Button
-                onPress={() => inputRef.current?.click()}
-                isDisabled={busy}
-                className="font-label-md shadow-[0_0_15px_rgba(0,245,255,0.2)]"
-              >
-                Browse Files
-              </Button>
-              <p className="mt-md flex items-center gap-1.5 text-caption text-on-surface-variant">
-                <span className="material-symbols-outlined text-[14px]">lock</span>
+              <h1 className={`${HEAD} text-[42px] md:text-[56px] leading-[1.02]`}>
+                {busy ? (
+                  <>Reading<br />your PDF…</>
+                ) : (
+                  <>Drop a PDF.<br />Edit it exactly<br />how you want.</>
+                )}
+              </h1>
+              <p className="text-[17px] leading-[27px] text-on-surface-variant max-w-[30rem]">
+                Edit values in place, generate hundreds of documents from a spreadsheet, or automate billing
+                annexes — all from one PDF.
+              </p>
+              <div className="flex flex-wrap gap-2.5 mt-1">
+                <button onClick={browse} disabled={busy} className={PILL_BLUE}>
+                  <Icon name={busy ? "spinner" : "upload"} size={19} spin={busy} />
+                  Browse files
+                </button>
+                <button onClick={openComposer} className={PILL_SAND}>
+                  <Icon name="pen" size={19} />
+                  Start from text
+                </button>
+              </div>
+              <p className="flex items-center gap-1.5 text-[14px] text-on-surface-variant">
+                <Icon name="lock" size={15} />
                 Your files are processed in memory and never stored.
               </p>
-              {error && (
-                <p className="mt-md text-sm text-error text-center max-w-[24rem]">{error}</p>
-              )}
+              {error && <p className="text-[15px] text-error max-w-[26rem]">{error}</p>}
             </div>
-          )}
 
-          {/* Start from text → clean PDF, straight into the editor */}
-          {tab === "editor" && (
-            <div className="-mt-sm mb-lg flex items-center justify-center gap-2">
-              <span className="text-caption text-on-surface-variant">or</span>
-              <button
-                onClick={() => {
-                  setTxtError(null);
-                  setShowText(true);
-                }}
-                className="font-label-md text-sm px-md py-1.5 rounded-lg border border-outline-variant/50 text-on-surface hover:border-accent-cyan/50 hover:text-accent-cyan transition-colors flex items-center gap-2"
-              >
-                <span className="material-symbols-outlined text-[18px]">edit_note</span>
-                Start from text
-              </button>
-            </div>
-          )}
-
-          {/* My templates (cloud) */}
-          {cloudEnabled && projects.length > 0 && (
-            <section className="mt-2 mb-lg">
-              <div className="flex items-center justify-between mb-md border-b border-outline-variant/30 pb-sm">
-                <h3 className="font-label-md text-sm text-on-surface font-medium flex items-center gap-sm">
-                  <span className="material-symbols-outlined text-[18px] text-secondary">cloud_done</span>
-                  My templates
-                </h3>
-                <span className="text-on-surface-variant font-caption text-[11px]">
-                  {projects.length} of 3 saved
-                </span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-md">
-                {projects.map((p) => (
-                  <div
-                    key={p.id}
-                    onClick={() => openingId == null && openProject(p)}
-                    className="group relative rounded-xl bg-surface-container-low border border-secondary-container/30 p-4 hover:border-secondary-container/60 transition-all cursor-pointer hover:-translate-y-0.5 shadow-sm"
-                  >
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeProject(p);
-                      }}
-                      title="Remove from account"
-                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">delete</span>
-                    </button>
-                    <div className="flex items-center gap-3">
-                      <div className="w-12 h-16 rounded-md bg-white border border-outline-variant/40 overflow-hidden shrink-0 flex items-center justify-center shadow-sm">
-                        {openingId === p.id ? (
-                          <span className="material-symbols-outlined text-[18px] text-secondary animate-spin">
-                            progress_activity
-                          </span>
-                        ) : thumbs[p.id] ? (
-                          <img
-                            src={thumbs[p.id]}
-                            alt=""
-                            className="w-full h-full object-cover object-top"
-                          />
-                        ) : (
-                          <span className="material-symbols-outlined text-[22px] text-secondary/50">
-                            description
-                          </span>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <h4 className="font-body-md text-sm text-on-surface font-medium truncate">
-                          {p.name}
-                        </h4>
-                        <p className="text-on-surface-variant font-caption text-[11px] flex items-center gap-1">
-                          <span className="material-symbols-outlined text-[13px]">layers</span>
-                          Bulk template · {(p.setup?.picked?.length) || 0} fields
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* Recent Activity Section */}
-          <section className="mt-2 flex-1">
-            <div className="flex items-center justify-between mb-md border-b border-outline-variant/30 pb-sm">
-              <h3 className="font-label-md text-sm text-on-surface font-medium flex items-center gap-sm">
-                <span className="material-symbols-outlined text-[18px] text-on-surface-variant">
-                  history
-                </span>
-                {tab === "history" ? "History" : "Recent Activity"}
-              </h3>
-              <span className="text-on-surface-variant font-caption text-[11px]">
-                {docs.length} document{docs.length === 1 ? "" : "s"}
+            <button
+              type="button"
+              onClick={browse}
+              aria-label="Choose a PDF, or drop one here"
+              className={`group relative min-h-[260px] md:min-h-[360px] rounded-[26px] grid place-items-center overflow-hidden cursor-pointer transition-colors duration-200 ${
+                drag ? "bg-[rgb(var(--c-tint-blue))]" : "bg-[rgb(var(--c-tint-yellow))]"
+              }`}
+            >
+              <span
+                className={`pointer-events-none absolute inset-4 rounded-[20px] border-[2.5px] border-dashed transition-colors ${
+                  drag ? "border-secondary-container" : "border-on-surface/25 group-hover:border-on-surface/45"
+                }`}
+              />
+              <svg viewBox="0 0 260 230" className="w-[62%] max-w-[300px] transition-transform duration-300 group-hover:-translate-y-1 group-hover:rotate-[-1.5deg]" aria-hidden="true">
+                <rect x="58" y="22" width="132" height="172" rx="14" fill="#fff" stroke="rgb(var(--c-on-surface))" strokeWidth="5" />
+                <path d="M82 62h84M82 86h84M82 110h52" stroke="rgb(45 35 35)" strokeWidth="5" strokeLinecap="round" />
+                <rect x="82" y="128" width="58" height="22" rx="7" fill="#8aa0ff" stroke="#2d2323" strokeWidth="4" />
+                <circle cx="188" cy="176" r="34" fill="#4f75fe" stroke="rgb(var(--c-on-surface))" strokeWidth="5" />
+                <path d="M188 192v-30M175 174l13-13 13 13" fill="none" stroke="#fff" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M206 38l4.5 13 13 4.5-13 4.5-4.5 13-4.5-13-13-4.5 13-4.5z" fill="#ff8a3d" stroke="rgb(var(--c-on-surface))" strokeWidth="4" strokeLinejoin="round" />
+              </svg>
+              <span className="absolute bottom-7 left-0 right-0 text-center font-hand uppercase tracking-[0.06em] text-[19px] text-on-surface/70">
+                {drag ? "Let go to open it" : "or drop it here"}
               </span>
-            </div>
+            </button>
+          </section>
+        )}
 
-            {docs.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-outline-variant/50 p-10 text-center">
-                <span className="material-symbols-outlined text-[32px] text-on-surface-variant/40">
-                  folder_open
-                </span>
-                <p className="mt-2 text-sm text-on-surface-variant">
-                  No documents yet — upload a PDF and it'll appear here.
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-md">
-                {docs.map((d, i) => (
-                  <div
-                    key={d.id}
-                    onClick={() => onOpen(d)}
-                    style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-                    className="group relative rounded-xl bg-surface-container-low border border-outline-variant/30 p-4 hover:border-outline-variant/50 transition-all cursor-pointer hover:-translate-y-0.5 shadow-sm hover:shadow-md animate-rise"
+        {/* My templates (cloud) */}
+        {cloudEnabled && projects.length > 0 && (
+          <section className="mt-10">
+            <div className="flex items-center justify-between mb-4 px-1">
+              <h2 className={`${HEAD} text-[24px] flex items-center gap-3`}>
+                <span className="w-9 h-9 rounded-xl bg-[rgb(var(--c-tint-blue))] grid place-items-center"><Icon name="cloud" size={20} /></span>
+                My templates
+              </h2>
+              <span className="rounded-full bg-surface px-3 py-1 text-[13px] text-on-surface-variant">{projects.length} of 3 saved</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {projects.map((p) => (
+                <div
+                  key={p.id}
+                  onClick={() => openingId == null && openProject(p)}
+                  className="group relative rounded-3xl bg-surface p-4 cursor-pointer transition-transform duration-200 hover:-translate-y-1"
+                >
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeProject(p);
+                    }}
+                    title="Remove from account"
+                    className="absolute top-3 right-3 z-10 w-8 h-8 rounded-full bg-surface-container text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-error-container transition-all grid place-items-center"
                   >
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeDocUndoable(d.id, d.name);
-                      }}
-                      className="absolute top-2 right-2 z-10 w-6 h-6 rounded-md bg-black/40 text-on-surface-variant opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error hover:bg-black/60 transition-all flex items-center justify-center"
-                      title="Remove from history"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">close</span>
-                    </button>
-                    <div className="aspect-[4/3] rounded-lg bg-surface-container-lowest mb-md border border-outline-variant/30 flex items-center justify-center overflow-hidden relative">
-                      <div
-                        className={`absolute top-2 left-2 z-10 px-2 py-1 font-label-md text-[10px] rounded uppercase tracking-wider font-bold ${
-                          STATUS[d.status] || STATUS.Draft
-                        }`}
-                      >
-                        {d.status || "Draft"}
-                      </div>
-                      {d.thumb ? (
-                        <img
-                          src={d.thumb}
-                          alt={d.name}
-                          className="absolute inset-0 w-full h-full object-cover object-top"
-                        />
+                    <Icon name="trash" size={16} />
+                  </button>
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-[76px] rounded-xl bg-white overflow-hidden shrink-0 grid place-items-center shadow-soft">
+                      {openingId === p.id ? (
+                        <Icon name="spinner" size={20} spin className="text-secondary-container" />
+                      ) : thumbs[p.id] ? (
+                        <img src={thumbs[p.id]} alt="" className="w-full h-full object-cover object-top" />
                       ) : (
-                        <span className="material-symbols-outlined text-[32px] text-on-surface-variant/30">
-                          description
-                        </span>
+                        <Icon name="doc" size={24} className="text-on-surface/40" />
                       )}
                     </div>
-                    <h4 className="font-body-md text-sm text-on-surface font-medium truncate mb-xs group-hover:text-accent-cyan transition-colors">
-                      {d.name}
-                    </h4>
-                    <div className="flex items-center justify-between text-on-surface-variant font-caption text-[11px]">
-                      <span className="">Edited {ago(d.addedAt)}</span>
-                      <span className="flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[14px]">description</span>
-                        {d.pages || 1}
-                      </span>
+                    <div className="min-w-0">
+                      <h3 className="text-[16px] font-semibold text-on-surface truncate">{p.name}</h3>
+                      <p className="text-[13px] text-on-surface-variant flex items-center gap-1.5 mt-0.5">
+                        <Icon name="layers" size={14} />
+                        Bulk template · {(p.setup?.picked?.length) || 0} fields
+                      </p>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
+              ))}
+            </div>
           </section>
-        </div>
+        )}
+
+        {/* Recent activity */}
+        <section className="mt-10">
+          <div className="flex items-center justify-between mb-4 px-1">
+            <h2 className={`${HEAD} text-[24px] flex items-center gap-3`}>
+              <span className="w-9 h-9 rounded-xl bg-[rgb(var(--c-tint-sand))] grid place-items-center"><Icon name="history" size={20} /></span>
+              {tab === "history" ? "History" : "Recent activity"}
+            </h2>
+            <span className="rounded-full bg-surface px-3 py-1 text-[13px] text-on-surface-variant">
+              {docs.length} document{docs.length === 1 ? "" : "s"}
+            </span>
+          </div>
+
+          {docs.length === 0 ? (
+            <div className="rounded-[28px] bg-surface p-10 md:p-14 text-center">
+              <div className="mx-auto w-16 h-16 rounded-2xl bg-[rgb(var(--c-tint-sand))] grid place-items-center">
+                <Icon name="folder" size={30} strokeWidth={2} className="text-on-surface" />
+              </div>
+              <p className={`${HEAD} text-[22px] mt-4`}>Nothing here yet</p>
+              <p className="mt-1.5 text-[16px] text-on-surface-variant">Upload a PDF and it will appear here.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {docs.map((d, i) => (
+                <div
+                  key={d.id}
+                  onClick={() => onOpen(d)}
+                  style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+                  className="group relative rounded-3xl bg-surface p-3 pb-4 cursor-pointer transition-transform duration-200 hover:-translate-y-1 animate-rise"
+                >
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeDocUndoable(d.id, d.name);
+                    }}
+                    className="absolute top-5 right-5 z-10 w-8 h-8 rounded-full bg-surface text-on-surface-variant shadow-soft opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-lg:opacity-100 hover:text-error transition-all grid place-items-center"
+                    title="Remove from history"
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                  <div className="aspect-[4/3] rounded-[20px] bg-[rgb(var(--c-tint-sand))] mb-3.5 relative overflow-hidden grid place-items-center">
+                    <span className={`absolute top-3 left-3 z-10 rounded-full px-2.5 py-1 text-[12px] font-semibold ${STATUS[d.status] || STATUS.Draft}`}>
+                      {d.status || "Draft"}
+                    </span>
+                    {d.thumb ? (
+                      <div className="absolute left-[16%] right-[16%] top-9 bottom-0 rounded-t-lg bg-white shadow-[0_10px_24px_-10px_rgb(var(--c-shadow)/0.45)] overflow-hidden">
+                        <img src={d.thumb} alt={d.name} className="w-full h-full object-cover object-top" />
+                      </div>
+                    ) : (
+                      <Icon name="doc" size={34} className="text-on-surface/30" />
+                    )}
+                  </div>
+                  <h3 className="px-1.5 text-[16px] font-semibold text-on-surface truncate mb-1 group-hover:text-secondary-container transition-colors">
+                    {d.name}
+                  </h3>
+                  <div className="px-1.5 flex items-center justify-between text-on-surface-variant text-[13px]">
+                    <span>Edited {ago(d.addedAt)}</span>
+                    <span className="flex items-center gap-1">
+                      <Icon name="doc" size={14} />
+                      {d.pages || 1}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       </main>
 
       {/* Start-from-text composer */}
       {showText && (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-[rgb(var(--c-shadow)/0.5)] backdrop-blur-sm p-4 animate-fade"
           onMouseDown={(e) => e.target === e.currentTarget && !composing && setShowText(false)}
         >
           <div
@@ -507,32 +485,31 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
             aria-modal="true"
             aria-label="Start from text"
             onKeyDown={trapComposerTab}
-            className="w-full max-w-[42rem] bg-surface-container rounded-2xl border border-outline-variant/40 shadow-panel overflow-hidden animate-drop"
+            className="w-full max-w-[42rem] bg-surface rounded-[32px] shadow-panel overflow-hidden animate-drop"
           >
-            <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between">
-              <h3 className="font-display-md text-lg font-bold flex items-center gap-2">
-                <span className="material-symbols-outlined text-[20px] text-accent-cyan">edit_note</span>
-                Start from text
-              </h3>
+            <div className="px-7 pt-6 pb-2 flex items-start justify-between gap-4">
+              <div>
+                <p className="font-hand uppercase tracking-[0.06em] text-[19px] leading-none text-secondary-container">Start from text</p>
+                <h3 className={`${HEAD} text-[30px] leading-[1.1] mt-2`}>Turn text into a clean PDF</h3>
+              </div>
               <button
                 onClick={() => !composing && setShowText(false)}
                 aria-label="Close"
-                className="text-on-surface-variant hover:text-on-surface transition-colors"
+                className="w-10 h-10 shrink-0 rounded-full bg-surface-container text-on-surface hover:bg-surface-container-high transition-colors grid place-items-center"
               >
-                <span className="material-symbols-outlined text-[20px]">close</span>
+                <Icon name="close" size={18} />
               </button>
             </div>
-            <div className="p-5 space-y-3">
-              <p className="text-caption text-on-surface-variant">
-                Paste any text — a contract, a letter, an agreement. Redraft turns it into a clean,
-                formatted PDF you can edit and sign right away.
+            <div className="px-7 pb-2 space-y-3">
+              <p className="text-[15px] leading-6 text-on-surface-variant">
+                Paste a contract, a letter or an agreement. Redraft formats it into a clean PDF you can edit and sign right away.
               </p>
               <input
                 value={txtTitle}
                 onChange={(e) => setTxtTitle(e.target.value)}
                 autoFocus
-                placeholder="Title (optional) — e.g. Service Agreement"
-                className="w-full bg-surface-container-lowest border border-outline-variant/50 rounded-lg py-2 px-3 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+                placeholder="Title (optional), e.g. Service Agreement"
+                className="w-full bg-surface-container rounded-2xl py-3.5 px-5 text-[16px] text-on-surface placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-secondary-container"
               />
               <textarea
                 value={txtBody}
@@ -540,25 +517,16 @@ export default function HomeScreen({ onUpload, onOpen, onOpenCloud, busy, error,
                 placeholder={
                   "Paste your document text here…\n\nTip: leave a blank line between paragraphs. A short line in CAPITALS or ending with ':' becomes a section heading."
                 }
-                className="w-full h-64 bg-surface-container-lowest border border-outline-variant/50 rounded-lg p-3 text-sm text-on-surface leading-relaxed focus:outline-none focus:ring-1 focus:ring-accent-cyan resize-y"
+                className="w-full h-64 bg-surface-container rounded-2xl p-5 text-[15px] text-on-surface leading-relaxed placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-secondary-container resize-y"
               />
-              {txtError && <p className="text-caption text-error">{txtError}</p>}
+              {txtError && <p className="text-[14px] text-error">{txtError}</p>}
             </div>
-            <div className="px-5 py-4 border-t border-outline-variant/30 flex items-center justify-end gap-2">
-              <button
-                onClick={() => !composing && setShowText(false)}
-                className="px-4 py-2 rounded-lg border border-outline-variant/50 text-on-surface hover:bg-surface-container-high transition-colors font-label-md text-sm"
-              >
+            <div className="px-7 py-6 flex items-center justify-end gap-2.5">
+              <button onClick={() => !composing && setShowText(false)} className={PILL_SAND}>
                 Cancel
               </button>
-              <button
-                onClick={createFromText}
-                disabled={composing || !txtBody.trim()}
-                className="px-4 py-2 rounded-lg bg-secondary-container text-white font-semibold hover:bg-secondary-container-hover transition-all font-label-md text-sm flex items-center gap-2 disabled:opacity-50"
-              >
-                <span className={`material-symbols-outlined text-[18px] ${composing ? "animate-spin" : ""}`}>
-                  {composing ? "progress_activity" : "auto_awesome"}
-                </span>
+              <button onClick={createFromText} disabled={composing || !txtBody.trim()} className={PILL_BLUE}>
+                <Icon name={composing ? "spinner" : "spark"} size={18} spin={composing} />
                 {composing ? "Building…" : "Create & open in editor"}
               </button>
             </div>

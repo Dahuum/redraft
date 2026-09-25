@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import ToastHost from "./Toast.jsx";
+import Icon from "./Icon.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
@@ -31,24 +32,20 @@ export default function GlobalOverlays() {
     <>
       <ToastHost />
       {down && (
-        <div className="fixed bottom-4 left-4 right-4 sm:right-auto z-[110] max-w-[384px] flex items-start gap-2 rounded-xl border border-error/40 bg-surface-container-high/95 px-4 py-2.5 shadow-panel backdrop-blur-md">
-          <span className="material-symbols-outlined text-[18px] text-error">
-            cloud_off
-          </span>
-          <span className="text-caption text-on-surface">
+        <div className="fixed bottom-4 left-4 right-4 sm:right-auto z-[110] max-w-[384px] flex items-start gap-2 rounded-[24px] bg-[rgb(var(--c-tint-coral))] text-on-surface px-5 py-3.5 shadow-panel">
+          <Icon name="cloudoff" size={18} className="text-error" />
+          <span className="text-[14px] leading-5 text-on-surface">
             Can't reach the API at{" "}
             <b className="font-semibold">{API_BASE}</b>. Start it with{" "}
-            <code className="text-accent-cyan">uvicorn api:app --app-dir backend --port 8000</code>
+            <code className="rounded bg-black/10 px-1.5 py-0.5 text-[12px]">uvicorn api:app --app-dir backend --port 8000</code>
             {" "}— or open this app via localhost, not a network URL.
           </span>
         </div>
       )}
       {!down && slow && (
-        <div className="fixed bottom-4 left-4 right-4 sm:right-auto z-[110] flex items-center gap-2 rounded-full border border-outline-variant/50 bg-surface-container-high/95 px-4 py-2 shadow-panel backdrop-blur-md">
-          <span className="material-symbols-outlined animate-spin text-[18px] text-accent-cyan">
-            progress_activity
-          </span>
-          <span className="text-caption text-on-surface">
+        <div className="fixed bottom-4 left-4 right-4 sm:right-auto z-[110] flex items-center gap-2 rounded-full bg-surface px-5 py-3 shadow-panel">
+          <Icon name="spinner" size={18} spin className="text-accent-cyan" />
+          <span className="text-[14px] leading-5 text-on-surface">
             Waking the server… a cold start can take up to ~40&nbsp;s.
           </span>
         </div>
