@@ -1179,6 +1179,8 @@ def _compensation(doc, runs, loc_result, new_codes, kern, gap_word):
     delta = new_u - old_u
     if abs(delta) < 1.0:
         return None
+    if loc_result.get("centre_line") and preceding is None and following is None:
+        return ("centre", delta)                # the whole line: half the change each way
     pinned = False
     if following is None:                       # edited text ends this TJ: look at the next run
         nxt = runs[loc_result["run"] + 1] if loc_result["run"] + 1 < len(runs) else None
@@ -1197,6 +1199,9 @@ def _compensation(doc, runs, loc_result, new_codes, kern, gap_word):
 def _with_comp(body: bytes, comp) -> bytes:
     if not comp:
         return body
+    if comp[0] == "centre":
+        h = ("%g" % round(comp[1] / 2.0, 3)).encode()
+        return b" " + h + b" " + body + b" " + h + b" "
     n = ("%g" % round(comp[1], 3)).encode()
     # spaces on BOTH sides: the next element of the array may itself be a number, and
     # "-3128-28141" reads as one malformed number
@@ -3776,6 +3781,33 @@ def _centred_line(page, target) -> bool:
     return len(mates) >= 2
 
 
+def _page_centred_line(page, target, tol: float = 2.0) -> bool:
+    """Is *target* the whole of a line centred on the text block's axis (a title, a name)?
+
+    A LaTeX résumé's name has no centred neighbour to vote with (see _centred_line), so the
+    evidence is the page itself: the line is alone on its baseline, is narrower than the text
+    block, does not start at its left edge, and its centre is on the block's centre.
+    """
+    spans = [sp for sp in _spans(page) if sp["text"].strip()]
+    if len(spans) < 8:
+        return False
+    left = min(sp["bbox"][0] for sp in spans)
+    right = max(sp["bbox"][2] for sp in spans)
+    measure = right - left
+    if measure <= 0:
+        return False
+    y = target["origin"][1]
+    line = [sp for sp in spans if abs(sp["origin"][1] - y) <= 0.6]
+    x0 = min(sp["bbox"][0] for sp in line)
+    x1 = max(sp["bbox"][2] for sp in line)
+    tb = target["bbox"]
+    if x0 < tb[0] - 1.0 or x1 > tb[2] + 1.0:
+        return False                              # something else shares the line
+    if (x1 - x0) > 0.9 * measure or x0 < left + 0.05 * measure:
+        return False
+    return abs((x0 + x1) / 2.0 - (left + right) / 2.0) <= tol
+
+
 def _recentre_line(pdf: bytes, tpage: int, target, base_ys, tol: float = 0.6):
     """Put the edited CENTRED line back on its original axis, as a whole.
 
@@ -4015,6 +4047,16 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                     adoc.close()
                     break
                 res["kern"] = _producer_kerning(doc, tpage, cand_nm, new, res["new_codes"])
+                if res["loc"].get("gap_space") and not cand_cid:
+                    # pdfTeX: the line is placed by relative moves, so keeping a centred line
+                    # centred is a matter of numbers in its TJ (see _compensation).
+                    try:
+                        res["loc"]["centre_line"] = (
+                            _justified_margin(doc[tpage], target) is None
+                            and not _right_aligned_column(doc[tpage], target)
+                            and _page_centred_line(doc[tpage], target))
+                    except Exception:  # noqa: BLE001
+                        pass
                 _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid,
                        kern=res["kern"])
                 cand_bytes = adoc.tobytes(garbage=0)

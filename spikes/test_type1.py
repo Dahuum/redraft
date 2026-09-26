@@ -101,5 +101,22 @@ words_after = [v for v in fitz.open(stream=out, filetype="pdf")[0].get_text("wor
 check("lengthening it keeps the column in place too", rep["in_place"]["count"] == 1 and
       abs(max(v[0] for v in words_after) - col_x) < 0.3)
 
+# 4. a centred line stays centred when its text changes length
+def centre_of(pdf, y_min, text_first):
+    pg = fitz.open(stream=pdf, filetype="pdf")[0]
+    ws = pg.get_text("words")
+    line = [w for w in ws if w[1] > y_min]
+    left, right = min(w[0] for w in ws), max(w[2] for w in ws)
+    return (min(w[0] for w in line) + max(w[2] for w in line)) / 2 - (left + right) / 2
+
+
+check("(fixture) the last line is centred on the block", abs(centre_of(raw, 95, None)) < 0.5)
+out, rep = edit("Compute the cabs", "Compute the sample and tea")
+check("lengthening a centred line keeps it centred", rep["in_place"]["count"] == 1 and
+      abs(centre_of(out, 95, None)) < 0.6, "off by %.2f" % centre_of(out, 95, None))
+out, rep = edit("Compute the cabs", "Compute be")
+check("shortening a centred line keeps it centred", rep["in_place"]["count"] == 1 and
+      abs(centre_of(out, 95, None)) < 0.6, "off by %.2f" % centre_of(out, 95, None))
+
 print("RESULT:", "ALL PASS" if not FAIL else "FAILURES: %s" % FAIL)
 sys.exit(1 if FAIL else 0)
