@@ -1009,16 +1009,20 @@ def _sample_bg(pix: fitz.Pixmap, rect: fitz.Rect) -> tuple:
 
 # ── Span extraction ────────────────────────────────────────────────────────────
 
+from spanmerge import merge_line_spans, show_groups  # noqa: E402
+
+
 def get_spans(doc: fitz.Document, page_num: int = 0) -> list:
     """Return all non-empty text spans on *page_num* as a list of dicts."""
     page   = doc[page_num]
     spans  = []
+    groups = show_groups(page)
     blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
     for block in blocks:
         if block["type"] != 0:
             continue
         for line in block["lines"]:
-            for span in line["spans"]:
+            for span in merge_line_spans([x for x in line["spans"] if x.get("text", "").strip()], groups):
                 text = span.get("text", "")
                 if not text.strip():
                     continue

@@ -117,16 +117,22 @@ def _font_info(doc):
     return subtype, used
 
 
-def _spans(page):
+from spanmerge import merge_line_spans, show_groups  # noqa: E402
+
+
+def _spans(page, phrases: bool = False):
+    """MuPDF's spans of *page*. With phrases=True the words one operation drew together are
+    one span (see spanmerge). Only the TARGETING step asks for that: every layout decision
+    (followers, columns, alignment) keeps reasoning about the words as before."""
     out = []
+    groups = show_groups(page) if phrases else None
     d = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
     for b in d["blocks"]:
         if b.get("type") != 0:
             continue
         for line in b["lines"]:
-            for s in line["spans"]:
-                if s["text"].strip():
-                    out.append(s)
+            for s in merge_line_spans([x for x in line["spans"] if x["text"].strip()], groups):
+                out.append(s)
     return out
 
 
@@ -1000,12 +1006,48 @@ def _kerned_array(codes, kern, is_cid) -> bytes:
     return b" ".join(out)
 
 
+def _gap_array(codes, kern, is_cid, gap) -> bytes:
+    """TJ array elements for *codes*, each 32 written as the number *gap* (a negative TJ unit
+    count) instead of a glyph: how pdfTeX spaces words. *kern* is as for _kerned_array."""
+    parts, seg, seg_k = [], [], []
+    for i, c in enumerate(codes):
+        if c == 32:
+            if seg:
+                parts.append(_kerned_array(seg, seg_k[:-1] if seg_k else None, is_cid))
+                seg, seg_k = [], []
+            parts.append(("%g" % gap).encode())
+            continue
+        seg.append(c)
+        seg_k.append(kern[i] if kern and i < len(kern) else 0)
+    if seg:
+        parts.append(_kerned_array(seg, seg_k[:-1] if seg_k else None, is_cid))
+    return b" ".join(p for p in parts if p)
+
+
+def _word_gap(runs, loc_result) -> float:
+    """The producer's own inter-word TJ number on this line (median of the gaps it used)."""
+    gaps = []
+    for ri in ([loc_result["run"]] if "run" in loc_result else list(loc_result.get("touched", []))):
+        for t in runs[ri]["str_toks"][1:]:
+            g = t.get("gap_before")
+            if g is not None and g <= _SPACE_GAP_THRESHOLD:
+                gaps.append(g)
+    if not gaps:
+        return -333.0
+    gaps.sort()
+    return float(gaps[len(gaps) // 2])
+
+
 def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
     """Splice *new_codes* in. *kern* (optional, len(new_codes) - 1) carries the
     producer's kerning between consecutive new glyphs, in TJ units; see
     kerning.py. Where it is non-zero a Tj becomes a TJ so it can be written."""
     if kern and not any(kern):
         kern = None
+    if loc_result.get("gap_space") and 32 in new_codes and not is_cid:
+        return _apply_gapped(doc, runs, loc_result, new_codes, kern)
+    comp = None if is_cid else _compensation(doc, runs, loc_result, new_codes, kern, _word_gap(runs, loc_result)
+                                             if loc_result.get("run") is not None else -333.0)
     if loc_result["case"] == "single_token" and kern:
         run = runs[loc_result["run"]]
         xref, data = run["xref"], run["data"]
@@ -1017,7 +1059,7 @@ def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
             ([0] if post else []) + [0] * max(0, len(post) - 1)
         body = _kerned_array(merged, full_kern, is_cid)
         if run["op"] == "TJ":
-            new_data = data[:tok["start"]] + body + data[tok["end"]:]
+            new_data = data[:tok["start"]] + _with_comp(body, comp) + data[tok["end"]:]
         elif run["op"] == "Tj":
             new_data = data[:run["full_start"]] + b"[" + body + b"]TJ" + data[run["full_end"]:]
         else:
@@ -1031,6 +1073,8 @@ def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
         ci0, ci1 = loc_result["code_lo"], loc_result["code_hi"]
         merged = tok["codes"][:ci0] + new_codes + tok["codes"][ci1 + 1:]
         new_bytes = b"<" + _codes_to_bytes(merged, is_cid) + b">"
+        if run["op"] == "TJ":
+            new_bytes = _with_comp(new_bytes, comp)
         new_data = data[:tok["start"]] + new_bytes + data[tok["end"]:]
     elif loc_result["case"] == "multi_token":
         # Whole tokens (tok_lo..tok_hi inclusive) plus everything between
@@ -1044,7 +1088,7 @@ def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
         end = run["str_toks"][loc_result["tok_hi"]]["end"]
         new_hex = _kerned_array(new_codes, kern, is_cid) if kern else \
             b"<" + _codes_to_bytes(new_codes, is_cid) + b">"
-        new_data = data[:start] + new_hex + data[end:]
+        new_data = data[:start] + _with_comp(new_hex, comp) + data[end:]
     else:
         touched = list(loc_result["touched"])
         # Leave the unchanged PREFIX exactly as the producer drew it. Chrome
@@ -1082,6 +1126,121 @@ def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
         new_data = data
         for s, e, rep in edits:
             new_data = new_data[:s] + rep + new_data[e:]
+    doc.update_stream(xref, new_data)
+
+
+_PIN_GAP = -2000.0     # a TJ number this far back (>= 2 em) is a column/tab, not a word space
+
+
+def _compensation(doc, runs, loc_result, new_codes, kern, gap_word):
+    """How to keep pinned text where it was when a TJ run grows or shrinks.
+
+    A TJ moves the pen by the width of what it draws, so a right-aligned column drawn after a
+    2 em+ gap number ("(Bachelor …)-28141(October 2022)") slides by however much the edit
+    changed the text before it. Returns ("after", n) or ("before", n): a TJ number to write
+    just after / before the new text so the pinned text lands where it always did, or None.
+    """
+    case = loc_result.get("case")
+    if case not in ("multi_token", "single_token") or "run" not in loc_result:
+        return None
+    run = runs[loc_result["run"]]
+    nm = loc_result.get("font_name")
+    if run["op"] != "TJ" or not nm:
+        return None
+    refs = _simple_font_refs(doc, nm, require_truetype=False)
+    parsed = _parse_widths_array(doc, refs) if refs else None
+    if not parsed:
+        return None
+    first, ws = parsed
+
+    def W(c):
+        return ws[c - first] if 0 <= c - first < len(ws) else 0.0
+
+    toks = run["str_toks"]
+    if case == "multi_token":
+        t0, t1 = loc_result["tok_lo"], loc_result["tok_hi"]
+        old_u = sum(W(c) for t in toks[t0:t1 + 1] for c in t["codes"]) \
+            + sum(-(t.get("gap_before") or 0.0) for t in toks[t0 + 1:t1 + 1])
+        preceding = toks[t0].get("gap_before")
+        following = toks[t1 + 1] if t1 + 1 < len(toks) else None
+        at_end = following is None
+    else:
+        t0 = loc_result["tok"]
+        ci0, ci1 = loc_result["code_lo"], loc_result["code_hi"]
+        old_u = sum(W(c) for c in toks[t0]["codes"][ci0:ci1 + 1])
+        preceding = toks[t0].get("gap_before") if ci0 == 0 else None
+        at_end = ci1 == len(toks[t0]["codes"]) - 1
+        following = (toks[t0 + 1] if t0 + 1 < len(toks) else None) if at_end else False
+    if loc_result.get("gap_space"):
+        new_u = sum(W(c) for c in new_codes if c != 32) + sum(1 for c in new_codes if c == 32) * (-gap_word)
+    else:
+        new_u = sum(W(c) for c in new_codes)
+    new_u -= sum(kern or [])
+    delta = new_u - old_u
+    if abs(delta) < 1.0:
+        return None
+    pinned = False
+    if following is None:                       # edited text ends this TJ: look at the next run
+        nxt = runs[loc_result["run"] + 1] if loc_result["run"] + 1 < len(runs) else None
+        g = nxt["str_toks"][0].get("gap_before") if nxt and nxt["op"] == "TJ" else None
+        pinned = g is not None and g <= _PIN_GAP
+    elif following:
+        g = following.get("gap_before")
+        pinned = g is not None and g <= _PIN_GAP
+    if pinned:
+        return ("after", delta)
+    if at_end and preceding is not None and preceding <= _PIN_GAP:
+        return ("before", delta)                # a right-aligned tail: it keeps its RIGHT edge
+    return None
+
+
+def _with_comp(body: bytes, comp) -> bytes:
+    if not comp:
+        return body
+    n = ("%g" % round(comp[1], 3)).encode()
+    # spaces on BOTH sides: the next element of the array may itself be a number, and
+    # "-3128-28141" reads as one malformed number
+    return (b" " + n + b" " + body) if comp[0] == "before" else (body + b" " + n + b" ")
+
+
+def _apply_gapped(doc, runs, loc_result, new_codes, kern):
+    """_apply for a font with no space glyph, when the new text has spaces."""
+    gap = _word_gap(runs, loc_result)
+    comp = _compensation(doc, runs, loc_result, new_codes, kern, gap)
+    case = loc_result["case"]
+    if case == "single_token":
+        run = runs[loc_result["run"]]
+        xref, data = run["xref"], run["data"]
+        tok = run["str_toks"][loc_result["tok"]]
+        ci0, ci1 = loc_result["code_lo"], loc_result["code_hi"]
+        pre, post = tok["codes"][:ci0], tok["codes"][ci1 + 1:]
+        merged = pre + new_codes + post
+        full_kern = [0] * len(pre) + list(kern or [0] * max(0, len(new_codes) - 1)) + [0] * len(post)
+        body = _gap_array(merged, full_kern, False, gap)
+        if run["op"] == "TJ":
+            new_data = data[:tok["start"]] + _with_comp(body, comp) + data[tok["end"]:]
+        elif run["op"] == "Tj":
+            new_data = data[:run["full_start"]] + b"[" + body + b"]TJ" + data[run["full_end"]:]
+        else:
+            raise ValueError("cannot write gaps into this operator")
+    elif case == "multi_token":
+        run = runs[loc_result["run"]]
+        xref, data = run["xref"], run["data"]
+        start = run["str_toks"][loc_result["tok_lo"]]["start"]
+        end = run["str_toks"][loc_result["tok_hi"]]["end"]
+        new_data = data[:start] + _with_comp(_gap_array(new_codes, kern, False, gap), comp) + data[end:]
+    else:
+        touched = list(loc_result["touched"])
+        r_first = touched[0]
+        xref, data = runs[r_first]["xref"], runs[r_first]["data"]
+        edits = [(runs[r_first]["full_start"], runs[r_first]["full_end"],
+                  b"[" + _gap_array(new_codes, kern, False, gap) + b"]TJ")]
+        for ri in touched[1:]:
+            edits.append((runs[ri]["full_start"], runs[ri]["full_end"], b""))
+        edits.sort(key=lambda e: e[0], reverse=True)
+        new_data = data
+        for s_, e_, rep in edits:
+            new_data = new_data[:s_] + rep + new_data[e_:]
     doc.update_stream(xref, new_data)
 
 
@@ -1515,6 +1674,13 @@ def _try_extend(doc, font_display_name, missing_chars):
 
 
 _SIMPLE_EXTEND_FAIL_MSG = {
+    "type1_no_donor": ("This font is a LaTeX subset and the complete original it was cut from "
+                       "isn't available, so the new characters can't be added faithfully."),
+    "type1_glyph_not_in_donor": ("This font has no such character (Computer Modern builds accented "
+                                 "letters from two parts), so it can't be typed here without "
+                                 "changing how the text is made."),
+    "type1_pdf_encoding": "This font's character codes come from a table this engine doesn't rewrite.",
+    "type1_unsupported_program": "This font program is laid out in a way that can't be rewritten safely.",
     "type3_unsupported_structure": ("This font is drawn glyph by glyph (a Type3 font) in a form "
                                     "that can't be extended without risk, so the new characters "
                                     "can't be added."),
@@ -1768,6 +1934,29 @@ def _try_extend_simple_cff(doc, font_display_name, missing_chars, code_for=None)
                            {code_for.get(ch, ord(ch)): ord(ch) for ch in missing_chars},
                            hex_digits=2)
     return result["names"], None
+
+
+def _type1_refs(doc, font_display_name: str):
+    """Refs of an embedded Type 1 program (/FontFile) drawn with its BUILT-IN encoding, or None.
+
+    That is what pdfTeX writes: no /Encoding on the font dictionary, the codes are whatever the
+    program's own encoding array says. See type1_extend.
+    """
+    for pno in range(doc.page_count):
+        for f in doc[pno].get_fonts(full=True):
+            if f[2] != "Type1" or _fname(f) != font_display_name:
+                continue
+            obj = doc.xref_object(f[0], compressed=True)
+            if "/Encoding" in obj or "/FontDescriptor" not in obj:
+                return None
+            refs = _simple_font_refs(doc, font_display_name, require_truetype=False)
+            if not refs:
+                return None
+            fdo = doc.xref_object(refs["fd_xref"], compressed=True)
+            if not re.search(r"/FontFile\s+\d+\s+0\s+R", fdo):
+                return None
+            return refs
+    return None
 
 
 def _type3_xref(doc, font_display_name: str):
@@ -2976,6 +3165,11 @@ def _finish_prepare(doc, tpage, nm, is_cid, old_codes, new_codes,
         reason = loc_result["reason"]
         return {"ok": False, "reason": reason, "message": _REASON_MSG.get(reason, reason)}
 
+    loc_result["font_name"] = nm
+    if not is_cid and _type1_refs(doc, nm):
+        # pdfTeX draws a word space as a TJ NUMBER — its fonts have no space glyph — so a space
+        # in the new text has to be written as a number too, not as a code.
+        loc_result["gap_space"] = True
     return {"ok": True, "old_codes": old_codes, "new_codes": new_codes,
             "extended_chars": extended_chars, "runs": runs, "refmap": refmap,
             "loc": loc_result}
@@ -3040,6 +3234,10 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
     else:
         cm = _lookup_by_name(_simple_font_code_maps(doc), nm)
         enc_name = _lookup_by_name(_simple_font_encodings(doc), nm)
+        if cm and _type1_refs(doc, nm):
+            # pdfTeX's ToUnicode names some unused code "space"; the page never draws it. What
+            # the page has between words is a number, which the search reads as code 32.
+            cm = {**cm, "rev": {**cm["rev"], " ": 32}}
         old_codes = _encode_simple_text(old_n, cm["rev"], cm["max_len"]) if cm else None
         new_codes = _encode_simple_text(new, cm["rev"], cm["max_len"]) if cm else None
         if old_codes is None:
@@ -3053,6 +3251,7 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             # exactly those codes. See _private_code_font.
             prefs = _simple_font_refs(doc, nm)
             t3x = None
+            t1 = False
             if not prefs:
                 # A Type3 font (what Chrome writes for a variable font) has no
                 # font program, so it never gets refs — but its codes are the
@@ -3060,7 +3259,12 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
                 t3x = _type3_xref(doc, nm)
                 if t3x:
                     prefs = {"last_char": int(doc.xref_get_key(t3x, "LastChar")[1])}
-            if t3x or _private_code_font(doc, prefs):
+                else:
+                    # A Type 1 subset (pdfTeX): its codes are its own built-in
+                    # encoding, so unused ones may be handed out likewise.
+                    prefs = _type1_refs(doc, nm)
+                    t1 = bool(prefs)
+            if t3x or t1 or _private_code_font(doc, prefs):
                 need = [ch for ch in dict.fromkeys(new)
                         if ch not in cm["rev"] and not ch.isspace()]
                 alloc = _allocate_private_codes(doc, prefs, cm["rev"], need)
@@ -3107,7 +3311,14 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
                     code_for = {}
                     for ch, code in zip(new, new_codes or []):
                         code_for.setdefault(ch, code)
-                    if _type3_xref(doc, nm):
+                    if _type1_refs(doc, nm) and not _simple_font_refs(doc, nm):
+                        import type1_extend
+                        ok, fail_reason = type1_extend.extend(doc, nm, missing, code_for,
+                                                              refs=_type1_refs(doc, nm))
+                        new_gids = {ch: code_for[ch] for ch in missing} if ok else None
+                        if not ok:
+                            fail_reason = "type1_" + str(fail_reason)
+                    elif _type3_xref(doc, nm):
                         import type3_extend
                         ok, fail_reason = type3_extend.extend(doc, nm, missing, code_for)
                         new_gids = {ch: code_for[ch] for ch in missing} if ok else None
@@ -3651,6 +3862,15 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         for s in _spans(doc[pno]):
             if old_n in _norm(s["text"]):
                 candidates.append((pno, s))
+    if not candidates and _target is None:
+        # Not inside any single word: the caller may mean a PHRASE (a LaTeX line arrives as
+        # one span per word, and the editor now offers the whole run of words).
+        for pno in page_range:
+            if pno < 0 or pno >= doc.page_count:
+                continue
+            for s in _spans(doc[pno], phrases=True):
+                if s.get("merged") and old_n in _norm(s["text"]):
+                    candidates.append((pno, s))
     if _target is not None:
         # A narrowed edit: the caller has already resolved exactly which
         # characters of which span are meant (see edit()).
@@ -3713,7 +3933,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         except Exception:  # noqa: BLE001
             return False
         try:
-            for s2 in _spans(probe[tpage]):
+            for s2 in _spans(probe[tpage], phrases=bool(target.get("merged"))):
                 if abs(s2["origin"][1] - target["origin"][1]) > 1.0:
                     continue
                 if fitz.Rect(s2["bbox"]).intersects(target_rect) or \
