@@ -541,7 +541,28 @@ class _Metrics:
         return None
 
     def font(self, name):
+        """{"variants": {"simple": cfg|None, "cid": cfg|None}, "order": [...], "kern": ...}.
+
+        Word sometimes draws one visual font through TWO font objects sharing one display
+        name: its own base object for everything the object's encoding can hold, and a
+        second, Type0/CID object it switches to for the rare character that encoding can't
+        represent (an apostrophe the base subset never drew) — "TwCenMT-Regular" in the
+        attestation fixture is a TrueType simple object AND a separate Type0 object. Treating
+        the name as CID-only whenever ANY Type0 object exists for it (the earlier behaviour)
+        measured the WHOLE paragraph — including the >95% of it the simple object draws —
+        against the CID object's codes and widths, which do not agree with it, and the
+        self-check correctly refused every such paragraph rather than trust a wrong model.
+
+        Both objects are, in every real case seen, subsets of the SAME underlying font
+        program, so their advance widths for a character either agrees, and the choice below
+        is measurement-neutral, or the self-check (which re-derives the ORIGINAL breaks from
+        this model before anything is touched) catches the disagreement and refuses — exactly
+        as it always has. `order` is checked simple-first: that mirrors which object a
+        producer reaches for first, and keeps every single-variant name (nearly all of them)
+        on its already-proven path unchanged.
+        """
         if name not in self.cache:
+            variants = {}
             t0 = self._type0_xref(name)
             if t0:
                 refs = S._font_stream_refs(self.doc, t0)
@@ -552,14 +573,15 @@ class _Metrics:
                     if kind in ("int", "float") and val:
                         dw = float(val)
                 cm = S._lookup_by_name(S._cid_code_maps(self.doc), name)
-                f = {"cid": True, "refs": refs, "wmap": wmap, "dw": dw, "cm": cm}
-            else:
-                refs = S._simple_font_refs(self.doc, name, require_truetype=False)
-                parsed = S._parse_widths_array(self.doc, refs) if refs else None
+                variants["cid"] = {"refs": refs, "wmap": wmap, "dw": dw, "cm": cm}
+            srefs = S._simple_font_refs(self.doc, name, require_truetype=False)
+            parsed = S._parse_widths_array(self.doc, srefs) if srefs else None
+            if srefs or not t0:
+                # Built even with no /Widths (a base-14 name has none): the b14 fallback
+                # below is what makes such a name usable at all, and it lives here.
                 cm = S._lookup_by_name(S._simple_font_code_maps(self.doc), name)
                 enc = S._lookup_by_name(S._simple_font_encodings(self.doc), name)
-                f = {"cid": False, "refs": refs, "widths": parsed, "cm": cm, "enc": enc,
-                     "b14": None}
+                sf = {"refs": srefs, "widths": parsed, "cm": cm, "enc": enc, "b14": None}
                 if not parsed:
                     # A standard-14 font (Helvetica, Times, Courier…) is not
                     # embedded and carries no /Widths: every viewer uses the
@@ -568,11 +590,19 @@ class _Metrics:
                         from pdf_editor import _base14_builtin
                         alias = _base14_builtin(name)
                         if alias:
-                            f["b14"] = fitz.Font(alias)
-                            f["enc"] = f["enc"] or "WinAnsiEncoding"
+                            sf["b14"] = fitz.Font(alias)
+                            sf["enc"] = sf["enc"] or "WinAnsiEncoding"
                     except Exception:  # noqa: BLE001
                         pass
-            f["kern"] = self._kerning(name)
+                variants["simple"] = sf
+            order = [v for v in ("simple", "cid") if variants.get(v)]
+            f = {"variants": variants, "order": order, "kern": self._kerning(name),
+                 # Back-compat for any external reader of the old flat shape: the
+                 # PREFERRED variant's own flags/fields, so a name with only one
+                 # variant looks exactly as it always did.
+                 "cid": order[0] == "cid" if order else True}
+            if order:
+                f.update(variants[order[0]])
             self.cache[name] = f
         return self.cache[name]
 
@@ -593,13 +623,12 @@ class _Metrics:
     def reset(self):
         self.cache.clear()
 
-    def code(self, name, ch):
-        f = self.font(name)
-        if f["cm"]:
-            codes = S._encode_simple_text(ch, f["cm"]["rev"], f["cm"]["max_len"])
+    def _code_in(self, cfg, variant, ch):
+        if cfg["cm"]:
+            codes = S._encode_simple_text(ch, cfg["cm"]["rev"], cfg["cm"]["max_len"])
             if codes:
                 return codes[0]
-        if f["cid"]:
+        if variant == "cid":
             return None
         # A code with no /ToUnicode entry extracts as ITSELF: MuPDF passes the
         # raw byte through as a C0 control. Ghostscript's /ebook redistill
@@ -611,24 +640,69 @@ class _Metrics:
         # A private-code font (no /Encoding) has no standard byte for
         # anything: Latin-1 would name 'M' as 77, which in this font is
         # nothing at all, or some other glyph.
-        if f["refs"] and S._private_code_font(self.doc, f["refs"]):
+        if cfg["refs"] and S._private_code_font(self.doc, cfg["refs"]):
             return None
-        codes = S._encode_fallback(ch, f["enc"])
+        codes = S._encode_fallback(ch, cfg["enc"])
         return codes[0] if codes else None
 
-    def advance(self, name, size, ch, code=None):
+    def _has_width(self, cfg, variant, code) -> bool:
+        """False only when *code* is a documented STUB: present in the table, width zero.
+
+        A subsetter that drops a glyph commonly keeps its /ToUnicode entry (needed for
+        correct text extraction elsewhere) and its /Widths slot, but zeros the width rather
+        than removing it — this fixture's own Bold face does exactly that for 'h', 'm' and
+        '4' (see _set_simple_widths). Trusting such a code anyway put the model's pen at the
+        SAME x for the stub glyph and the one after it, which is where "l'école" first came
+        unstuck: the apostrophe's own object has a code for U+2019 with a zero width, and
+        it is the SIBLING object (the other variant) that actually draws it with a real one.
+        """
+        if variant == "cid":
+            return True    # CID width tables are dense DW-default; a missing entry isn't a stub
+        widths = cfg.get("widths")
+        if not widths:
+            return True    # no /Widths at all (a base-14 name): nothing to be zeroed
+        first, ws = widths
+        return not (0 <= code - first < len(ws)) or ws[code - first] != 0
+
+    def variant_code(self, name, ch):
+        """(variant, code) — the FIRST variant (see font()'s order) that can encode *ch* with
+        a real (non-stub) width, or (None, None). `code()` is this without the variant, for
+        the many callers that only need to know whether the character is drawable at all."""
+        f = self.font(name)
+        stub = None
+        for variant in f["order"]:
+            c = self._code_in(f["variants"][variant], variant, ch)
+            if c is None:
+                continue
+            if self._has_width(f["variants"][variant], variant, c):
+                return variant, c
+            stub = stub or (variant, c)
+        # Every variant that could name it only had a stub: still better than nothing (a
+        # caller checking "is this character drawable at all" should still see yes), but the
+        # caller measuring it will get a zero advance, exactly as the raw code would have.
+        return stub if stub is not None else (None, None)
+
+    def code(self, name, ch):
+        return self.variant_code(name, ch)[1]
+
+    def advance(self, name, size, ch, code=None, variant=None):
         f = self.font(name)
         if code is None:
-            code = self.code(name, ch)
-        if code is None:
+            variant, code = self.variant_code(name, ch)
+        elif variant is None:
+            # A code with no variant attached (an older caller, or one that only kept the
+            # bare int): fall back to the PREFERRED variant, same as before this existed.
+            variant = f["order"][0] if f["order"] else None
+        if code is None or variant not in f["variants"]:
             return None
-        if f["cid"]:
-            return f["wmap"].get(code, f["dw"]) * size / 1000.0
-        if not f["widths"]:
-            if f.get("b14") is not None and len(ch) == 1:
-                return f["b14"].glyph_advance(ord(ch)) * size
+        cfg = f["variants"][variant]
+        if variant == "cid":
+            return cfg["wmap"].get(code, cfg["dw"]) * size / 1000.0
+        if not cfg["widths"]:
+            if cfg.get("b14") is not None and len(ch) == 1:
+                return cfg["b14"].glyph_advance(ord(ch)) * size
             return None
-        first, ws = f["widths"]
+        first, ws = cfg["widths"]
         if not 0 <= code - first < len(ws):
             return None
         return ws[code - first] * size / 1000.0
@@ -664,9 +738,11 @@ def _units(chars, m):
     while i < len(chars):
         c = chars[i]
         f = m.font(c["font"])
-        cm = f["cm"]
         took = None
-        if cm:
+        for variant in f["order"]:
+            cm = f["variants"][variant]["cm"]
+            if not cm:
+                continue
             for L in range(min(max(cm["max_len"], 3), len(chars) - i), 1, -1):
                 seg = chars[i:i + L]
                 if any(x["font"] != c["font"] or abs(x["size"] - c["size"]) > 0.01 * c["size"]
@@ -682,17 +758,21 @@ def _units(chars, m):
                     code = cm["rev"].get(_LIGATURES[txt])
                     actual = txt
                 if code is not None:
-                    took = (L, code, actual)
+                    took = (L, variant, code, actual)
                     break
+            if took:
+                break
         if took is None:
-            took = (1, m.code(c["font"], c["c"]), None)
-        L, code, actual = took
+            variant, code = m.variant_code(c["font"], c["c"])
+            took = (1, variant, code, None)
+        L, variant, code, actual = took
         # `actual`: the glyph's /ToUnicode names a ligature CODEPOINT, so the
         # producer wrapped it in /ActualText to make it extract as letters;
         # the emitted line must do the same or "certifie" reads "certiﬁe".
         out.append({"t": "".join(x["c"] for x in chars[i:i + L]), "code": code,
-                    "font": c["font"], "size": c["size"], "color": c["color"],
-                    "ox": c.get("ox"), "oy": c.get("oy"), "actual": actual})
+                    "variant": variant, "font": c["font"], "size": c["size"],
+                    "color": c["color"], "ox": c.get("ox"), "oy": c.get("oy"),
+                    "actual": actual})
         i += L
     return out
 
@@ -800,7 +880,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
     def width(units):
         tot = 0.0
         for i, u in enumerate(units):
-            a = m.advance(u["font"], u["size"], u["t"], u["code"])
+            a = m.advance(u["font"], u["size"], u["t"], u["code"], u.get("variant"))
             if a is None:
                 raise KeyError(u["t"])
             tot += a
@@ -862,7 +942,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
             if i < last and not us[i]["t"].strip():
                 n_inner += 1
             if i < last:
-                nat += m.advance(us[i]["font"], us[i]["size"], us[i]["t"], us[i]["code"])
+                nat += m.advance(us[i]["font"], us[i]["size"], us[i]["t"], us[i]["code"], us[i].get("variant"))
                 nat += m.kern(us[i], us[i + 1])
         actual = us[last]["ox"]
         extra = (actual - nat) / n_inner if n_inner else 0.0
@@ -1013,7 +1093,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                                "This paragraph's glyph positions don't follow the font's "
                                "own advances (kerning or justification), so it can't be "
                                "re-set exactly.")
-            x += m.advance(u["font"], u["size"], u["t"], u["code"])
+            x += m.advance(u["font"], u["size"], u["t"], u["code"], u.get("variant"))
             if not u["t"].strip():
                 x += extra
             if i + 1 < len(us):
@@ -1176,7 +1256,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
     # The page's font resources BEFORE anything is deleted: when the
     # paragraph is the only text in a font, the redaction prunes that font
     # from /Resources, and there is then nothing to set the new lines in.
-    fonts_before = {f[4]: (f[0], S._fname(f)) for f in page.get_fonts(full=True)
+    fonts_before = {f[4]: (f[0], S._fname(f), f[2]) for f in page.get_fonts(full=True)
                     if f[4]}
 
     links_before = page.get_links()
@@ -1208,7 +1288,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
 
     # ── emit the new lines through the page's own font resources ──
     have = {f[4] for f in page.get_fonts(full=True)}
-    for res, (xref, _nm) in fonts_before.items():
+    for res, (xref, _nm, _st) in fonts_before.items():
         if res in have:
             continue
         # /Font may be inline in /Resources, or an indirect object of its own
@@ -1223,8 +1303,17 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
             doc.xref_set_key(int(fv.split()[0]), res, f"{xref} 0 R")
         else:
             doc.xref_set_key(holder, f"{prefix}Font/{res}", f"{xref} 0 R")
-    refmap = {nm: res for res, (xref, nm) in fonts_before.items()}
-    refmap.update({v: k for k, v in S._page_font_refmap(page).items()})
+    # Keyed by (display name, variant): a name with two objects — Word's own base font
+    # plus a Type0 one it falls back to for a character the base encoding can't hold (see
+    # _Metrics.font) — needs its OWN resource per variant, not one shared, arbitrary pick.
+    def _variant_of(subtype):
+        return "cid" if subtype == "Type0" else "simple"
+    refmap = {}
+    for res, (xref, nm, st) in fonts_before.items():
+        refmap.setdefault((nm, _variant_of(st)), res)
+    subs_now = S._page_font_subtypes(page)
+    for res, nm in S._page_font_refmap(page).items():
+        refmap.setdefault((nm, _variant_of(subs_now.get(res))), res)
     ops = []
     placed = {}          # original glyph origin -> (new x, new baseline)
     y0 = para[0]["y"]
@@ -1250,12 +1339,12 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         def flush():
             if not run:
                 return
-            f, size, color = run_style
-            res = refmap.get(f)
+            f, variant, size, color = run_style
+            res = refmap.get((f, variant)) if variant else refmap.get((f, m.font(f)["order"][0]))
             if res is None:
-                raise KeyError(f)
+                raise KeyError((f, variant))
             rgb = ((color >> 16) & 255, (color >> 8) & 255, color & 255)
-            fmt = "%04X" if m.font(f)["cid"] else "%02X"
+            fmt = "%04X" if variant == "cid" else "%02X"
             shows, parts, cur, lead = [], [], "", None
             for cd, adj, act in zip(run[1], run[2], run[3]):
                 if act:
@@ -1282,7 +1371,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                           run[0], page.rect.height - y, " ".join(shows)))
 
         for i, c in enumerate(chars):
-            st = (c["font"], c["size"], c["color"])
+            st = (c["font"], c.get("variant"), c["size"], c["color"])
             if st != run_style:
                 flush()
                 run = [x, [], [], []]
@@ -1290,7 +1379,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
             run[1].append(c["code"])
             if c.get("ox") is not None:
                 placed[(round(c["ox"], 2), round(c["oy"], 2))] = (x, y, len(c["t"]))
-            x += m.advance(c["font"], c["size"], c["t"], c["code"])
+            x += m.advance(c["font"], c["size"], c["t"], c["code"], c.get("variant"))
             kp = m.kern(c, chars[i + 1]) if i + 1 < len(chars) else 0.0
             if line_extra and not c["t"].strip() and i < last_vis:
                 kp += line_extra

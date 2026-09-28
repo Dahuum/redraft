@@ -3396,6 +3396,11 @@ _NARROWABLE = {"spans_multiple_fonts", "ragged_multirun_boundary",
                "kerning_split_within_run", "sequence_not_found", "unmappable",
                "cannot_reflow"}
 
+# Reasons `_edit_core` can only reach AFTER `_locate` has already succeeded — so a narrowed
+# retry that ends in one of these has proven the field itself is splice-able, and only its fit
+# or its glyphs are in question. See edit()'s use of this.
+_POST_LOCATE_REASONS = {"would_overflow", "cannot_reflow", "missing_glyph", "donor_too_different"}
+
 
 def _changed_words(old: str, new: str):
     """(start, old_mid, new_mid): the smallest WHOLE-word stretch that differs.
@@ -3480,6 +3485,14 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
                     _target=(found[0], sub))
     if r2.get("ok"):
         r2["narrowed"] = {"from": old[:60], "to": old_mid}
+        return r2
+    # The narrowed attempt got PAST locating a splice — it just doesn't fit or draw yet —
+    # which is a more useful diagnosis of the actual edit than the outer refusal, and, unlike
+    # it, a reason the caller (api._try_inplace_batch) knows how to retry through reflow. A
+    # Word paragraph whose apostrophes sit in a second font object refuses the whole sentence
+    # as spans_multiple_fonts; narrowed to just the grown word it reaches would_overflow,
+    # which is what lets the paragraph re-wrap instead of giving up on the higher rank alone.
+    if r2.get("reason") in _POST_LOCATE_REASONS:
         return r2
     return r
 
