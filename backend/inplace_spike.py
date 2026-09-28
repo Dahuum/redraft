@@ -3250,6 +3250,7 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
             if old_codes is None:
                 return {"ok": False, "reason": "encoding", "message": _REASON_MSG["encoding"]}
         alloc_missing = []
+        alloc = {}
         if new_codes is None and cm:
             # Characters this private-code font has never drawn get codes of
             # their own; the glyphs themselves are injected below, under
@@ -3313,9 +3314,22 @@ def _prepare_edit(doc, tpage, nm, is_cid, old_n, new, which=None):
                     # Hand over the codes the encoder actually produced, so
                     # /Widths and /ToUnicode are keyed by character code
                     # rather than by Unicode codepoint.
+                    # One code per MISSING character, looked up on its own. Pairing the
+                    # replacement's characters with the encoder's output one-to-one was wrong
+                    # whenever the font draws a ligature: "Effective" encodes "ff" as ONE code,
+                    # everything after it shifts by one, and the 'M' of "15 May" was handed the
+                    # code of the character before it — an existing glyph, rightly refused
+                    # (type3_no_code), which sent the whole edit to the look-alike redraw.
                     code_for = {}
-                    for ch, code in zip(new, new_codes or []):
-                        code_for.setdefault(ch, code)
+                    for ch in missing:
+                        if ch in alloc:
+                            code_for[ch] = alloc[ch]
+                            continue
+                        one = _encode_simple_text(ch, cm["rev"], 1) if cm else None
+                        if one is None:
+                            one = _encode_fallback(ch, enc_name)
+                        if one:
+                            code_for[ch] = one[0]
                     if _type1_refs(doc, nm) and not _simple_font_refs(doc, nm):
                         import type1_extend
                         ok, fail_reason = type1_extend.extend(doc, nm, missing, code_for,
