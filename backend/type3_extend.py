@@ -140,7 +140,10 @@ def parse_charproc(data: bytes):
             p = stack[-4:]; segs.append(("c", (p[0], p[1]), (p[2], p[3]), (p[2], p[3]))); cur = (p[2], p[3])
         elif op == "h":
             segs.append(("h",))
-        elif op in ("f", "F", "f*", "n"):
+        elif op in ("f", "F", "f*", "n", "q", "Q"):
+            # q/Q: a save/restore around the path. MuPDF's clean pass wraps every charproc in
+            # one when the document is re-saved, so after the FIRST edit of a batch every Type3
+            # glyph read as "not a plain outline" and every later edit fell to the redraw.
             pass
         else:
             return None                                   # strokes, images, clips, colours: not a plain outline
