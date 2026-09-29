@@ -1,6 +1,18 @@
 # Redraft API — FastAPI + PyMuPDF on Hugging Face Spaces (Docker)
 FROM python:3.12-slim
 
+# The fonts documents are most often set in, and fontconfig to find them. The editor
+# draws a letter a document's font never used from the GENUINE family when one is
+# installed (pdf_editor._find_system_font -> fc-list); the slim image has none, and
+# DejaVu — LibreOffice's default — is not in the Google Fonts catalogue it falls back
+# to, so every such edit was refused in production while passing on a workstation.
+# Liberation / Carlito / Caladea are the metric twins of Arial, Times New Roman,
+# Courier New, Calibri and Cambria.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core \
+       fonts-liberation fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
+    && rm -rf /var/lib/apt/lists/*
+
 # HF Spaces best practice: run as a non-root user (uid 1000).
 # Pre-create /app + .font_cache owned by that user so the engine can write
 # downloaded fonts into .font_cache at runtime (path is relative to pdf_editor.py).

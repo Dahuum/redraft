@@ -785,6 +785,10 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     still_needed = []
     refusals = []
     reflowed = []
+    # Edits kept on their own line because their paragraph could not be re-wrapped: the
+    # line may now end short of the margin (or past it) where the author's software would
+    # have moved words. Reported, so the editor can say so instead of leaving it silent.
+    not_rewrapped = []
     done = set()
 
     def _pending(sd):
@@ -860,8 +864,9 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             try:
                 rr = _reflow.reflow(before_this, sd, new_text, multiline_only=True,
                                     learn_from=pdf_bytes)
-            except Exception:  # noqa: BLE001
-                rr = {"ok": False}
+            except Exception as exc:  # noqa: BLE001
+                rr = {"ok": False, "reason": "rewrap_error",
+                      "message": f"{type(exc).__name__}: {exc}"[:200]}
             # A justified paragraph too: the re-wrap re-justifies every line
             # exactly as its self-check proved the producer does, where the
             # in-place splice can only respace the one line it touched.
@@ -876,6 +881,16 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                 reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
                                  "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
                                  "shift": rr["shift"], "cut": rr.get("cut")})
+            else:
+                try:
+                    gap = _layout_gap(before_this, current, sd)
+                except Exception:  # noqa: BLE001 — a report must never cost the edit
+                    gap = None
+                if gap:
+                    why = rr.get("reason") if not rr.get("ok") else "field_below"
+                    not_rewrapped.append({"text": sd["text"][:60], "page": sd.get("page", 0),
+                                          "bbox": list(sd["bbox"]), "gap": gap, "reason": why,
+                                          "message": rr.get("message") or _REWRAP_MSG[gap]})
         if not r.get("ok"):
             # Too long for its line: re-wrap the paragraph the way its
             # producer would, if that can be proven (see reflow.py). The same for
@@ -909,6 +924,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             refusals.append({"text": sd["text"][:60], "reason": r.get("reason"),
                              "message": r.get("message")})
     _try_inplace_batch.reflowed = reflowed
+    _try_inplace_batch.not_rewrapped = not_rewrapped
     return current, in_place_count, still_needed, refusals
 
 
@@ -973,6 +989,62 @@ def _may_rewrap(replacements, sd) -> bool:
     return not any(o is not sd and o.get("page", 0) == sd.get("page", 0)
                    and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in replacements)
 
+
+_REWRAP_MSG = {
+    "hole": "The paragraph could not be re-flowed, so the edit was kept on its own line "
+            "and that line now ends short of where the next word would fit.",
+    "overrun": "The paragraph could not be re-flowed, so the edit was kept on its own line "
+               "and that line now runs past the paragraph's margin.",
+}
+
+
+def _layout_gap(before: bytes, after: bytes, sd: dict):
+    """"hole" / "overrun" when an edit kept on its own line left it looking unlike its
+    paragraph — the next line's first word now fits at its end, or it now runs past the
+    paragraph's right edge — and the original line did not already look that way. An
+    address or list broken by hand has room at its line ends to begin with, so it is
+    never reported: only a change the author's software would have re-wrapped is."""
+    pno = sd.get("page", 0)
+    try:
+        db, da = fitz.open(stream=before, filetype="pdf"), fitz.open(stream=after, filetype="pdf")
+        lb, la = _reflow._lines(db[pno]), _reflow._lines(da[pno])
+    except Exception:  # noqa: BLE001
+        return None
+    para, _ = _reflow._paragraph(lb, sd["bbox"])
+    if not para or len(para) < 2:
+        return None
+
+    def vis(l):
+        return [c for c in l["chars"] if c["c"].strip()]
+    R = max(vis(l)[-1]["x1"] for l in para if vis(l))
+    k = next((i for i, l in enumerate(para) if abs(l["y"] - sd["origin"][1]) <= 0.6), None)
+    if k is None:
+        return None
+    mine = next((l for l in la if abs(l["y"] - para[k]["y"]) <= 0.6
+                 and abs(l["x0"] - para[k]["x0"]) <= 1.0), None)
+    if mine is None or not vis(mine):
+        return None
+    end_b, end_a = vis(para[k])[-1]["x1"], vis(mine)[-1]["x1"]
+    if end_a > R + 1.0 and end_b <= R + 0.5:
+        return "overrun"
+    if k + 1 < len(para):
+        def first_word(l):
+            word = []
+            for c in l["chars"]:
+                if not c["c"].strip():
+                    break
+                word.append(c)
+            return word
+        nxt_a = next((l for l in la if abs(l["y"] - para[k + 1]["y"]) <= 0.6
+                      and abs(l["x0"] - para[k + 1]["x0"]) <= 1.0), None)
+        wb, wa = first_word(para[k + 1]), first_word(nxt_a) if nxt_a else []
+        if wb and wa:
+            sp = 0.28 * wa[0]["size"]
+            fits_now = end_a + sp + (wa[-1]["x1"] - wa[0]["x0"]) <= R - 0.5
+            fitted = end_b + sp + (wb[-1]["x1"] - wb[0]["x0"]) <= R - 0.5
+            if fits_now and not fitted:
+                return "hole"
+    return None
 
 # Refusals that mean "the text no longer fits its line" — the ones a
 # paragraph re-wrap can answer.
@@ -1328,8 +1400,12 @@ def apply_replacements(pdf_bytes: bytes, replacements: list,
                        _known_refusals: list = None) -> tuple:
     """See _apply_replacements; the result is saved in the input's own
     container style (_like_input)."""
+    _try_inplace_batch.not_rewrapped = []
     out, rep = _apply_replacements(pdf_bytes, replacements, preserve_size, try_inplace,
                                    _known_refusals)
+    if try_inplace:
+        rep.setdefault("in_place", {})["not_rewrapped"] = \
+            list(getattr(_try_inplace_batch, "not_rewrapped", []))
     if out is not pdf_bytes and out != pdf_bytes:
         out = _conform.conform_names(pdf_bytes, out)
         out = _id_case_like(pdf_bytes, _like_input(pdf_bytes, out))

@@ -274,5 +274,32 @@ if os.path.exists(EX):
     check("  ...in the page's own content stream", structure(out) == structure(raw),
           f"{structure(raw)} -> {structure(out)}")
 
+# The editor's note: an edit kept on its line because its paragraph could not be
+# re-wrapped is reported when — and only when — it leaves a gap the original did not have.
+CORPUS = os.path.join(os.path.expanduser("~"), ".cache", "redraft-audit", "corpus")
+tex, lab = os.path.join(CORPUS, "arxiv-latex.pdf"), os.path.join(CORPUS, "contract-embedded.pdf")
+if os.path.exists(tex) and os.path.exists(lab):
+    raw = open(tex, "rb").read()
+    sd = next(s for s in api.extract_spans(raw) if s["text"].startswith("convolutional neural networks"))
+    _, rep = api.apply_replacements(raw, [(sd, sd["text"].replace("convolutional", "co", 1))],
+                                    try_inplace=True)
+    nr = rep["in_place"].get("not_rewrapped") or []
+    check("note: a TeX paragraph that cannot re-wrap reports the gap the edit left",
+          len(nr) == 1 and nr[0]["gap"] == "hole", str(nr))
+    raw = open(lab, "rb").read()
+    sd = next(s for s in api.extract_spans(raw) if "Yassine Mouline" in s["text"])
+    _, rep = api.apply_replacements(raw, [(sd, sd["text"].replace("Yassine Mouline", "Ali"))],
+                                    try_inplace=True)
+    check("note: a block broken by hand (label: value lines) reports nothing",
+          not rep["in_place"].get("not_rewrapped"), str(rep["in_place"].get("not_rewrapped")))
+    if os.path.exists(EX):
+        raw = open(EX, "rb").read()
+        _, rep = edit(raw, [("Medina Holdings SARL", "Atlas SA")])
+        check("note: a paragraph that did re-wrap reports nothing",
+              rep["in_place"].get("reflowed") and not rep["in_place"].get("not_rewrapped"),
+              str(rep["in_place"]))
+else:
+    print("SKIP - note checks (audit corpus not built)")
+
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not FAIL else f"{len(FAIL)} FAILED -> {FAIL}")
