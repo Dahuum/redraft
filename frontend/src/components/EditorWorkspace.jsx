@@ -169,6 +169,38 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
 
   const changed = spans.filter((x) => edits[x.id] !== undefined && edits[x.id] !== x.text);
 
+  // Changes the server could not fit the way the document's own software would have:
+  // kept on their line because the paragraph couldn't be re-flowed (the line now ends
+  // early or runs past the margin), or set a little smaller to fit. Shown on the change
+  // itself, and outlined on the page, instead of being left for the reader to spot.
+  const layoutNotes = useMemo(() => {
+    const r = ed.fontReport;
+    if (!r) return {};
+    const kept = r.in_place?.not_rewrapped || [];
+    const resized = r.resized_to_fit || [];
+    const out = {};
+    for (const x of changed) {
+      const k = kept.find(
+        (n) => (n.page ?? 0) === x.page && n.bbox &&
+          Math.abs(n.bbox[0] - x.bbox[0]) < 1 && Math.abs(n.bbox[1] - x.bbox[1]) < 1
+      );
+      if (k) {
+        out[x.id] = k.gap === "overrun"
+          ? "The paragraph couldn't re-flow, so this line now runs past the margin."
+          : "The paragraph couldn't re-flow, so this line now ends early.";
+        continue;
+      }
+      if (resized.some((n) => n.text === x.text.slice(0, 60))) {
+        out[x.id] = "Too long to re-flow here, so it was set slightly smaller to fit.";
+      }
+    }
+    return out;
+  }, [ed.fontReport, changed]);
+  const noteRects = changed
+    .filter((x) => layoutNotes[x.id])
+    .map((x) => ({ key: `note-${x.id}`, page: x.page, x0: x.bbox[0] - 2, y0: x.bbox[1] - 2,
+                   x1: x.bbox[2] + 2, y1: x.bbox[3] + 2, variant: "warn" }));
+
   // Focus the inline box as soon as a piece of text is picked.
   useEffect(() => {
     if (selectedId == null) return;
@@ -351,6 +383,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
               spans={spans}
               selectedId={selectedId}
               editedIds={editedIds}
+              highlightRects={previewData ? noteRects : []}
               onSelect={(id) => id != null && setSelectedId(id)}
               maxWidth={pdfWidth}
               overlays={overlays}
@@ -574,6 +607,12 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
                     >
                       <span className="block truncate text-[12px] text-on-surface-variant line-through">{x.text}</span>
                       <span className="block truncate text-[15px]">{edits[x.id]}</span>
+                      {layoutNotes[x.id] && (
+                        <span className="mt-1 flex items-start gap-1.5 text-[12.5px] leading-[18px] text-[#f2c35b]">
+                          <Icon name="warning" size={14} className="mt-0.5 shrink-0" />
+                          <span>{layoutNotes[x.id]}</span>
+                        </span>
+                      )}
                     </button>
                     <button
                       onClick={() => setFieldValue(x.id, x.text)}

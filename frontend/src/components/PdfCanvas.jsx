@@ -195,6 +195,7 @@ export default function PdfCanvas({
                 faint: { border: "1px solid rgba(79,117,254,.30)", background: "transparent" },
                 strong: { border: "2px solid #4f75fe", background: "rgba(79,117,254,.12)" },
                 parent: { border: "2px dashed #ffbb00", background: "rgba(255,187,0,.10)" },
+                warn: { border: "2px solid #e0a100", background: "rgba(255,187,0,.12)" },
               };
               const st = styles[r.variant] || styles.faint;
               return (
