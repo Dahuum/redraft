@@ -325,10 +325,11 @@ def get_donor(fd, ref_widths, upem):
 class _PathOut(BasePen):
     def __init__(self, sy, glyphset):
         super().__init__(glyphset)             # composites (Å, é, ö…) need it to find their parts
-        self.sy, self.ops, self.pts = sy, [], []
+        self.sy, self.ops, self.pts, self.dx = sy, [], [], 0.0
 
     def _pt(self, p):
-        self.pts.append((p[0], p[1] * self.sy)); return "%s %s" % (_f(p[0]), _f(p[1] * self.sy))
+        x = p[0] + self.dx
+        self.pts.append((x, p[1] * self.sy)); return "%s %s" % (_f(x), _f(p[1] * self.sy))
 
     def _moveTo(self, p): self.ops.append("%s m" % self._pt(p))
     def _lineTo(self, p): self.ops.append("%s l" % self._pt(p))
@@ -349,14 +350,19 @@ def _f(v):
     return s if s not in ("", "-0") else "0"
 
 
-def _charproc(font_tt, gname, sy):
+def _charproc(font_tt, gname, sy, advance=None):
+    """(charproc stream, advance, box). *advance*: set the glyph in a box of that width,
+    centred in it — a tabular figure's."""
     gs = font_tt.getGlyphSet()
     pen = _PathOut(sy, gs)
+    adv = font_tt["hmtx"][gname][0]
+    if advance is not None and advance != adv:
+        pen.dx = (advance - adv) / 2.0
+        adv = advance
     gs[gname].draw(pen)
     if not pen.pts:
         return None
     xs, ys = [p[0] for p in pen.pts], [p[1] for p in pen.pts]
-    adv = font_tt["hmtx"][gname][0]
     head = "%s 0 %s %s %s %s d1\n" % (_f(adv), _f(min(xs)), _f(min(ys)), _f(max(xs)), _f(max(ys)))
     return (head + "\n".join(pen.ops) + "\nf\n").encode("latin-1"), adv, (min(xs), min(ys), max(xs), max(ys))
 
@@ -386,13 +392,21 @@ def extend(doc, display_name: str, missing_chars, code_for: dict):
     ext = TTFont(io.BytesIO(res["font_bytes"]))
     order = ext.getGlyphOrder()
     sy = -1.0 if info["flip"] else 1.0
+    # Figures: where every digit the document has shares one advance, the producer set
+    # tabular figures (Chrome's default for this family: 566 units each), and a new "9"
+    # must take that width too — at the donor's own proportional 537 it pulled the rest
+    # of "9,750.00" 0.3pt left, and would break a column of amounts.
+    digits = {w for ch, w in ref_widths.items() if ch.isdigit() and ch.isascii()}
+    tab = digits.pop() if len(digits) == 1 and sum(1 for ch in ref_widths if ch.isdigit()) >= 3 \
+        else None
     new = {}
     for ch in missing_chars:
         code = code_for.get(ch)
         if code is None or code > 255 or code in info["diffs"] or code <= info["last"]:
             return None, "no_code"
         try:
-            made = _charproc(ext, order[res["gid"][ch]], sy)
+            made = _charproc(ext, order[res["gid"][ch]], sy,
+                             advance=tab if (tab is not None and ch.isdigit() and ch.isascii()) else None)
         except Exception:  # noqa: BLE001
             made = None
         if not made:

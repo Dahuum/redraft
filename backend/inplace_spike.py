@@ -342,6 +342,11 @@ def _simple_font_code_maps(doc):
     return _tounicode_code_maps(doc, want_type0=False)
 
 
+# Pairs of characters one glyph is drawn for, where /ToUnicode names one and text
+# extraction may report the other.
+_SAME_GLYPH = (("\u02bc", "\u2019"), ("\u2019", "\u02bc"))
+
+
 def _tounicode_code_maps(doc, want_type0: bool):
     out, seen_xrefs = {}, set()
     for pno in range(doc.page_count):
@@ -364,8 +369,17 @@ def _tounicode_code_maps(doc, want_type0: bool):
             for code, s in code_to_str.items():
                 if s and s not in rev:  # lowest/first code wins on duplicate text
                     rev[s] = code
+            # Chrome draws the apostrophe of "Client’s" with the glyph HarfBuzz shares
+            # with U+02BC and names it that in /ToUnicode; MuPDF reads it back as ’
+            # (U+2019). Every field holding one was refused ("encoding") and every
+            # paragraph "unmeasurable", for want of a code the font plainly has.
+            actual = {}
+            for a, b in _SAME_GLYPH:
+                if a in rev and b not in rev:
+                    rev[b] = rev[a]
+                    actual[rev[a]] = b
             if rev:
-                out[name] = {"rev": rev, "max_len": max(len(s) for s in rev)}
+                out[name] = {"rev": rev, "max_len": max(len(s) for s in rev), "actual": actual}
     return out
 
 
@@ -988,6 +1002,40 @@ def _locate(runs, refmap, font_name, old_codes, is_cid, which=None,
 
 
 # ── apply (mutating — given a successful locate result) ─────────────────────
+def _actual_codes(doc, name, is_cid) -> dict:
+    """{code: text} for the codes of font *name* whose /ToUnicode names a different
+    character than the one they stand for (see _SAME_GLYPH): the producer wraps each in
+    /ActualText, and so must an edit that draws one."""
+    try:
+        cm = _lookup_by_name(_cid_code_maps(doc) if is_cid else _simple_font_code_maps(doc), name)
+    except Exception:  # noqa: BLE001
+        return {}
+    return (cm or {}).get("actual") or {}
+
+
+def _actual_text_op(text: str) -> bytes:
+    return b"/Span<</ActualText <FEFF" + text.encode("utf-16-be").hex().upper().encode() + b">>>BDC"
+
+
+def _tj_ops(codes, kern, is_cid, actual=None) -> bytes:
+    """`[...]TJ` for *codes*, split so each code in *actual* is drawn inside its own
+    /ActualText span — Chrome's apostrophe in "Client’s", which otherwise reads back as
+    U+02BC. A TJ moves the pen by what it draws, so splitting it moves nothing."""
+    if not actual or not any(c in actual for c in codes):
+        return b"[" + _kerned_array(codes, kern, is_cid) + b"]TJ"
+    out, a = [], 0
+    for i, c in enumerate(codes + [None]):
+        if c is not None and c not in actual:
+            continue
+        if i > a:
+            out.append(b"[" + _kerned_array(codes[a:i], kern[a:i] if kern else None, is_cid) + b"]TJ")
+        if c is not None:
+            out.append(_actual_text_op(actual[c]) + b" [" +
+                       _kerned_array([c], kern[i:i + 1] if kern else None, is_cid) + b"]TJ EMC")
+        a = i + 1
+    return b" ".join(out)
+
+
 def _kerned_array(codes, kern, is_cid) -> bytes:
     """TJ array elements for *codes* with *kern* (TJ units between each pair).
 
@@ -1038,10 +1086,11 @@ def _word_gap(runs, loc_result) -> float:
     return float(gaps[len(gaps) // 2])
 
 
-def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
+def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None, actual=None):
     """Splice *new_codes* in. *kern* (optional, len(new_codes) - 1) carries the
     producer's kerning between consecutive new glyphs, in TJ units; see
-    kerning.py. Where it is non-zero a Tj becomes a TJ so it can be written."""
+    kerning.py. Where it is non-zero a Tj becomes a TJ so it can be written.
+    *actual*: see _actual_codes; honoured where whole runs are rewritten."""
     if kern and not any(kern):
         kern = None
     if loc_result.get("gap_space") and 32 in new_codes and not is_cid:
@@ -1117,7 +1166,7 @@ def _apply(doc, runs, loc_result, new_codes, is_cid, kern=None):
                 kern = kern[used:]
         r_first = touched[0]
         xref, data = runs[r_first]["xref"], runs[r_first]["data"]
-        first_repl = b"[" + _kerned_array(new_codes, kern, is_cid) + b"]TJ"
+        first_repl = _tj_ops(new_codes, kern, is_cid, actual)
         edits = [(runs[r_first]["full_start"], runs[r_first]["full_end"], first_repl)]
         for ri in touched[1:]:
             rr = runs[ri]
@@ -2377,7 +2426,7 @@ def _stream_items(data: bytes):
                     continue
                 obj["first"].update(bt=obj["bt"], et=m.start("bt"),
                                     positions=obj["positions"],
-                                    rigid=obj["rigid"])
+                                    rigid=obj["rigid"], ctm=obj["ctm"])
                 yield ("text", obj["first"])
             continue
         if cur is None:
@@ -4085,7 +4134,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                     except Exception:  # noqa: BLE001
                         pass
                 _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid,
-                       kern=res["kern"])
+                       kern=res["kern"], actual=_actual_codes(doc, cand_nm, cand_cid))
                 cand_bytes = adoc.tobytes(garbage=0)
                 adoc.close()
                 if _hits_target(cand_bytes):

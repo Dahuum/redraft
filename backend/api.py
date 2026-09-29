@@ -786,11 +786,34 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     refusals = []
     reflowed = []
     done = set()
-    for sd, new_text in replacements:
+
+    def _pending(sd):
+        return [(o, nt) for o, nt in replacements if o is not sd and id(o) not in done]
+
+    def _shift_ok(rr, sd):
+        """A re-wrap that moves what lies below its paragraph may do so only when no field
+        still waiting for an engine sits there: its position would be stale."""
+        if not rr.get("shift"):
+            return True
+        page, cut = sd.get("page", 0), rr.get("cut") or sd["bbox"][3]
+        waiting = _pending(sd) + list(still_needed)
+        return not any(o.get("page", 0) == page and o["bbox"][1] >= cut - 0.5
+                       for o, _ in waiting)
+
+    # Bottom of each page first. A re-wrap moves everything below its paragraph, so the
+    # app's batch (every edit on the document, sent together) used to allow it only for
+    # the LOWEST edit on a page: a shortened name above a changed date kept its hole.
+    # Taken from the bottom up, whatever a re-wrap moves has already been edited.
+    order = sorted(replacements, key=lambda p: (p[0].get("page", 0), -p[0]["bbox"][1],
+                                                -p[0]["bbox"][0]))
+    for sd, new_text in order:
         if id(sd) in done:
             continue
+        done.add(id(sd))
         before_this = current
-        rr = _joint_rewrap(current, replacements, sd, new_text, done, reflowed)
+        rr = _joint_rewrap(current, replacements, sd, new_text, done, reflowed, pdf_bytes)
+        if rr and not _shift_ok(rr, sd):
+            rr = None
         if rr:
             current = rr["pdf"]
             in_place_count += len(rr["members"])
@@ -828,38 +851,51 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                     pass
                 current = cand
                 in_place_count += 1
-        if r.get("ok") and _may_rewrap(replacements, sd):
+        if r.get("ok") and _may_rewrap(_pending(sd) + [(sd, new_text)], sd):
             # In place succeeded — but if re-wrapping the paragraph would
             # change its line breaks, the producer's own re-print has the
             # re-wrapped layout, not the in-place one (a shorter name leaves a
             # line short that the producer would have filled; a justified
             # line respaced where the producer moved a word). Prefer it then.
             try:
-                rr = _reflow.reflow(before_this, sd, new_text, multiline_only=True)
+                rr = _reflow.reflow(before_this, sd, new_text, multiline_only=True,
+                                    learn_from=pdf_bytes)
             except Exception:  # noqa: BLE001
                 rr = {"ok": False}
             # A justified paragraph too: the re-wrap re-justifies every line
             # exactly as its self-check proved the producer does, where the
             # in-place splice can only respace the one line it touched.
-            if rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified")):
+            # And where the two disagree about where the words go: the re-wrap is the
+            # producer's model, proven on this very paragraph, while the splice
+            # measures new text without a kerning table it cannot read (Chrome's
+            # Type3 fonts) — "15 May 2026" pushed the rest of its line 1.3pt off.
+            if rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified")
+                                 or _placement_differs(current, rr["pdf"], sd)) \
+                    and _shift_ok(rr, sd):
                 current = rr["pdf"]
                 reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
                                  "top": rr.get("top", sd["bbox"][1]), "lines": list(rr["lines"]),
                                  "shift": rr["shift"], "cut": rr.get("cut")})
-        if not r.get("ok") and r.get("reason") in _REFLOW_REASONS:
+        if not r.get("ok"):
             # Too long for its line: re-wrap the paragraph the way its
-            # producer would, if that can be proven (see reflow.py). Not when
-            # another field of this batch sits lower on the page — a re-wrap
+            # producer would, if that can be proven (see reflow.py). The same for
+            # any other refusal inside a real paragraph (an encoding the splice
+            # can't reproduce, a phrase in two fonts): the re-wrap sets the whole
+            # paragraph afresh and proves it, where the redraw would stamp the
+            # line in a stand-in font and leave the paragraph as it was. Not when
+            # a field still to be edited sits lower on the page — a re-wrap
             # can move everything below it, and that field's position would
-            # then be stale.
-            later = any(o is not sd and o.get("page", 0) == sd.get("page", 0)
-                        and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in replacements)
+            # then be stale. (Taken bottom-up, one rarely does.)
+            later = any(o.get("page", 0) == sd.get("page", 0)
+                        and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in _pending(sd))
             if not later:
                 try:
-                    rr = _reflow.reflow(current, sd, new_text)
+                    rr = _reflow.reflow(current, sd, new_text,
+                                        multiline_only=r.get("reason") not in _REFLOW_REASONS,
+                                        learn_from=pdf_bytes)
                 except Exception:  # noqa: BLE001 — a crash is a refusal
                     rr = {"ok": False}
-                if rr.get("ok"):
+                if rr.get("ok") and _shift_ok(rr, sd):
                     current = rr["pdf"]
                     in_place_count += 1
                     reflowed.append({"text": sd["text"][:60], "page": sd.get("page", 0),
@@ -876,7 +912,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
     return current, in_place_count, still_needed, refusals
 
 
-def _joint_rewrap(current, replacements, sd, new_text, done, reflowed):
+def _joint_rewrap(current, replacements, sd, new_text, done, reflowed, original=None):
     """Several edits of ONE paragraph, re-wrapped together.
 
     A phrase that wraps ("…issued by Atlas Consulting / SARL for…") is changed
@@ -885,11 +921,10 @@ def _joint_rewrap(current, replacements, sd, new_text, done, reflowed):
     re-print — "…by Atlas Group for / the period…" — was never reached: the
     shortened first line stayed short, and ReportLab's squeeze stayed on it.
     One re-wrap over every edit of the paragraph is exactly the re-print.
-    Only when nothing else in the batch sits lower on the page and no earlier
-    re-wrap has moved this page."""
+    Only when nothing still to be edited sits lower on the page. (The batch is
+    taken bottom-up, so an earlier re-wrap on this page moved only what lies
+    below this paragraph, never the paragraph itself.)"""
     page = sd.get("page", 0)
-    if any(r["page"] == page for r in reflowed):
-        return None
     rest = [(o, nt) for o, nt in replacements
             if o is not sd and id(o) not in done and o.get("page", 0) == page]
     if not rest:
@@ -903,16 +938,33 @@ def _joint_rewrap(current, replacements, sd, new_text, done, reflowed):
     members = [(sd, new_text)] + [(o, nt) for o, nt in rest if any(o is m for m in mates)]
     ids = {id(o) for o, _ in members}
     if any(id(o) not in ids and o.get("page", 0) == page and o["bbox"][1] >= sd["bbox"][1] - 0.5
-           for o, _ in replacements):
+           for o, _ in rest):
         return None
     try:
-        rr = _reflow.reflow(current, sd, new_text, multiline_only=True, also=members[1:])
+        rr = _reflow.reflow(current, sd, new_text, multiline_only=True, also=members[1:],
+                            learn_from=original)
     except Exception:  # noqa: BLE001
         return None
     if not (rr.get("ok") and (rr.get("breaks_changed") or rr.get("justified"))):
         return None
     rr["members"] = members
     return rr
+
+
+def _placement_differs(a: bytes, b: bytes, sd: dict, tol: float = 0.3) -> bool:
+    """Do *a* and *b* put the words of *sd*'s line in different places?"""
+    pno = sd.get("page", 0)
+    y0, y1 = sd["bbox"][1], sd["bbox"][3]
+    try:
+        wa, wb = ([w for w in fitz.open(stream=x, filetype="pdf")[pno].get_text("words")
+                   if min(w[3], y1) - max(w[1], y0) > 0.5 * (w[3] - w[1])] for x in (a, b))
+    except Exception:  # noqa: BLE001
+        return False
+    wa.sort(key=lambda w: w[0])
+    wb.sort(key=lambda w: w[0])
+    if [w[4] for w in wa] != [w[4] for w in wb]:
+        return True
+    return any(abs(p[0] - q[0]) > tol for p, q in zip(wa, wb))
 
 
 def _may_rewrap(replacements, sd) -> bool:

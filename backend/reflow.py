@@ -23,9 +23,12 @@ This does what the producer would have done, and nothing it cannot prove:
    first (see inplace_spike). No font is added to the document.
 
 4. SHIFT. If the paragraph gains lines, everything below it moves down by
-   exactly that many leadings, drawn from a copy of the page clipped below
-   the paragraph. Refused if anything crosses the cut or would leave the
-   page, or if the page carries links or form fields below it.
+   exactly that many leadings (up, if it loses them), by one transform around
+   the part of the content stream that draws it — which must be exactly what
+   lies below the paragraph. The new lines are written into the page's own
+   content stream where the old ones were drawn, so the page reads in order
+   and nothing else in the file changes. Refused if anything crosses the cut
+   or would leave the page, or if the page carries links or form fields below.
 
 5. VERIFY. The output is re-read: the paragraph's lines must be the predicted
    ones at the predicted baselines, every other word must be exactly where it
@@ -34,14 +37,15 @@ This does what the producer would have done, and nothing it cannot prove:
 Validated against a producer twin (spikes/audit/audit_twin.py): the same
 change made in the source and re-typeset by LibreOffice.
 
-Scope, deliberately: left-aligned (ragged-right) paragraphs in simple fonts
-(TrueType or Type1 with /Widths), horizontal text on an unrotated page. Every
-other shape is refused with a reason.
+Scope: ragged and justified paragraphs (a first line indented or hanging) in
+simple, CID and Type3 fonts, horizontal text on an unrotated page. Every other
+shape is refused with a reason.
 """
 from __future__ import annotations
 
 import io
 import re
+import unicodedata
 
 import fitz
 
@@ -52,6 +56,10 @@ import inplace_spike as S
 # units (±3/1000 em in its TJ arrays), so a few hundredths of a point is the
 # producer's own noise.
 _POS_TOL = 0.6
+
+# How loosely a ragged paragraph's margin may be known (points) before a re-wrap
+# that depends on where in that interval it lies is refused. See _reflow.
+_MARGIN_SLACK = 6.0
 
 
 def _refuse(reason: str, message: str) -> dict:
@@ -341,18 +349,26 @@ def stranded_underlines(before: bytes, after: bytes, pno: int, band, field=None,
             q = fitz.Rect(dr["rect"])
             if q.width >= 0.5 and q.height <= 1.5:
                 rules.append(q)
+        def under(cs, q):
+            # Letters a rule covers MOST of. "reflection." has its link rule end 0.32pt
+            # into the full stop; MuPDF sets each glyph on a whole-unit width (278
+            # for Chrome's 277.832), so a correctly re-set line put the stop 0.28pt
+            # under it, and a 0.3pt overlap cut read that as an underline left behind.
+            return "".join(c["c"] for c in cs or () if c["c"].strip()
+                           and min(c["x1"], q.x1) - max(c["x0"], q.x0) >= 0.5 * (c["x1"] - c["x0"]))
         bad = []
+        lb = _lines(b[pno])
         for r, text, _ in underlines(b[pno], band):
             if _inside(r, field, text, edit):
                 continue
-            run = _covered(_lines(b[pno]), r)
+            run = _covered(lb, r)
+            want = under(run, r)
             ok = False
             for dr_q in rules:
                 if abs(dr_q.height - r.height) > 0.2 or abs(dr_q.width - r.width) > 1.0:
                     continue
                 got = _covered(la, dr_q)
-                if got and "".join(c["c"] for c in got if c["c"].strip()) == \
-                        "".join(ch for ch in text if ch.strip()):
+                if got and want and under(got, dr_q) == want:
                     ok = True
                     break
             if not ok:
@@ -484,13 +500,92 @@ def _blank(line):
     return not "".join(c["c"] for c in line["chars"]).strip()
 
 
+def _pixel_grid(lines):
+    """0.75 when the page's baselines all sit on whole CSS pixels, else None.
+
+    Chrome (Skia) snaps each line's baseline to a whole pixel, 0.75pt: a 1.45 line height
+    of 11pt text is 21.27px, and its lines come out 21px and 22px apart — 15.75pt, then
+    16.5pt. Read as a constant leading that split one four-line clause into two
+    "paragraphs", and a shortened word pulled up nothing from the half it didn't see.
+    """
+    ys = [l["y"] for l in lines]
+    if len(ys) < 4:
+        return None
+    on = sum(1 for y in ys if abs(y / 0.75 - round(y / 0.75)) < 0.02)
+    return 0.75 if on >= 0.9 * len(ys) else None
+
+
 def _paragraph(lines, target_bbox):
-    """(paragraph lines, leading) around the line holding *target_bbox*."""
+    """(paragraph lines, leading) around the line holding *target_bbox*. On a page whose
+    baselines are snapped to pixels (see _pixel_grid) successive gaps may differ by one
+    pixel, and the leading returned is their mean.
+
+    A paragraph's FIRST line may start somewhere else than the rest: indented, as most
+    letters and contracts set a paragraph, or hanging out to the left, as a numbered
+    clause is. Every line after it shares one left edge."""
     tb = fitz.Rect(target_bbox)
     idx = next((i for i, l in enumerate(lines)
                 if l["bbox"].intersects(tb) and abs(l["bbox"].y0 - tb.y0) < 2.0), None)
     if idx is None:
         return None, None
+    grid = _pixel_grid(lines)
+    tol = grid + 0.05 if grid else 0.3
+    para, lead = _column_run(lines, idx, grid, tol)
+    if lead is None:
+        # The target may be the first line itself: the rest of its paragraph starts
+        # below it at another left edge.
+        j = _first_line_neighbour(lines, lines[idx], below=True)
+        if j is not None:
+            body, blead = _column_run(lines, j, grid, tol)
+            gap = lines[j]["y"] - lines[idx]["y"]
+            if body[0] is lines[j] and (blead is None or abs(gap - blead) <= tol) \
+                    and not _aligned_block([lines[idx]] + body):
+                return [lines[idx]] + body, blead if blead is not None else gap
+        return para, lead
+    j = _first_line_neighbour(lines, para[0], below=False, lead=lead, tol=tol)
+    if j is not None and not _aligned_block([lines[j]] + para):
+        para = [lines[j]] + para
+    return para, lead
+
+
+def _aligned_block(ls):
+    """Lines that all END together (a right-aligned column: "850.00" over
+    "1,020.00") or share one centre: set by alignment, not wrapped — their
+    differing left edges are not a paragraph's indented first line. A justified
+    paragraph's lines end together too, all but its last."""
+    def end(l):
+        return [c for c in l["chars"] if c["c"].strip()][-1]["x1"]
+    ends = [end(l) for l in ls]
+    mids = [(l["x0"] + e) / 2.0 for l, e in zip(ls, ends)]
+    return max(ends) - min(ends) <= 0.6 or max(mids) - min(mids) <= 0.6
+
+
+def _first_line_neighbour(lines, line, below, lead=None, tol=0.3):
+    """Index of the line directly above (or below) *line* that could be the first line of
+    its paragraph: the same size, starting up to six em to either side of it, one leading
+    away (or 0.9-2.2 sizes, when the leading is not yet known). None when there is none."""
+    size = line["chars"][0]["size"]
+    cands = [(i, l) for i, l in enumerate(lines)
+             if (l["y"] > line["y"] if below else l["y"] < line["y"]) and not _blank(l)
+             and abs(l["chars"][0]["size"] - size) <= 0.01 * size
+             and 0.6 < abs(l["x0"] - line["x0"]) <= 6.0 * size
+             and l["bbox"].x1 > line["x0"]]
+    if not cands:
+        return None
+    i, l = min(cands, key=lambda c: abs(c[1]["y"] - line["y"]))
+    # nothing else between them
+    lo, hi = sorted((l["y"], line["y"]))
+    if any(lo + 0.5 < o["y"] < hi - 0.5 and o["bbox"].x1 > line["x0"] and o["x0"] < line["bbox"].x1
+           for o in lines):
+        return None
+    d = abs(l["y"] - line["y"])
+    if lead is not None:
+        return i if abs(d - lead) <= tol else None
+    return i if 0.9 * size < d < 2.2 * size else None
+
+
+def _column_run(lines, idx, grid, tol):
+    """The run of lines sharing lines[idx]'s left edge at one leading, and that leading."""
     x0 = lines[idx]["x0"]
     # A blank line is a paragraph break: Word separates paragraphs with
     # empty lines at the same leading, which otherwise glued thirteen lines
@@ -516,10 +611,12 @@ def _paragraph(lines, target_bbox):
     if lead is None:
         return [col[k]], None        # a one-line paragraph
     lo = hi = k
-    while lo - 1 >= 0 and abs((col[lo]["y"] - col[lo - 1]["y"]) - lead) <= 0.3:
+    while lo - 1 >= 0 and abs((col[lo]["y"] - col[lo - 1]["y"]) - lead) <= tol:
         lo -= 1
-    while hi + 1 < len(col) and abs((col[hi + 1]["y"] - col[hi]["y"]) - lead) <= 0.3:
+    while hi + 1 < len(col) and abs((col[hi + 1]["y"] - col[hi]["y"]) - lead) <= tol:
         hi += 1
+    if grid and hi > lo:
+        lead = (col[hi]["y"] - col[lo]["y"]) / (hi - lo)
     return col[lo:hi + 1], lead
 
 
@@ -528,10 +625,14 @@ class _Metrics:
     through /Widths, CID fonts (Chrome, Skia, Google Docs) through /W — and
     the producer's kerning, when it kerns (see kerning.py)."""
 
-    def __init__(self, doc, page=None):
+    def __init__(self, doc, page=None, learn_page=None):
         self.doc = doc
         self.page = page
+        # The page as its producer wrote it, to learn pair spacing from (see _learned):
+        # an earlier edit of this request already sits on *page*.
+        self.learn_page = learn_page
         self.cache: dict = {}
+        self._pairs = None
 
     def _type0_xref(self, name):
         for pno in range(self.doc.page_count):
@@ -581,7 +682,8 @@ class _Metrics:
                 # below is what makes such a name usable at all, and it lives here.
                 cm = S._lookup_by_name(S._simple_font_code_maps(self.doc), name)
                 enc = S._lookup_by_name(S._simple_font_encodings(self.doc), name)
-                sf = {"refs": srefs, "widths": parsed, "cm": cm, "enc": enc, "b14": None}
+                sf = {"refs": srefs, "widths": parsed, "cm": cm, "enc": enc, "b14": None,
+                      "type3": bool(S._type3_xref(self.doc, name))}
                 if not parsed:
                     # A standard-14 font (Helvetica, Times, Courier…) is not
                     # embedded and carries no /Widths: every viewer uses the
@@ -613,8 +715,13 @@ class _Metrics:
             import kerning
             from pdf_editor import resolve_full_font
             k = kerning.font_kern(resolve_full_font(name))
-            if k and kerning.producer_kerns(self.page, name, k,
-                                            self.doc.metadata.get("producer", "")):
+            # A table with no pairs is no table. The server's font overlay answers a
+            # Chrome Type3 name with the genuine family stripped of its layout tables
+            # (type3_extend._lean), and taking that as "the producer kerns, from this"
+            # zeroed every pair and switched off the spacing learned from the page —
+            # so the live app refused a re-wrap the same engine made in a test.
+            if k and (k.pairs or k.class_tables) and kerning.producer_kerns(
+                    self.page, name, k, self.doc.metadata.get("producer", "")):
                 return k
         except Exception:  # noqa: BLE001 — no kerning is the safe default
             pass
@@ -641,6 +748,11 @@ class _Metrics:
         # anything: Latin-1 would name 'M' as 77, which in this font is
         # nothing at all, or some other glyph.
         if cfg["refs"] and S._private_code_font(self.doc, cfg["refs"]):
+            return None
+        # A Type3 font draws a code only if /Differences names a procedure for it: the
+        # standard byte for a character it never drew is an empty slot. "9" written as
+        # byte 57 in Chrome's Source Serif printed nothing and still read back as "9".
+        if cfg.get("type3"):
             return None
         codes = S._encode_fallback(ch, cfg["enc"])
         return codes[0] if codes else None
@@ -707,12 +819,56 @@ class _Metrics:
             return None
         return ws[code - first] * size / 1000.0
 
+    def _learned(self):
+        """Pair adjustments the document itself shows, in thousandths of an em.
+
+        A producer that kerns from a table this model cannot read still writes every
+        adjustment into the page: Chrome sets a variable font as Type3, which keeps no GPOS
+        (so kerning.py has nothing to read), and "the “Client”" drifts 1pt from the font's
+        own advances across a line. Every pair of glyphs already on the page is a
+        measurement of its own spacing: the next origin minus this origin minus this
+        advance. A pair measured more than once must agree to 2/1000 em (kerning is a
+        property of the pair; anything else varies). Pairs touching a space are never
+        learned: a justified line's stretch sits there, and is modelled on its own.
+        """
+        if self._pairs is None:
+            from collections import defaultdict
+            obs = defaultdict(list)
+            src = self.learn_page if self.learn_page is not None else self.page
+            if src is not None:
+                for l in _lines(src):
+                    try:
+                        us = _units(l["chars"], self)
+                    except Exception:  # noqa: BLE001 — an unmeasurable line teaches nothing
+                        continue
+                    for a, b in zip(us, us[1:]):
+                        if a["font"] != b["font"] or a["ox"] is None or b["ox"] is None \
+                                or not a["t"].strip() or not b["t"].strip() \
+                                or abs(a["oy"] - b["oy"]) > 0.01 \
+                                or abs(a["size"] - b["size"]) > 0.01 * a["size"]:
+                            continue
+                        adv = self.advance(a["font"], a["size"], a["t"], a["code"], a.get("variant"))
+                        if adv is None:
+                            continue
+                        obs[(a["font"], a["t"][-1], b["t"][0])].append(
+                            (b["ox"] - a["ox"] - adv) / a["size"] * 1000.0)
+            self._pairs = {k: sorted(v)[len(v) // 2] for k, v in obs.items()
+                           if max(v) - min(v) <= 2.0}
+        return self._pairs
+
     def kern(self, a, b):
-        """Kerning (points) between units *a* and *b*, if the producer kerns."""
+        """Kerning (points) between units *a* and *b*: the font's own table if the
+        producer kerns with it, else as the page itself shows it for a pair it already has.
+        The table goes first where there is one: it is exact, where a pair measured off
+        the page carries the producer's rounding."""
         if a["font"] != b["font"] or not a["t"] or not b["t"]:
             return 0.0
         k = self.font(a["font"])["kern"]
         if k is None:
+            if a["t"].strip() and b["t"].strip():
+                v = self._learned().get((a["font"], a["t"][-1], b["t"][0]))
+                if v is not None:
+                    return v * a["size"] / 1000.0
             return 0.0
         return k.char_pair(a["t"][-1], b["t"][0]) * a["size"] / k.upem
 
@@ -764,7 +920,11 @@ def _units(chars, m):
                 break
         if took is None:
             variant, code = m.variant_code(c["font"], c["c"])
-            took = (1, variant, code, None)
+            # A glyph whose /ToUnicode names another character (Chrome's apostrophe,
+            # named U+02BC): the producer said what it stands for in /ActualText.
+            cm = f["variants"][variant]["cm"] if variant in f["variants"] else None
+            act = c["c"] if cm and (cm.get("actual") or {}).get(code) == c["c"] else None
+            took = (1, variant, code, act)
         L, variant, code, actual = took
         # `actual`: the glyph's /ToUnicode names a ligature CODEPOINT, so the
         # producer wrapped it in /ActualText to make it extract as letters;
@@ -790,9 +950,10 @@ def _words(stream):
     return words
 
 
-def _break(words, x0, limit, width):
-    """Greedy: a word goes on the line if it fits without its trailing space."""
-    lines, line, x = [], [], x0
+def _break(words, x0, limit, width, first=None):
+    """Greedy: a word goes on the line if it fits without its trailing space. The first
+    line starts at *first* when the paragraph's first line is indented."""
+    lines, line, x = [], [], (x0 if first is None else first)
     for w in words:
         wt = w[:-1] if w and w[-1]["t"] == " " else w
         if line and x + width(wt) > limit + 0.05:
@@ -810,7 +971,7 @@ def _text(line):
 
 
 def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = False,
-           also=()) -> dict:
+           also=(), learn_from: bytes = None) -> dict:
     """Replace *span*'s text with *new_text*, re-wrapping its paragraph.
 
     *also* is more (span, new_text) edits in the SAME paragraph, re-wrapped
@@ -819,6 +980,12 @@ def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = F
     pull up the words the producer pulls up. Every one must lie in the
     paragraph, or the whole call is refused.
 
+    *learn_from*: the document as its producer wrote it, when *pdf_bytes* already
+    carries earlier edits of the same request. The pair spacing the model learns
+    from the page (see _Metrics._learned) is read there: a line the in-place engine
+    set without the producer's kerning made pairs elsewhere look inconsistent, and
+    the next paragraph up could no longer prove its own line breaks.
+
     Returns {"ok": True, "pdf": bytes, "lines": n_before -> n_after} or a
     refusal dict with a reason.
     """
@@ -826,10 +993,18 @@ def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = F
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception:  # noqa: BLE001
         return _refuse("unreadable", "The PDF could not be opened.")
+    ldoc = None
     try:
-        return _reflow(doc, span, new_text, multiline_only, tuple(also))
+        if learn_from is not None and learn_from is not pdf_bytes:
+            try:
+                ldoc = fitz.open(stream=learn_from, filetype="pdf")
+            except Exception:  # noqa: BLE001
+                ldoc = None
+        return _reflow(doc, span, new_text, multiline_only, tuple(also), ldoc)
     finally:
         doc.close()
+        if ldoc is not None:
+            ldoc.close()
 
 
 def same_paragraph(pdf_bytes: bytes, span: dict, others) -> list:
@@ -859,7 +1034,7 @@ def same_paragraph(pdf_bytes: bytes, span: dict, others) -> list:
         doc.close()
 
 
-def _reflow(doc, span, new_text, multiline_only=False, also=()):
+def _reflow(doc, span, new_text, multiline_only=False, also=(), ldoc=None):
     pno = span.get("page", 0)
     page = doc[pno]
     if page.rotation or page.mediabox.x0 or page.mediabox.y0 \
@@ -875,7 +1050,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         # re-break. Answering it the long way (searching the page for a
         # margin to borrow) made every IRS 1040 edit five times slower.
         return _refuse("single_line", "One line: nothing to re-break.")
-    m = _Metrics(doc, page)
+    m = _Metrics(doc, page, ldoc[pno] if ldoc is not None and pno < ldoc.page_count else None)
 
     def width(units):
         tot = 0.0
@@ -904,9 +1079,14 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         if abs(c["size"] - stream[0]["size"]) > 0.01 * stream[0]["size"]:
             return _refuse("mixed_size", "The paragraph mixes type sizes.")
 
-    x0 = para[0]["x0"]
-    if any(abs(l["x0"] - x0) > 0.6 for l in para):
+    # The first line may be indented (or hang out); every other line shares one edge.
+    xf = para[0]["x0"]
+    x0 = para[1]["x0"] if len(para) >= 2 else xf
+    if any(abs(l["x0"] - x0) > 0.6 for l in para[1:]):
         return _refuse("indented", "The paragraph's lines do not share a left edge.")
+
+    def start(i):
+        return xf if i == 0 else x0
 
     # ── self-check: the model must reproduce the original's line breaks ──
     # A break can only be checked where there IS one. A one-line paragraph
@@ -929,7 +1109,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         us = _units(l["chars"], m)
         vis = [i for i, u in enumerate(us) if u["t"].strip()]
         if not vis:
-            return 0.0, 0
+            return 0.0, 0, 0.0
         last = vis[-1]
         nat, n_inner = l["x0"], 0
         per_space, prev_dev = [], 0.0
@@ -950,8 +1130,8 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         # gaps of 0.77-3.43pt carrying 0.06-0.08pt of its own rounding, while
         # its ragged letter's "gap" is a few hundredths buried in 0.2pt of it.
         if per_space and (max(per_space) - min(per_space)) > 0.03 + 0.1 * abs(extra):
-            return 0.0, n_inner          # uneven: rounding, not justification
-        return extra, n_inner
+            return 0.0, n_inner, extra   # uneven: rounding, not justification
+        return extra, n_inner, extra
 
     try:
         stretches = [_stretch(l) for l in para]
@@ -964,27 +1144,52 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
     #                is SQUEEZED onto it (ReportLab: -0.087pt a space); a new
     #                line that fits stays ragged. Stretching those to the margin
     #                was wrong against ReportLab's own re-print.
-    full = [(e, n) for e, n in stretches[:-1] if n]
+    full = [(e, n) for e, n, _ in stretches[:-1] if n]
     last_natural = abs(stretches[-1][0]) < 0.05
     justified = (len(para) >= 2 and full and last_natural
                  and all(e > 0.02 for e, n in full))
+
+    def _ends(ls):
+        """Where each line's ink ends — and where its drawn trailing space does, which
+        is the edge LibreOffice justifies to: its visible ends differ by 0.56pt."""
+        vis = [[c for c in l["chars"] if c["c"].strip()][-1]["x1"] for l in ls]
+        tails = [l["chars"][-1]["x1"] for l in ls] if all(l["chars"][-1]["c"] == " " for l in ls) else vis
+        return vis, min(max(vis) - min(vis), max(tails) - min(tails))
+    if not justified and len(para) >= 3 and full and last_natural:
+        # The full lines of a justified paragraph end flush on the margin. That is
+        # evidence enough when there are two of them: a line that happens to fill
+        # the measure at its natural spacing is stretched by almost nothing (0.019pt
+        # a space on Chrome's Noto Sans), and LibreOffice's rounding makes its
+        # stretch uneven — each once read as "not justified", and the paragraph
+        # refused, leaving a shortened line short in a justified block.
+        _, spread = _ends(para[:-1])
+        raws = [r for e, n, r in stretches[:-1] if n]
+        if spread <= 0.5 and all(r > -0.02 for r in raws) and any(r > 0.02 for r in raws):
+            justified = True
+            stretches = [(r if li < len(para) - 1 else e, n, r)
+                         for li, (e, n, r) in enumerate(stretches)]
     squeeze = (len(para) >= 2 and full and last_natural and not justified
                and all(e <= 0.02 for e, n in full) and any(e < -0.02 for e, n in full))
     margin = None
     if justified or squeeze:
-        ends = []
-        for (e, n), l in zip(stretches[:-1], para[:-1]):
-            if justified or e < -0.02:          # squeeze: only the squeezed lines
-                vis = [c for c in l["chars"] if c["c"].strip()]
-                ends.append(vis[-1]["x1"])
-        if not ends or max(ends) - min(ends) > 0.5:
+        ls = [l for (e, n, _), l in zip(stretches[:-1], para[:-1])
+              if justified or e < -0.02]        # squeeze: only the squeezed lines
+        if not ls:
             justified = squeeze = False
         else:
-            margin = sum(ends) / len(ends)
+            ends, spread = _ends(ls)
+            if spread > 0.5:
+                justified = squeeze = False
+            else:
+                margin = sum(ends) / len(ends)
 
     band = {}
 
     def established(p_lines):
+        pf = p_lines[0]["x0"]          # this paragraph's own first-line start
+
+        def pstart(i):
+            return pf if i == 0 else x0
         pst = []
         for i, l in enumerate(p_lines):
             pst += l["chars"]
@@ -998,7 +1203,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         # lines show is a candidate too; the break check below decides.
         over = 0.0
         if justified or squeeze:
-            for (e, n) in stretches[:-1]:
+            for (e, n, _) in stretches[:-1]:
                 if n and e < 0:
                     over = max(over, -e * n)
         # LibreOffice draws each justified line's trailing space, and the line
@@ -1016,21 +1221,89 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                     sw = m.advance(sp["font"], sp["size"], " ")
                     if sw:
                         struct = [sum(edge) / len(edge) - sw]
-        cands = ((*struct, margin, margin + over + 0.01) if (justified or squeeze) else
-                 (page.rect.width - x0, max(l["chars"][-1]["x1"] for l in lines)))
-        for cand in cands:
-            if [_text(g).rstrip() for g in _break(ws, x0, cand, width)] == want:
-                return cand
         if justified or squeeze:
+            for cand in (*struct, margin, margin + over + 0.01):
+                if [_text(g).rstrip() for g in _break(ws, x0, cand, width, pf)] == want:
+                    return cand
             return None
-        # A ragged paragraph set to a margin that is neither the page's edge
-        # nor any line's end (ReportLab's Frame: 524pt on a 595pt page). The
-        # original's breaks pin that margin to an interval: every line fits
-        # within it, and every break was FORCED — the next word would have
-        # overshot it. Hard line breaks (an address block) leave room for the
-        # next word, so their interval is empty and they are never merged.
-        # Any margin in the interval reproduces the original; the re-wrap is
-        # then accepted only if it comes out the same at BOTH ends of it.
+        # A ragged paragraph's margin is pinned to an interval by its breaks:
+        # every line fits within it, and every break was FORCED — the next word
+        # would have overshot it (see interval()). Hard line breaks (an address
+        # block) leave room for the next word, so their interval is empty and
+        # they are never merged. Every other paragraph on the page set at this
+        # edge and size was broken against the same margin, and narrows it:
+        # Chrome's measure is not the left margin mirrored — a line of one
+        # clause ends at 521.2pt where the mirror is 520.8, and a shortened word
+        # elsewhere pulled up one word fewer than Chrome's re-print did.
+        own = interval(p_lines, ws, want, pf)
+        if own is None:
+            return None
+        a_, b_ = own
+        # (For the edited paragraph and for one a one-line paragraph borrows its margin
+        # from alike: a heading over a clause lends no margin either.)
+        others, agreed = 0, False
+        seen = {id(l) for l in p_lines}
+        for l in lines:
+            if id(l) in seen or abs(l["x0"] - x0) > 0.6 \
+                    or abs(l["chars"][0]["size"] - size0) > 0.01 * size0:
+                continue
+            other, _ = _paragraph(lines, l["bbox"])
+            if not other or len(other) < 2:
+                continue
+            seen.update(id(o) for o in other)
+            try:
+                iv = interval(other)
+            except (KeyError, TypeError):
+                iv = None
+            if not iv:
+                continue
+            others += 1
+            if max(a_, iv[0]) < min(b_, iv[1]):
+                a_, b_ = max(a_, iv[0]), min(b_, iv[1])
+                agreed = True
+        # Paragraphs here are wrapped to one measure, and this "paragraph" fits
+        # none of it: a heading over its first line ("3. Services" / "The
+        # Provider will…", both 11pt, 20pt apart), or lines broken by hand. Its
+        # breaks were never the margin's doing; re-wrapping it would set the
+        # clause below to the heading's width.
+        if others and not agreed:
+            return None
+        # A structural margin — the left one mirrored, or the page's longest line —
+        # is the answer when the evidence allows it (LibreOffice, Word).
+        for cand in (page.rect.width - x0, max(l["chars"][-1]["x1"] for l in lines)):
+            if a_ - 0.06 <= cand <= b_ + 0.06 and \
+                    [_text(g).rstrip() for g in _break(ws, x0, cand, width, pf)] == want:
+                return cand
+        pick = (a_ + b_) / 2.0
+        if [_text(g).rstrip() for g in _break(ws, x0, pick, width, pf)] != want:
+            return None
+        band["lo"], band["hi"] = a_, b_
+        return pick
+
+    iv_memo = {}
+
+    def interval(p_lines, ws=None, want=None, pf=None):
+        """(lowest, highest) right limit that reproduces *p_lines*' breaks, or None."""
+        if ws is None:
+            key = tuple(id(l) for l in p_lines)
+            if key not in iv_memo:
+                iv_memo[key] = _interval(p_lines, None, None, None)
+            return iv_memo[key]
+        return _interval(p_lines, ws, want, pf)
+
+    def _interval(p_lines, ws, want, pf):
+        pf = p_lines[0]["x0"] if pf is None else pf
+        if ws is None:
+            pst = []
+            for i, l in enumerate(p_lines):
+                pst += l["chars"]
+                if i < len(p_lines) - 1 and l["chars"][-1]["c"] not in (" ", "-", "\u00ad"):
+                    pst.append(dict(l["chars"][-1], c=" "))
+            want = ["".join(c["c"] for c in l["chars"]).rstrip() for l in p_lines]
+            ws = _words(_units(pst, m))
+
+        def pstart(i):
+            return pf if i == 0 else x0
         groups, cur = [], []
         for w in ws:
             cur.append(w)
@@ -1042,17 +1315,17 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
 
         def strip(w):
             return w[:-1] if w and w[-1]["t"] == " " else w
-        lo = max(x0 + sum(width(w) for w in g[:-1]) + width(strip(g[-1])) for g in groups)
-        hi = min(x0 + sum(width(w) for w in g) + width(strip(nx[0]))
-                 for g, nx in zip(groups, groups[1:]))
+        lo = max(pstart(gi) + sum(width(w) for w in g[:-1]) + width(strip(g[-1]))
+                 for gi, g in enumerate(groups))
+        hi = min(pstart(gi) + sum(width(w) for w in g) + width(strip(nx[0]))
+                 for gi, (g, nx) in enumerate(zip(groups, groups[1:])))
         a_, b_ = lo - 0.05 + 0.001, hi - 0.05 - 0.001
         if a_ >= b_:
             return None
         for cand in (a_, b_):
-            if [_text(g).rstrip() for g in _break(ws, x0, cand, width)] != want:
+            if [_text(g).rstrip() for g in _break(ws, x0, cand, width, pf)] != want:
                 return None
-        band["hi"] = b_
-        return a_
+        return a_, b_
 
     try:
         limit = None
@@ -1081,7 +1354,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                        "without inventing a layout.")
     # And every original glyph must sit where the model puts it.
     for li, l in enumerate(para):
-        x = x0
+        x = start(li)
         us = _units(l["chars"], m)
         extra = stretches[li][0] if (justified or squeeze) and li < len(para) - 1 else 0.0
         for i, u in enumerate(us):
@@ -1149,6 +1422,20 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                 return _refuse("missing_glyph", f"Couldn't add {chars}: {why}.")
             m.reset()
             continue
+        t3 = S._type3_xref(doc, fname)
+        if t3 and f["cm"]:
+            # Chrome's Type3: the glyph is drawn from the genuine family into a new
+            # procedure, under a code above /LastChar — as the in-place engine does.
+            import type3_extend
+            prefs = {"last_char": int(doc.xref_get_key(t3, "LastChar")[1])}
+            alloc = S._allocate_private_codes(doc, prefs, f["cm"]["rev"], chars)
+            if not alloc:
+                return _refuse("missing_glyph", f"No free codes for {chars}.")
+            ok, why = type3_extend.extend(doc, fname, chars, alloc)
+            if not ok:
+                return _refuse("missing_glyph", f"Couldn't add {chars}: {why}.")
+            m.reset()
+            continue
         refs = S._simple_font_refs(doc, fname)
         if not refs or not f["cm"] or not S._private_code_font(doc, refs):
             return _refuse("missing_glyph", f"The font lacks {chars} and can't be extended here.")
@@ -1161,10 +1448,19 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         m.reset()
         # The ToUnicode map now names the new codes; re-read it.
     try:
-        new_lines = _break(_words(_units(stream2, m)), x0, limit, width)
-        if "hi" in band and [_text(g) for g in _break(_words(_units(stream2, m)), x0,
-                                                        band["hi"], width)] != \
-                [_text(g) for g in new_lines]:
+        ws2 = _words(_units(stream2, m))
+        new_lines = _break(ws2, x0, limit, width, xf)
+
+        def at(v):
+            return [_text(g) for g in _break(ws2, x0, v, width, xf)]
+        # The margin is known to an interval; a new text that wraps differently
+        # at its two ends depends on where in it the margin really is. Within a
+        # few points (the page's paragraphs pin it that closely) the middle is the
+        # honest answer — a hole left in the paragraph is the one outcome sure to
+        # be wrong. Wider than that, the layout would be invented. (Measured on
+        # Chrome's re-prints: the middle matched them more often than the low end.)
+        if "hi" in band and at(band["lo"]) != at(band["hi"]) \
+                and band["hi"] - band["lo"] > _MARGIN_SLACK:
             return _refuse("ambiguous_margin",
                            "The original's line breaks allow more than one margin, and "
                            "the new text would wrap differently under them.")
@@ -1186,7 +1482,15 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
     # lines to 3 moved the next paragraph up one leading in its own re-print,
     # where leaving the gap was a visible hole.
     grow = len(new_lines) - len(para)
-    dy = grow * lead
+    # Baselines: a line the paragraph already had stays on its own; a new one follows
+    # the last at the leading — snapped to the pixel where the producer snaps (Chrome).
+    grid = _pixel_grid(lines)
+
+    def _snap(v):
+        return round(v / grid) * grid if grid else v
+    ys = [para[i]["y"] if i < len(para) else para[-1]["y"] + _snap((i - len(para) + 1) * lead)
+          for i in range(len(new_lines))]
+    dy = _snap(grow * lead)
 
     # ── what the page must not have below the cut, if anything moves ──
     cut = para[-1]["bbox"].y1 + 0.5
@@ -1195,7 +1499,8 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         # the paragraph outside its column (x0..limit) belongs to another
         # column, which a word processor would not move.
         for l in lines:
-            if l["bbox"].y0 >= cut and (l["bbox"].x0 > limit + 1.0 or l["bbox"].x1 < x0 - 1.0):
+            if l["bbox"].y0 >= cut and (l["bbox"].x0 > limit + 1.0
+                                        or l["bbox"].x1 < min(x0, xf) - 1.0):
                 return _refuse("multi_column",
                                "Re-wrapping adds a line, and the page has another column "
                                "beside this one that must not move.")
@@ -1213,7 +1518,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
             band = fitz.Rect(page.rect.x0, cut + dy, page.rect.x1, cut)
             para_ys = {round(l["y"], 1) for l in para}
             for l in lines:
-                if round(l["y"], 1) in para_ys and abs(l["x0"] - x0) <= 0.6:
+                if any(l is p_ for p_ in para):
                     continue
                 if l["bbox"].intersects(band):
                     return _refuse("band_occupied",
@@ -1260,6 +1565,10 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                     if f[4]}
 
     links_before = page.get_links()
+
+    # Where the new lines go in the content stream: just before the first text the
+    # page drew after the paragraph (see _splice).
+    anchor = _anchor_after(page, para)
 
     # ── delete the paragraph's glyphs ──
     for l in para:
@@ -1316,10 +1625,9 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         refmap.setdefault((nm, _variant_of(subs_now.get(res))), res)
     ops = []
     placed = {}          # original glyph origin -> (new x, new baseline)
-    y0 = para[0]["y"]
     for i, line in enumerate(new_lines):
-        y = y0 + i * lead
-        x = x0
+        y = ys[i]
+        x = start(i)
         run, run_style = [], None
         chars = [u for w in line for u in w]
         # A justified paragraph's full lines end on the margin: their inner
@@ -1331,7 +1639,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
             if vis:
                 inner = [k for k in range(vis[-1]) if not chars[k]["t"].strip()]
                 if inner:
-                    line_extra = (margin - (x0 + width(chars[:vis[-1] + 1]))) / len(inner)
+                    line_extra = (margin - (x + width(chars[:vis[-1] + 1]))) / len(inner)
                     if squeeze:
                         line_extra = min(0.0, line_extra)   # only an overshoot
                     last_vis = vis[-1]
@@ -1354,7 +1662,9 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                     if parts:
                         shows.append("[%s] TJ" % " ".join(parts))
                         parts = []
-                    shows.append("/Span <</ActualText (%s)>> BDC <%s> Tj EMC" % (act, fmt % cd))
+                    txt = ("(%s)" % act) if act.isascii() else \
+                        "<FEFF%s>" % act.encode("utf-16-be").hex().upper()
+                    shows.append("/Span <</ActualText %s>> BDC <%s> Tj EMC" % (txt, fmt % cd))
                     if adj:
                         parts.append("%g" % adj)
                     continue
@@ -1366,7 +1676,9 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
                 parts.append("<%s>" % cur)
             if parts:
                 shows.append("[%s] TJ" % " ".join(parts))
-            ops.append("BT /%s %.4g Tf %.4g %.4g %.4g rg 1 0 0 1 %.3f %.3f Tm %s ET"
+            # The size in full: Chrome sets 11.745843pt, and "%.4g" wrote 11.75 — every
+            # glyph 0.035% wide, the line drifting right from its own underline.
+            ops.append("BT /%s %.7g Tf %.4g %.4g %.4g rg 1 0 0 1 %.3f %.3f Tm %s ET"
                        % (res, size, rgb[0] / 255, rgb[1] / 255, rgb[2] / 255,
                           run[0], page.rect.height - y, " ".join(shows)))
 
@@ -1379,7 +1691,13 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
             run[1].append(c["code"])
             if c.get("ox") is not None:
                 placed[(round(c["ox"], 2), round(c["oy"], 2))] = (x, y, len(c["t"]))
-            x += m.advance(c["font"], c["size"], c["t"], c["code"], c.get("variant"))
+            adv = m.advance(c["font"], c["size"], c["t"], c["code"], c.get("variant"))
+            if c.get("ox") is None and not adv and c["t"].strip() \
+                    and not all(unicodedata.combining(ch) for ch in c["t"]):
+                # A new visible character that advances nothing is drawn by no glyph
+                # (or by one the next overprints) — however well it reads back.
+                return _refuse("missing_glyph", f"{c['t']!r} has no width in its font.")
+            x += adv
             kp = m.kern(c, chars[i + 1]) if i + 1 < len(chars) else 0.0
             if line_extra and not c["t"].strip() and i < last_vis:
                 kp += line_extra
@@ -1409,35 +1727,202 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
         moved_links.append((lk["link"], rs))
     data = ("q " + " ".join(ops) + " Q").encode("latin-1")
 
-    # ── rebuild the page IN READING ORDER ──
-    # Everything down to the paragraph's end, then the paragraph, then what
-    # lies below it (moved down by the lines it gained, or not at all).
-    # Appending the new lines last put "Son salaire..." BEFORE the paragraph
-    # it follows in the extracted text — copy, search and screen readers all
-    # read the page out of order, which is a trace of the edit in itself.
-    snap = fitz.open()
-    snap.insert_pdf(doc, from_page=pno, to_page=pno)
-    full = page.rect
-    for x in page.get_contents():
-        doc.update_stream(x, b"")
-    above = fitz.Rect(full.x0, full.y0, full.x1, cut)
-    below = fitz.Rect(full.x0, cut, full.x1, min(full.y1, full.y1 - dy))
-    page.show_pdf_page(above, snap, 0, clip=above)
-    xref = doc.get_new_xref()
-    doc.update_object(xref, "<<>>")
-    doc.update_stream(xref, data)
-    conts = page.get_contents()
-    doc.xref_set_key(page.xref, "Contents",
-                     "[" + " ".join(f"{c_} 0 R" for c_ in conts + [xref]) + "]")
-    if below.height > 0:
-        page.show_pdf_page(below + (0, dy, 0, dy), snap, 0, clip=below)
-    snap.close()
-    _restore_links(page, links_before, [(fitz.Rect(lk["from"]), rs) for lk, rs in moved_links])
-
-    out = doc.tobytes(garbage=3, deflate=True)
-    ok = _verify(out, pno, para, new_lines, lead, cut, dy, lines)
+    # ── put the new lines into the page's own content stream ──
+    # At the place the old ones were drawn, so the page reads in order; what
+    # lies below moved by one transform when the paragraph changed height.
+    # Nothing else in the file changes. (This page used to be rebuilt from
+    # clipped copies of itself: it wrapped the page in form XObjects, copied every
+    # font object into each — a Chrome contract went from 248KB to 483KB — and
+    # the text a clip hid was still in the text layer, so a copy of the page read
+    # "3. Services" twice. Where the splice cannot be proven, the re-wrap is
+    # refused instead.)
+    base = doc.tobytes()
+    try:
+        out = _splice(base, pno, data, anchor, dy, cut, links_before,
+                      [(fitz.Rect(lk["from"]), rs) for lk, rs in moved_links])
+    except Exception:  # noqa: BLE001 — the rebuild below is always available
+        out = None
+    if out is None:
+        return _refuse("cannot_splice",
+                       "The re-wrapped paragraph could not be written back into the page's "
+                       "own content without moving something it must not.")
+    ok = _verify(out, pno, para, new_lines, ys, cut, dy, lines)
     if ok is not True:
         return _refuse("verify_failed", ok)
+    if not _inked(base, out, pno, new_lines, ys, x0, xf):
+        return _refuse("verify_failed", "a re-wrapped line does not print (clipped)")
+    return _result(out, para, new_lines, span, new_text, also, dy, cut, justified, squeeze)
+
+
+def _anchor_after(page, para):
+    """(x, y) of the first glyph the page draws after the paragraph's last, in content
+    order — the text the new lines must come before — or None when nothing follows."""
+    def in_para(ox, oy):
+        return any(abs(oy - l["y"]) <= 0.6 and l["bbox"].x0 - 0.6 <= ox <= l["bbox"].x1 + 0.6
+                   for l in para)
+    spans = sorted(page.get_texttrace(), key=lambda sp: sp["seqno"])
+    last = None
+    for sp in spans:
+        if any(chr(c[0]).strip() and in_para(c[2][0], c[2][1]) for c in sp["chars"]):
+            last = sp["seqno"]
+    if last is None:
+        return None
+    for sp in spans:
+        if sp["seqno"] <= last:
+            continue
+        for c in sp["chars"]:
+            if chr(c[0]).strip() and not in_para(c[2][0], c[2][1]):
+                return (c[2][0], c[2][1])
+    return None
+
+
+# Operators that only set up state for what follows — the opening of a producer's
+# group around a text object ("BDC q 0 0 0 rg BT", LibreOffice). Not cm: the
+# transform in force at the text object must stay the one the split point has.
+_OPENERS = {b"q", b"rg", b"RG", b"g", b"G", b"k", b"K", b"cs", b"CS", b"sc", b"scn",
+            b"SC", b"SCN", b"gs", b"w", b"J", b"j", b"M", b"d", b"ri", b"i", b"BDC",
+            b"BMC", b"Tf", b"Tc", b"Tw", b"Tz", b"TL", b"Ts", b"Tr"}
+
+
+def _group_start(head: bytes) -> int:
+    """Where the run of state-setting operators that ends *head* begins: a split made
+    there leaves the producer's group around the next text object whole."""
+    ops, operand_start = [], None
+    for kind, st, en, val in S._tokenize(head):
+        if kind == "op" and val not in (b"<<", b">>", b"[", b"]"):
+            ops.append((val, operand_start if operand_start is not None else st))
+            operand_start = None
+        elif operand_start is None:
+            operand_start = st
+    cut = len(head)
+    for val, st in reversed(ops):
+        if val not in _OPENERS:
+            break
+        cut = st
+    return cut
+
+
+def _q_balance_end(tail: bytes):
+    """Offset in *tail* of its first unmatched Q (the page's own outer wrapper closing),
+    or len(tail); None if anything but further Qs follows that point."""
+    masked = S._mask_strings(tail)
+    depth = 0
+    for m in re.finditer(rb"(?<![^\s\]\)>])(q|Q)(?![^\s\[\(</%])", masked):
+        if m.group(1) == b"q":
+            depth += 1
+        elif depth:
+            depth -= 1
+        else:
+            # Only the page's own closing may follow: its Qs, and the EMC Chrome
+            # ends its outermost marked content with ("ET Q Q EMC").
+            rest = re.sub(rb"\bEMC\b", b"", masked[m.start():])
+            return m.start() if not re.sub(rb"[\sQ]", b"", rest) else None
+    return len(tail)
+
+
+def _splice(base: bytes, pno: int, data: bytes, anchor, dy: float, cut: float,
+            links_before, moved):
+    """*base* (the paragraph deleted) with *data* written into its content stream just
+    before the text object that draws *anchor*, and everything after that point moved
+    down by *dy* — or None when that is not provably the same as moving exactly what
+    lies below *cut*."""
+    d = fitz.open(stream=base, filetype="pdf")
+    page = d[pno]
+    H = page.rect.height
+    xs = page.get_contents()
+    if not xs:
+        return None
+    body = b"\n".join(d.xref_stream(x) for x in xs)
+    split, ctm = len(body), (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    if anchor is not None:
+        for kind, it in S._stream_items(body):
+            if kind != "text" or not it.get("positions"):
+                continue
+            if any(abs(px - anchor[0]) < 0.6 and abs((H - py) - anchor[1]) < 0.6
+                   for px, py in it["positions"]):
+                split, ctm = it["bt"] - 2, it.get("ctm")
+                break
+        else:
+            return None
+        if ctm is None or body[split:split + 2] != b"BT":
+            return None
+        split = _group_start(body[:split])
+    elif dy:
+        # Nothing drawn after the paragraph: a change of height moves nothing, as
+        # long as nothing at all lies below it.
+        if any(min(ch[3][1] for ch in sp["chars"]) >= cut - 0.5
+               for sp in page.get_texttrace() if sp["chars"]) \
+                or any(dr["rect"].y1 > cut and not (dr["rect"].width >= page.rect.width - 1
+                                                    and dr["rect"].height >= H - 1)
+                       for dr in page.get_drawings()) \
+                or any(fitz.Rect(im["bbox"]).y1 > cut for im in page.get_image_info()):
+            return None
+        dy = 0.0
+    a, b, c, dd, e, f = ctm
+    if abs(b) > 1e-9 or abs(c) > 1e-9 or not a or not dd:
+        return None
+    # The text state is graphics state: whatever character or word spacing the
+    # producer left in force here would apply to the new lines too.
+    new = (b"q %.6f 0 0 %.6f %.4f %.4f cm [] 0 d 0 Tc 0 Tw 100 Tz 0 Ts 0 Tr "
+           % (1.0 / a, 1.0 / dd, -e / a, -f / dd)) + data + b" Q\n"
+    head, tail = body[:split], body[split:]
+    if dy:
+        # Everything drawn from the split on must be everything below the cut —
+        # text, rules and boxes alike — or one transform cannot move exactly it.
+        seq = None
+        trace = page.get_texttrace()
+        for sp in trace:
+            if any(abs(ch[2][0] - anchor[0]) < 0.6 and abs(ch[2][1] - anchor[1]) < 0.6
+                   for ch in sp["chars"]):
+                seq = sp["seqno"] if seq is None else min(seq, sp["seqno"])
+        if seq is None:
+            return None
+        for sp in trace:
+            vis = [ch for ch in sp["chars"] if chr(ch[0]).strip()]
+            if vis and (min(ch[3][1] for ch in vis) >= cut - 0.5) != (sp["seqno"] >= seq):
+                return None
+        for dr in page.get_drawings():
+            r = dr["rect"]
+            if r.width >= page.rect.width - 1 and r.height >= H - 1:
+                continue                          # the page's own background
+            if (r.y0 >= cut - 0.5) != (dr["seqno"] >= seq):
+                return None
+        if any(fitz.Rect(im["bbox"]).y1 > cut for im in page.get_image_info()):
+            return None
+        end = _q_balance_end(tail)
+        if end is None:
+            return None
+        t = -dy / dd
+        tail = b"q 1 0 0 1 0 %.4f cm\n" % t + tail[:end] + b"\nQ\n" + tail[end:]
+    d.update_stream(xs[0], head + b"\n" + new + tail)
+    d.xref_set_key(page.xref, "Contents", "%d 0 R" % xs[0])
+    _restore_links(page, links_before, moved)
+    return d.tobytes(garbage=3, deflate=True)
+
+
+def _inked(base: bytes, out: bytes, pno: int, new_lines, ys, x0, xf) -> bool:
+    """Does every new line actually print? Text extraction reads a glyph that a clip
+    hides, so each line's band is rendered with the paragraph deleted (*base*) and with
+    it written back (*out*): they must differ."""
+    db, do = fitz.open(stream=base, filetype="pdf"), fitz.open(stream=out, filetype="pdf")
+    try:
+        pb, po = db[pno], do[pno]
+        for i, nl in enumerate(new_lines):
+            if not _text(nl).strip():
+                continue
+            size = nl[0][0]["size"] if nl and nl[0] else 10.0
+            r = fitz.Rect(xf if i == 0 else x0, ys[i] - 0.7 * size, po.rect.x1, ys[i] + 0.1 * size)
+            a_ = pb.get_pixmap(clip=r, dpi=72, colorspace=fitz.csGRAY).samples
+            b_ = po.get_pixmap(clip=r, dpi=72, colorspace=fitz.csGRAY).samples
+            if a_ == b_:
+                return False
+        return True
+    finally:
+        db.close()
+        do.close()
+
+
+def _result(out, para, new_lines, span, new_text, also, dy, cut, justified, squeeze):
     # Did the breaks change? If every line but the edited one reads as before,
     # an in-place edit would have produced the same layout; the caller may
     # then prefer it. If not, only a re-wrap matches what the producer does.
@@ -1454,23 +1939,24 @@ def _reflow(doc, span, new_text, multiline_only=False, also=()):
             "justified": bool(justified or squeeze)}
 
 
-def _verify(out, pno, para, new_lines, lead, cut, dy, lines_before):
+def _verify(out, pno, para, new_lines, ys, cut, dy, lines_before):
     d = fitz.open(stream=out, filetype="pdf")
     try:
         page = d[pno]
         after = _lines(page)
-        x0 = para[0]["x0"]
+        xf = para[0]["x0"]
+        x0 = para[1]["x0"] if len(para) >= 2 else xf
         for i, nl in enumerate(new_lines):
-            y = para[0]["y"] + i * lead
-            got = [l for l in after if abs(l["y"] - y) < 0.5 and abs(l["x0"] - x0) < 1.0]
+            y = ys[i]
+            got = [l for l in after if abs(l["y"] - y) < 0.5
+                   and abs(l["x0"] - (xf if i == 0 else x0)) < 1.0]
             want = _text(nl).rstrip()
             have = "".join("".join(c["c"] for c in g["chars"]) for g in got).rstrip()
             if have != want:
                 return f"line {i + 1} reads {have!r}, expected {want!r}"
         # Every other line: same place, or exactly dy lower if below the cut.
-        para_ys = {round(l["y"], 1) for l in para}
         for l in lines_before:
-            if round(l["y"], 1) in para_ys and abs(l["x0"] - x0) < 1.0:
+            if any(l is p_ for p_ in para):
                 continue
             ty = l["y"] + (dy if l["bbox"].y0 >= cut else 0.0)
             t = "".join(c["c"] for c in l["chars"]).strip()
@@ -1484,10 +1970,10 @@ def _verify(out, pno, para, new_lines, lead, cut, dy, lines_before):
         acc = getattr(fitz, "TEXT_ACCURATE_BBOXES", 0)
         ws = page.get_text("words", flags=acc)
         band = [fitz.Rect(w[:4]) for w in ws
-                if para[0]["bbox"].y0 - 0.5 <= w[1] <= para[0]["y"] + (len(new_lines) - 1) * lead
-                and w[0] >= x0 - 0.5]
-        mine = [r for r in band if any(abs(r.y1 - (para[0]["y"] + i * lead)) < 0.6 * para[0]["chars"][0]["size"]
-                                       for i in range(len(new_lines)))]
+                if para[0]["bbox"].y0 - 0.5 <= w[1] <= ys[-1]
+                and w[0] >= min(x0, xf) - 0.5]
+        mine = [r for r in band if any(abs(r.y1 - y) < 0.6 * para[0]["chars"][0]["size"]
+                                       for y in ys)]
         others = [fitz.Rect(w[:4]) for w in ws if fitz.Rect(w[:4]) not in mine]
         for r in mine:
             for o in others:
@@ -1497,3 +1983,4 @@ def _verify(out, pno, para, new_lines, lead, cut, dy, lines_before):
         return True
     finally:
         d.close()
+
