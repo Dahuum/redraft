@@ -54,6 +54,9 @@ _RESOLVED: dict = {}
 # a crafted PDF could plant an "Arial" whose glyphs draw other letters.
 import contextvars as _contextvars
 _DOC_FONTS: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_fonts", default=None)
+# Type3 fonts of THIS request's document: {display name: callable -> donor font bytes or None}.
+# Lazy — resolving a donor can download and instance a variable font, and most edits never redraw.
+_DOC_TYPE3: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_type3", default=None)
 
 
 def font_cache_key(fontname: str) -> str:
@@ -877,6 +880,13 @@ def resolve_full_font(fontname: str) -> bytes | None:
         if key in overlay:
             _FONT_SOURCE[fontname] = f"document:{key}"
             return overlay[key]
+
+    t3 = _DOC_TYPE3.get()
+    if t3 and fontname in t3:
+        raw = t3[fontname]()
+        if raw:
+            _FONT_SOURCE[fontname] = "type3-family-donor"
+            return raw
 
     if fontname in _RESOLVED:
         return _RESOLVED.get(fontname + ":bytes")

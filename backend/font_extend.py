@@ -277,6 +277,12 @@ def _resolve_from_repo(family: str, weight: int, style: str):
         try:
             tt = TTFont(io.BytesIO(raw))
             if "fvar" in tt:
+                # Only outlines and advances are ever taken from a donor. Its layout tables
+                # are not, and instancing + compiling a big family's GPOS (Merriweather)
+                # took four minutes on the first edit.
+                for tag in ("GPOS", "GSUB", "GDEF", "kern", "BASE", "JSTF", "DSIG", "STAT"):
+                    if tag in tt:
+                        del tt[tag]
                 axes = {a.axisTag: a for a in tt["fvar"].axes}
                 w = float(weight)
                 if "wght" in axes:
