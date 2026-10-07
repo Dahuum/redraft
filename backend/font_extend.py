@@ -55,6 +55,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -131,7 +132,9 @@ _CACHE_FILE = os.path.join(_CACHE_DIR, "_gf_repo_listing_cache.json")
 os.makedirs(_CACHE_DIR, exist_ok=True)
 
 _listing_cache: dict = {}   # "license/folder" -> list[str] filenames | None (miss)
-_donor_cache: dict = {}     # (family_key, weight, style) -> bytes | None (in-memory, per-process)
+_donor_cache: dict = {}     # (family_key, weight, style) -> (bytes | None, kind) (in-memory, per-process)
+_donor_retry_at: dict = {}  # same key -> monotonic time before which a transient miss is not retried
+_TRANSIENT_RETRY_S = 45.0
 
 
 def _load_listing_cache():
@@ -144,9 +147,11 @@ def _load_listing_cache():
 
 
 def _save_listing_cache():
+    tmp = f"{_CACHE_FILE}.{os.getpid()}.tmp"
     try:
-        with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(_listing_cache, f)
+        os.replace(tmp, _CACHE_FILE)  # a reader never sees a half-written file
     except Exception:  # noqa: BLE001
         pass  # best-effort; an unwritable cache dir shouldn't break resolution
 
@@ -256,13 +261,17 @@ def _download(url: str, timeout: int = 15) -> bytes:
         return r.read()
 
 
-def _resolve_from_repo(family: str, weight: int, style: str):
+def _resolve_from_repo(family: str, weight: int, style: str, transient: list | None = None):
     """Try every license dir for this exact family name. Returns font bytes
-    (already instanced if variable) or None if the folder isn't found."""
+    (already instanced if variable) or None if the folder isn't found.
+    A miss caused by a network/rate-limit failure rather than by the font
+    not existing appends to *transient*, so the caller can tell the two apart."""
     folder = _family_key(family)
     for lic in _LICENSE_DIRS:
         files = _gh_list_dir(lic, folder)
         if not files:
+            if files is None and transient is not None and f"{lic}/{folder}" not in _listing_cache:
+                transient.append(lic)
             continue
         choice = _pick_donor_file(files, weight, style)
         if not choice:
@@ -271,6 +280,8 @@ def _resolve_from_repo(family: str, weight: int, style: str):
         try:
             raw = _download(f"{_GF_RAW}/{lic}/{folder}/{filename}")
         except Exception:  # noqa: BLE001
+            if transient is not None:
+                transient.append(lic)
             continue
         if kind == "static":
             return raw
@@ -319,6 +330,8 @@ def resolve_donor_detailed(fontname: str):
     cache_key = (key, weight, style)
     if cache_key in _donor_cache:
         return _donor_cache[cache_key]
+    if time.monotonic() < _donor_retry_at.get(cache_key, 0.0):
+        return None, None
 
     # An installed copy of the REAL family beats anything downloadable: it is
     # the actual typeface, not a lookalike. Measured, this was the whole
@@ -349,11 +362,19 @@ def resolve_donor_detailed(fontname: str):
         tried.append((_DONOR_SUBSTITUTE_KEYS[_alias], "substitute"))
 
     data, kind = None, None
+    transient: list = []
     for candidate, cand_kind in tried:
-        data = _resolve_from_repo(candidate, weight, style)
+        data = _resolve_from_repo(candidate, weight, style, transient)
         if data:
             kind = cand_kind
             break
+    if data is None and transient:
+        # The catalogue could not be reached (rate limit, timeout), which says nothing
+        # about whether the font is in it. Caching that as "no donor" made one network
+        # blip refuse every later edit in that font until the server restarted.
+        _donor_retry_at[cache_key] = time.monotonic() + _TRANSIENT_RETRY_S
+        return None, None
+    _donor_retry_at.pop(cache_key, None)
     _donor_cache[cache_key] = (data, kind)
     return _donor_cache[cache_key]
 

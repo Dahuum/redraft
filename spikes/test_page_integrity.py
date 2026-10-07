@@ -273,7 +273,7 @@ check("one-text-object page: the reorder moved no pixel",
 _cb = open(os.path.join(HERE, "..", "examples", "annex-cell.pdf"), "rb").read()
 _cells = [s for s in api.extract_spans(_cb) if s["text"] == "2,400.00"]
 _csd = max(_cells, key=lambda s: s["bbox"][0])          # the TOTAL column, QTY "1" to its left
-_long = "Zoé Ångström-Ñuñez 2,400.00"
+_long = "Zoé Ångström-Ñuñe 2,400.00"   # tuned to the true Lato Regular widths: crowds the QTY cell, no overlap
 _out, _rep = api.apply_replacements(_cb, [(_csd, _long)], try_inplace=True)
 check("a value that would end up touching its neighbour is refused", _out == _cb)
 _saved = api._crowds_neighbour

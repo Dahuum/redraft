@@ -228,6 +228,21 @@ _FONT_SUBSTITUTES: dict = {
 }
 
 
+_SCRIPT_WORDS = ("script", "signature", "handwrit", "calligraph", "cursive")
+
+
+def _style_substitute(family: str):
+    """A script face for a family nobody has heard of whose NAME says it is a script
+    ("BuongiornoRastellinoCyr-Script" — Canva's signature fonts are all like this).
+    Redrawing a signature in Helvetica reads as a different document; a thin signature
+    script keeps it one."""
+    words = [w.lower() for w in re.findall(r"[A-Z][a-z]*|[a-z]+", family)]
+    for i, w in enumerate(words):
+        if w.startswith(_SCRIPT_WORDS) and not (i and words[i - 1] in ("post", "java", "type")):
+            return ("Sacramento", "Signature-style script (no exact match for this family)")
+    return None
+
+
 # ── PDF Standard-14 (base-14) fonts ────────────────────────────────────────────
 # Helvetica/Times/Courier/Symbol/ZapfDingbats and their bold/italic variants are
 # the 14 fonts every PDF viewer (and ReportLab) ships built-in.  They are NOT on
@@ -481,7 +496,10 @@ def _file_weight_ok(path: str, weight: int, style: str) -> bool:
         os2 = tt["OS/2"] if "OS/2" in tt else None
         got = int(getattr(os2, "usWeightClass", weight) or weight)
         italic = bool(int(getattr(os2, "fsSelection", 0)) & 1) if os2 is not None else False
-        if abs(got - weight) > 150:
+        # 100 is one named step (Light 300 / Regular 400 / Medium 500 / Bold 700 are 100 apart
+        # or more) and it is visible: a Light 'O' beside Regular letters reads as a hole in the
+        # word. fontconfig lists "Regular" as a second style of a Light file, so it offers one.
+        if abs(got - weight) > 75:
             _dbg(f"system REJECTED wrong weight: {path} is {got}, wanted {weight}")
             return False
         if italic != (style == "italic"):
@@ -494,6 +512,16 @@ def _file_weight_ok(path: str, weight: int, style: str) -> bool:
 
 _WIDTH_TOKENS = ("condensed", "narrow", "extended", "expanded", "semicond",
                  "mono", "display", "caption", "inline", "outline", "shadow")
+
+
+def _weight_gap(path: str, weight: int) -> int:
+    """How far the font file's own weight is from the one asked for (0 when unreadable)."""
+    try:
+        from fontTools.ttLib import TTFont
+        tt = TTFont(path, lazy=True, fontNumber=0)
+        return abs(int(tt["OS/2"].usWeightClass) - weight)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _width_variant_rank(path: str) -> tuple:
@@ -537,7 +565,7 @@ def _find_system_font(family: str, weight: int, style: str) -> bytes | None:
             # "Book", so a :style=Book query returns DejaVuSansCondensed.ttf
             # alongside DejaVuSans.ttf — and taking the first hit restamped the
             # text in a narrower face. Prefer the plainest cut of the family.
-            path = min(cands, key=_width_variant_rank)
+            path = min(cands, key=lambda pp: (_weight_gap(pp, weight),) + _width_variant_rank(pp))
             _dbg(f"system fc-list match: family={fam!r} style={style_str!r} → {path}")
             _LAST_PATH["value"] = f"system:{path}"
             with open(path, "rb") as f:
@@ -682,8 +710,9 @@ def _fetch_google_font(family: str, weight: int, style: str) -> bytes | None:
                 return data
 
     # 3. Substitute family
-    if family in _FONT_SUBSTITUTES:
-        sub_family, reason = _FONT_SUBSTITUTES[family]
+    _sub = _FONT_SUBSTITUTES.get(family) or _style_substitute(family)
+    if _sub:
+        sub_family, reason = _sub
         _dbg(f"SUBSTITUTE: {family!r} → {sub_family!r} ({reason})")
         warnings.warn(
             f"[pdf_editor] '{family}' not available — substituting '{sub_family}' "
@@ -1150,6 +1179,24 @@ def _detect_alignments(spans: list) -> dict:
             and abs(x1s[j] - x1_i) > X0_MIN
         )
 
+        # ── A line stacked directly under/over this one at the same left edge is
+        # the structure of a left-aligned paragraph. A full-measure line has its
+        # midpoint on the page centre, which is also where the centred footer
+        # lines sit, so a Word paragraph's first line was outvoted by the footer
+        # and redrawn centred. Only neighbouring LINES are evidence here: a
+        # centred or right-aligned stack contradicts it with neighbours of its own.
+        def _adjacent(j):
+            dy = abs(oys[j] - oys[i])
+            return j != i and SAME_LINE_TOL < dy <= 2.5 * max(s["size"], 1.0)
+        near = [j for j in range(n) if _adjacent(j)]
+        if (any(abs(x0s[j] - x0_i) <= 0.5 and abs(x1s[j] - x1_i) > X0_MIN for j in near)
+                and not any(abs(x1s[j] - x1_i) <= X1_TOL and abs(x0s[j] - x0_i) > X0_MIN
+                            for j in near)
+                and not any(abs(cxs[j] - cx_i) <= CX_TOL and abs(x0s[j] - x0_i) > X0_MIN
+                            and abs(x1s[j] - x1_i) > X0_MIN for j in near)):
+            result[key] = "left"
+            continue
+
         # ── Right: shares x1, different x0 — needs >= 2 corroborating mates ─
         right_mates = sum(
             1 for j in range(n)
@@ -1242,6 +1289,7 @@ class PDFEditor:
             return result
 
         alias = _font_alias(fontname)
+        fontname = self._full_font_name(page_num, fontname)
 
         # 1. Try to get the full font
         full_raw = resolve_full_font(fontname)
@@ -1271,6 +1319,20 @@ class PDFEditor:
 
         self._font_cache[key] = (None, None, set())
         return (None, None, set())
+
+    def _full_font_name(self, page_num: int, fontname: str) -> str:
+        """MuPDF reports a subset font's name cut to 31 characters INCLUDING the "ABCDEF+"
+        tag, so a long family arrives as "BuongiornoRastellinoCyr-" for the embedded
+        "BuongiornoRastellinoCyr-Script": it matches no embedded font by name and says
+        nothing of its style. Restore the full name from the page's own font list."""
+        bare = fontname.split("+")[-1]
+        if len(bare) != 24:
+            return fontname
+        for entry in self.doc[page_num].get_fonts(full=True):
+            tail = entry[3].split("+")[-1]
+            if "+" in entry[3] and len(tail) > 24 and tail.startswith(bare):
+                return tail
+        return fontname
 
     # ------------------------------------------------------------------
     def replace(self, span: dict, new_text: str, page_num: int = 0):

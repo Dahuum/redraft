@@ -548,6 +548,43 @@ def _paragraph(lines, target_bbox):
     return para, lead
 
 
+# A list marker: one symbol ("—", "•", "-"), or a counter ("1.", "a)", "iv.").
+_MARKER = re.compile(r"^(?:[^\w\s]|(?:\d{1,3}|[A-Za-z]|[ivxIVX]{1,4})[.)])$")
+
+
+def _unhang_line(line, text_x):
+    """Take a hanging list marker off *line* (in place): its glyphs and the gap after
+    them, when the first word after the marker starts at *text_x* — the left edge the
+    paragraph's other lines share. The marker belongs to the list, not the paragraph:
+    it stays where it is, and the text beside it is what wraps. Without this the
+    model expected the first word right after the marker's own advance and a
+    ReportLab "— item" (marker, then a 6pt gap, then the text at the hanging indent)
+    was refused as "glyph positions don't follow the font"."""
+    cs = line["chars"]
+    i = 0
+    while i < len(cs) and not cs[i]["c"].isspace():
+        i += 1
+    if not 0 < i <= 4 or i >= len(cs):
+        return
+    if not _MARKER.match("".join(c["c"] for c in cs[:i])):
+        return
+    j = i
+    while j < len(cs) and cs[j]["c"].isspace():
+        j += 1
+    if j >= len(cs) or abs(cs[j]["ox"] - text_x) > _POS_TOL:
+        return
+    line["hang"] = {"x0": line["x0"], "chars": cs[:j]}
+    line["chars"] = cs[j:]
+    line["x0"] = cs[j]["ox"]
+    line["bbox"] = fitz.Rect(cs[j]["x0"], line["bbox"].y0, line["bbox"].x1, line["bbox"].y1)
+
+
+def _unhang(para):
+    if para and len(para) >= 2:
+        _unhang_line(para[0], para[1]["x0"])
+    return para
+
+
 def _aligned_block(ls):
     """Lines that all END together (a right-aligned column: "850.00" over
     "1,020.00") or share one centre: set by alignment, not wrapped — their
@@ -1000,7 +1037,14 @@ def reflow(pdf_bytes: bytes, span: dict, new_text: str, multiline_only: bool = F
                 ldoc = fitz.open(stream=learn_from, filetype="pdf")
             except Exception:  # noqa: BLE001
                 ldoc = None
-        return _reflow(doc, span, new_text, multiline_only, tuple(also), ldoc)
+        r = _reflow(doc, span, new_text, multiline_only, tuple(also), ldoc)
+        if not r.get("ok") and r.get("reason") == "unknown_layout":
+            # Nothing has been changed yet; read a hanging list marker as the list's,
+            # not the paragraph's, and try again.
+            r2 = _reflow(doc, span, new_text, multiline_only, tuple(also), ldoc, unhang=True)
+            if r2.get("ok") or r2.get("reason") != "unknown_layout":
+                return r2
+        return r
     finally:
         doc.close()
         if ldoc is not None:
@@ -1034,7 +1078,7 @@ def same_paragraph(pdf_bytes: bytes, span: dict, others) -> list:
         doc.close()
 
 
-def _reflow(doc, span, new_text, multiline_only=False, also=(), ldoc=None):
+def _reflow(doc, span, new_text, multiline_only=False, also=(), ldoc=None, unhang=False):
     pno = span.get("page", 0)
     page = doc[pno]
     if page.rotation or page.mediabox.x0 or page.mediabox.y0 \
@@ -1044,6 +1088,8 @@ def _reflow(doc, span, new_text, multiline_only=False, also=(), ldoc=None):
     para, lead = _paragraph(lines, span["bbox"])
     if not para:
         return _refuse("no_paragraph", "The field's line could not be found.")
+    if unhang:
+        _unhang(para)
     if multiline_only and len(para) < 2:
         # Asked only whether a re-wrap would CHANGE an edit that already fit:
         # a one-line paragraph whose new text fit its line has nothing to
@@ -1340,6 +1386,8 @@ def _reflow(doc, span, new_text, multiline_only=False, also=(), ldoc=None):
                 if not other or len(other) < 2 or id(other[0]) in seen:
                     continue
                 seen.add(id(other[0]))
+                if unhang:
+                    _unhang(other)
                 limit = established(other)
                 if limit is not None:
                     lead = olead
@@ -1746,7 +1794,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=(), ldoc=None):
         return _refuse("cannot_splice",
                        "The re-wrapped paragraph could not be written back into the page's "
                        "own content without moving something it must not.")
-    ok = _verify(out, pno, para, new_lines, ys, cut, dy, lines)
+    ok = _verify(out, pno, para, new_lines, ys, cut, dy, lines, unhang)
     if ok is not True:
         return _refuse("verify_failed", ok)
     if not _inked(base, out, pno, new_lines, ys, x0, xf):
@@ -1939,12 +1987,16 @@ def _result(out, para, new_lines, span, new_text, also, dy, cut, justified, sque
             "justified": bool(justified or squeeze)}
 
 
-def _verify(out, pno, para, new_lines, ys, cut, dy, lines_before):
+def _verify(out, pno, para, new_lines, ys, cut, dy, lines_before, unhang=False):
     d = fitz.open(stream=out, filetype="pdf")
     try:
         page = d[pno]
         after = _lines(page)
         xf = para[0]["x0"]
+        if unhang and len(new_lines):
+            for a_ in after:
+                if abs(a_["y"] - ys[0]) < 0.5:
+                    _unhang_line(a_, xf)
         x0 = para[1]["x0"] if len(para) >= 2 else xf
         for i, nl in enumerate(new_lines):
             y = ys[i]
