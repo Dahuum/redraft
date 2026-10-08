@@ -566,7 +566,7 @@ def page_dims(pdf_bytes: bytes) -> list:
 
 
 def _layout_violation(before: bytes, after: bytes, sd: dict,
-                      other_boxes=()) -> str | None:
+                      other_boxes=(), line_respaced: bool = False) -> str | None:
     """Did editing *sd* disturb anything the user did not touch?
 
     The engine's own checks look at the edited line. This looks at the PAGE,
@@ -584,7 +584,10 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
     that only knows about its own baseline cannot see a caption 5pt lower.
 
     *other_boxes* are fields changed in the same batch, whose words are
-    allowed to differ. Returns "moves_column" / "overlaps_neighbour" / None.
+    allowed to differ. *line_respaced*: the engine kept a justified line on its margin by
+    respacing the whole line, so every word on it may have moved (the engine bounds each
+    gap; the overprint check below still applies). Returns "moves_column" /
+    "overlaps_neighbour" / None.
     """
     pno = sd.get("page", 0)
     try:
@@ -650,6 +653,8 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
     used = set()
     for w in wb:
         if on_line(w):
+            if line_respaced:
+                continue
             if w[2] > x0 + tol and w[0] < x1 - tol:
                 continue                                    # the field itself
             if w[0] >= x1 - tol and (pinned_from is None or w[0] < pinned_from - tol):
@@ -835,7 +840,8 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             cand = base64.b64decode(r["pdf_b64"])
             others = [o["bbox"] for o, _ in replacements
                       if o is not sd and o.get("page", 0) == sd.get("page", 0)]
-            bad = _layout_violation(current, cand, sd, others)
+            bad = _layout_violation(current, cand, sd, others,
+                                    line_respaced=bool(r.get("words_respaced")))
             if bad:
                 # The engine placed it, and placing it disturbed the page.
                 # Not accepted here; the redraw gets its own chance, under
@@ -1332,16 +1338,16 @@ _INVISIBLE_MSG = (
 
 
 def _keep_edges(old: str, new: str) -> str:
-    """*new* with *old*'s leading/trailing whitespace where *new* has none."""
+    """*new* with *old*'s leading whitespace where *new* has none, and *old*'s trailing whitespace
+    in place of whatever *new* ends with. A trailing space paints nothing, but a TeX font has no
+    space glyph at all, so one stray space typed at the end of a field refused the whole edit."""
     if not new or not new.strip():
         return new
     lead = old[:len(old) - len(old.lstrip())]
     tail = old[len(old.rstrip()):]
     if lead and new[:1] == new.lstrip()[:1]:
         new = lead + new
-    if tail and new[-1:] == new.rstrip()[-1:]:
-        new = new + tail
-    return new
+    return new.rstrip() + tail
 
 
 def _qpdf_linearize(data: bytes):
@@ -1485,6 +1491,12 @@ def _apply_replacements(pdf_bytes: bytes, replacements: list,
     # place the text layer read "compensation.If" — two words glued into one
     # for copy, search and screen readers. Keep the edges the field had.
     replacements = [(sd, _keep_edges(sd.get("text", ""), nt)) for sd, nt in replacements]
+    # What is left once the invisible edges are settled can be the field exactly as it is; the
+    # engine cannot "find" an unchanged sequence and would report a failure for a no-op.
+    replacements = [(sd, nt) for sd, nt in replacements if nt != sd.get("text", "")]
+    if not replacements:
+        return pdf_bytes, {"fonts": [], "warnings": [],
+                           "in_place": {"count": 0, "total": 0, "refusals": []}}
     # An OCR layer over a scan. "Editing" it reported success while the page
     # the user sees stayed exactly as it was (0 pixels changed) and its text
     # layer started contradicting its image; redrawing instead would print
