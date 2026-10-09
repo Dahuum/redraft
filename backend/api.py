@@ -10,6 +10,7 @@ Endpoints
   GET  /                health / metadata
   POST /extract         multipart {file}                       → spans JSON
   POST /edit            multipart {file, edits}                → edited PDF bytes
+  POST /v1/replace      {pdf|file, changes:[{find,replace}]}   → edited PDF + receipt
   POST /bulk            multipart {template, data, mapping}    → ZIP of PDFs
 
 Design notes
@@ -52,6 +53,7 @@ import inplace_spike as _spike  # noqa: E402  — true in-place editing, tried b
 import conform as _conform
 import reading_order as _reading_order
 import reflow as _reflow  # noqa: E402  — re-wrap a paragraph when a line no longer fits
+import find_replace  # noqa: E402  — POST /v1/replace: find the text, plan the edits, write the receipt
 from annex_model import (  # noqa: E402  — annex rules
     build_model, plan_edits, plan_header_edits, parse_num, detect_template,
 )
@@ -66,7 +68,8 @@ app.add_middleware(
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Redraft-Font-Report", "X-Redraft-Generated", "X-Redraft-Failed"],
+    expose_headers=["X-Redraft-Font-Report", "X-Redraft-Generated", "X-Redraft-Failed",
+                    "X-Redraft-Receipt"],
 )
 
 
@@ -2033,7 +2036,7 @@ def parse_table(filename: str, data: bytes) -> tuple:
 @app.get("/")
 def root():
     return {"app": "Redraft API", "version": "1.0",
-            "endpoints": ["/extract", "/edit", "/bulk"], "auth": AUTH_ON}
+            "endpoints": ["/extract", "/edit", "/bulk", "/v1/replace"], "auth": AUTH_ON}
 
 
 @app.get("/me")
@@ -2263,6 +2266,175 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
             "X-Redraft-Font-Report": hdr,
         },
     )
+
+
+_CHANGES_SCHEMA = {
+    "type": "array", "minItems": 1, "maxItems": find_replace.MAX_CHANGES,
+    "description": "What to change. Each find is matched against the text the PDF has now, "
+                   "never against another change's result.",
+    "items": {
+        "type": "object", "required": ["find", "replace"], "additionalProperties": False,
+        "properties": {
+            "find": {"type": "string", "description": "The text to find, as it reads on the page."},
+            "replace": {"type": "string", "description": "What it becomes. \"\" deletes it."},
+            "page": {"type": "integer", "minimum": 1,
+                     "description": "Only look on this page (1 = first)."},
+            "first_only": {"type": "boolean", "default": False,
+                           "description": "Change only the first match instead of every match."},
+            "whole_word": {"type": "boolean", "default": True,
+                           "description": "Don't match inside a longer word or number "
+                                          "(240.00 is not inside 1,240.00)."},
+        }}}
+
+_REPLACE_BODY = {"required": True, "content": {
+    "application/json": {"schema": {
+        "type": "object", "required": ["pdf", "changes"],
+        "properties": {
+            "pdf": {"type": "string", "format": "byte", "description": "The PDF, base64."},
+            "changes": _CHANGES_SCHEMA,
+            "strict": {"type": "boolean", "default": False,
+                       "description": "Answer 422 (no PDF) unless every change was made."},
+            "filename": {"type": "string"}}}},
+    "multipart/form-data": {"schema": {
+        "type": "object", "required": ["file", "changes"],
+        "properties": {
+            "file": {"type": "string", "format": "binary"},
+            "changes": {"type": "string",
+                        "description": "JSON text of the changes list: [{\"find\":\"…\",\"replace\":\"…\"}]"},
+            "strict": {"type": "boolean", "default": False}}}}}}
+
+_REPLACE_RESPONSES = {
+    200: {"description": "`pdf` (base64) is null when nothing could be changed. With "
+                         "`Accept: application/pdf` the body is the PDF and the receipt "
+                         "travels base64 in `X-Redraft-Receipt`.",
+          "content": {"application/json": {"schema": {
+              "type": "object",
+              "properties": {
+                  "pdf": {"type": "string", "format": "byte", "nullable": True},
+                  "receipt": {"type": "object", "properties": {
+                      "ok": {"type": "boolean"},
+                      "status": {"type": "string", "enum": ["ok", "partial", "unchanged"]},
+                      "edited": {"type": "integer"},
+                      "pages": {"type": "integer"},
+                      "ms": {"type": "integer"},
+                      "changes": {"type": "array", "items": {"type": "object"}},
+                      "warnings": {"type": "array", "items": {"type": "string"}},
+                      "not_reflowed": {"type": "array", "items": {"type": "object"}},
+                      "sha256": {"type": "object", "properties": {
+                          "before": {"type": "string"},
+                          "after": {"type": "string", "nullable": True}}}}}}}}}},
+    422: {"description": "`strict` was set and not every change was made, or a PDF "
+                         "was asked for and nothing changed. `receipt` says why."},
+}
+
+
+async def _replace_input(request: Request):
+    ctype = (request.headers.get("content-type") or "").lower()
+    try:
+        if int(request.headers.get("content-length") or 0) > MAX_PDF_BYTES * 2:
+            raise HTTPException(413, f"The request is too large. The PDF limit is "
+                                     f"{MAX_PDF_BYTES // (1024 * 1024)} MB.")
+    except ValueError:
+        pass
+    try:
+        if ctype.startswith("multipart/form-data"):
+            form = await request.form()
+            up = form.get("file")
+            if up is None or not hasattr(up, "read"):
+                raise HTTPException(400, "Send the PDF in the `file` field.")
+            data, name = await up.read(), up.filename or ""
+            raw = json.loads(form.get("changes") or "null")
+            strict = str(form.get("strict") or "").lower() in ("1", "true", "yes")
+        elif ctype.startswith("application/json"):
+            body = await request.json()
+            data = base64.b64decode(body["pdf"], validate=True)
+            raw, strict, name = body.get("changes"), body.get("strict") is True, str(body.get("filename") or "")
+        else:
+            raise HTTPException(415, "Send multipart/form-data (file + changes) or "
+                                     "application/json (pdf as base64 + changes).")
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Couldn't read the request. Expected the PDF (`file`, or `pdf` "
+                                 "as base64) and `changes` as a JSON list of {find, replace}.")
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    try:
+        return data, find_replace.parse_changes(raw), strict, name
+    except find_replace.BadRequest as exc:
+        raise HTTPException(400, str(exc))
+
+
+def _page_texts(pdf: bytes) -> list:
+    doc = fitz.open(stream=pdf, filetype="pdf")
+    try:
+        return [" ".join(pg.get_text().split()) for pg in doc]
+    finally:
+        doc.close()
+
+
+@app.post("/v1/replace", openapi_extra={"requestBody": _REPLACE_BODY}, responses=_REPLACE_RESPONSES,
+          summary="Replace text in a PDF")
+async def v1_replace(request: Request, user: str = Depends(require_user)):
+    """Find text in a PDF and change it — same font, same place, paragraphs re-flowed — and
+    say exactly what was done. Stateless: nothing is stored. You get a PDF only if at least
+    one change was made, so an untouched document can't be mistaken for a corrected one."""
+    t0 = time.time()
+    data, changes, strict, name = await _replace_input(request)
+    _check_size("The PDF", data, MAX_PDF_BYTES)
+    _check_readable("The PDF", data, name)
+    _ingest_embedded_fonts(data, user)
+    try:
+        spans = extract_spans(data)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
+
+    p = find_replace.plan(spans, changes)
+    edited, report = data, {}
+    if p["edits"]:
+        await run_in_threadpool(_meter_check, user, 1)
+        try:
+            edited, report = apply_replacements(
+                data, [(spans[i], t) for i, t in sorted(p["edits"].items())], try_inplace=True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"Failed to apply the changes ({type(exc).__name__}: {exc}).")
+    find_replace.settle(p, spans, report, set(_UNSHIPPABLE_MSG))
+    if edited == data:                    # an edit reported, a file that did not change
+        for m in p["matches"]:
+            if m["status"] in ("in_place", "redrawn"):
+                m.update(status="unchanged", reason="no_change",
+                         message="The edit was reported but the file did not change.")
+    did = any(m["status"] in ("in_place", "redrawn") for m in p["matches"])
+    if did:
+        if _wants_attribution(user):
+            edited = _add_attribution(edited)
+        await run_in_threadpool(_meter_add, user, 1)
+
+    texts = {False: _page_texts(edited) if did else [], True: _page_texts(data) if did else []}
+
+    def readback(page: int, text: str, before: bool = False) -> int:
+        return texts[before][page - 1].count(" ".join(text.split()))
+
+    rc = find_replace.receipt(
+        changes, p, report, readback if did else None,
+        {"pages": len(texts[False]) if did else len(page_dims(data)),
+         "sha256": {"before": hashlib.sha256(data).hexdigest(),
+                    "after": hashlib.sha256(edited).hexdigest() if did else None}})
+    rc["ms"] = round((time.time() - t0) * 1000)
+
+    accept = (request.headers.get("accept") or "").lower()
+    wants_pdf = "application/pdf" in accept
+    if (strict and rc["status"] != "ok") or (wants_pdf and not did):
+        return JSONResponse(
+            {"detail": "Not every change could be made." if did else "Nothing could be changed.",
+             "receipt": rc}, status_code=422)
+    if wants_pdf:
+        stem = Path(name or "document").stem
+        return Response(
+            content=edited, media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="edited_{stem}.pdf"',
+                     "X-Redraft-Receipt": base64.b64encode(json.dumps(rc).encode()).decode()})
+    return {"pdf": base64.b64encode(edited).decode() if did else None, "receipt": rc}
 
 
 @app.post("/bulk")
