@@ -2554,13 +2554,13 @@ def _stream_items(data: bytes):
         if m.group("bt"):
             if m.group("bt") == b"BT":
                 cur = {"bt": m.end(), "ctm": ctm, "lm": None, "leading": None,
-                       "positions": [], "first": None, "rigid": True}
+                       "positions": [], "pos_at": [], "first": None, "rigid": True}
             elif cur is not None:
                 obj, cur = cur, None
                 if obj["first"] is None:
                     continue
                 obj["first"].update(bt=obj["bt"], et=m.start("bt"),
-                                    positions=obj["positions"],
+                                    positions=obj["positions"], pos_at=obj["pos_at"],
                                     rigid=obj["rigid"], ctm=obj["ctm"])
                 yield ("text", obj["first"])
             continue
@@ -2573,6 +2573,7 @@ def _stream_items(data: bytes):
         if abs(c[1]) > 1e-6 or abs(c[2]) > 1e-6:
             cur["positions"] = None
 
+        at = None
         if m.group("tl"):
             try:
                 cur["leading"] = float(m.group("tlv"))
@@ -2614,6 +2615,7 @@ def _stream_items(data: bytes):
                 cur["first"] = {"x_at": m.span("tdx"), "after_pos": m.end("td"),
                                 "x_scale": c[0]}
             else:
+                at = (m.span("tdx"), cur["lm"][0] * c[0])
                 cur["lm"] = _mat_mul((1.0, 0.0, 0.0, 1.0, tx, ty), cur["lm"])
         else:                                    # T* / ' / "
             if cur["lm"] is None or cur["leading"] is None:
@@ -2629,6 +2631,27 @@ def _stream_items(data: bytes):
             cur["first"]["x"], cur["first"]["y"] = px, py
         if cur["positions"] is not None:
             cur["positions"].append((px, py))
+            cur["pos_at"].append(at)
+
+
+def _tail_td_operand(obj, base_ys, from_x: float, tol: float):
+    """(x operand span, page units per operand unit) of the Td that places the first text
+    at or past *from_x* on the edited line, when moving THAT Td moves the tail of the
+    object and nothing else; None when it does not.
+
+    That holds when the object has one absolute origin, the Td is a plain relative move,
+    and every position from it on is on the edited line and past the field."""
+    pos, pos_at = obj["positions"], obj.get("pos_at")
+    if not obj["rigid"] or not pos_at or len(pos_at) != len(pos):
+        return None
+    k = next((i for i, q in enumerate(pos)
+              if any(abs(q[1] - by) <= tol for by in base_ys) and q[0] >= from_x - tol), None)
+    if k is None or k == 0 or pos_at[k] is None or not pos_at[k][1]:
+        return None
+    if not all(any(abs(q[1] - by) <= tol for by in base_ys) and q[0] >= from_x - tol
+               for q in pos[k:]):
+        return None
+    return pos_at[k] + (k,)
 
 
 def _reflow_same_line(doc, page, base_ys, from_x: float, dx: float,
@@ -2689,17 +2712,35 @@ def _reflow_same_line(doc, page, base_ys, from_x: float, dx: float,
 
     Returns the number of items shifted, or None if reflow isn't safe here.
     """
+    # *dx* is one shift for everything from *from_x* on, or a list of (x, shift) steps:
+    # text at or past a step's x moves by that step's shift. Steps let a wide gutter
+    # absorb the push, so a column beyond it stays where it is.
+    steps = sorted(dx) if isinstance(dx, (list, tuple)) else [(from_x, dx)]
+    reach = max((abs(d) for _, d in steps), default=0.0)
+
+    def delta_at(x):
+        d = 0.0
+        for sx, sd in steps:
+            if x >= sx - tol:
+                d = sd
+        return d
+
+    def one_delta(xs):
+        ds = {round(delta_at(x), 3) for x in xs}
+        return ds.pop() if len(ds) == 1 else None
+
     grows = field is not None and abs(field[3] - field[1]) >= 0.01
-    if abs(dx) < 0.01 and not grows:
+    if reach < 0.01 and not grows:
         return 0
     edits, shifted = [], 0
     for st in _content_streams(doc, page):
         data = st["data"]
         hits = []
+        tail_writes = []
         # With nothing to push (a field changing width in front of a column)
         # only the field's own rules are rewritten; no text object moves, so
         # none needs to be proven movable.
-        for obj in (_text_objects(data) if abs(dx) >= 0.01 else ()):
+        for obj in (_text_objects(data) if reach >= 0.01 else ()):
             pos = obj["positions"]
             if pos is None:
                 # Where this object draws cannot be worked out from its
@@ -2720,21 +2761,38 @@ def _reflow_same_line(doc, page, base_ys, from_x: float, dx: float,
             if len(after) != len(pos):
                 # Either the object also draws left of the field, or it also
                 # draws on another line. Its later Td offsets are RELATIVE to
-                # its origin, so it can only be moved as a whole — and moving
-                # it as a whole would move text that must not move.
-                return None
+                # its origin, so it cannot be moved by its origin without
+                # moving text that must not move. What CAN be moved is its
+                # tail: a relative Td carries every position after it, so
+                # adding the shift to the first Td at or past the field moves
+                # exactly the text that follows, provided all of it is on this
+                # line and beyond the field.
+                at = _tail_td_operand(obj, base_ys, from_x, tol)
+                if at is None:
+                    return None
+                d = one_delta(q[0] for q in pos[at[2]:])
+                if d is None:
+                    return None            # the tail spans a step: cannot move part of it
+                if abs(d) >= 0.005:
+                    tail_writes.append((at[0], d / at[1]))
+                continue
             if not obj["rigid"] or not obj["x_scale"]:
                 # A second absolute origin inside the object, so rewriting
                 # the first one would leave the rest of it behind; or a
                 # degenerate transform there is no way to write through.
                 return None
+            d = one_delta(q[0] for q in after)
+            if d is None:
+                return None                # the object spans a step: cannot move part of it
+            obj["_d"] = d
             hits.append(obj)
         # Every operand to rewrite, as (byte span, how much to add to it).
         # The operand lives in the object's own space, which is not the
         # page's when a cm is in force: a Chrome-printed page is scaled by
         # .24 and then by 3.06, so a 20pt shift on the page is a 27pt change
         # to the number in the stream.
-        writes = [(o["x_at"], dx / o["x_scale"]) for o in hits]
+        writes = [(o["x_at"], o["_d"] / o["x_scale"]) for o in hits if abs(o["_d"]) >= 0.005] \
+            + tail_writes
         if slots and rule_h > 0.0:
             fx0, fx1, fsize, fnew = field if field else (0.0, 0.0, 0.0, 0.0)
             edge = 0.4 * fsize
@@ -2766,7 +2824,8 @@ def _reflow_same_line(doc, page, base_ys, from_x: float, dx: float,
                     # Starts before the field but is not its underline, so it
                     # spans across; moving it would drag its left end too.
                     continue
-                writes.append((r["x_at"], dx / r["x_scale"]))
+                if abs(delta_at(r["x0"])) >= 0.005:
+                    writes.append((r["x_at"], delta_at(r["x0"]) / r["x_scale"]))
         if not writes:
             continue
         out = bytearray()
@@ -2957,13 +3016,35 @@ def _next_text_x0(page, target_bbox):
     refused 18 otherwise-good edits on a LaTeX paper whose following text was
     far enough away that the longer value never reached it.
     """
-    x0 = fitz.Rect(target_bbox).x0
+    tb = fitz.Rect(target_bbox)
+    x0 = tb.x0
     best = None
     for span in _line_spans(page, target_bbox):
         if span["bbox"][0] <= x0 + 0.5:
-            continue              # the field itself, or text before it
+            # The field itself, or text before it. A field that is only part of its span
+            # (Word writes each word at its own x and MuPDF merges them) is followed by the
+            # rest of that span, and that is text too: counting it as empty gutter let a longer
+            # word print over it and a shorter one leave a hole.
+            tail = _span_tail_x0(page, span, tb)
+            if tail is not None:
+                best = tail if best is None else min(best, tail)
+            continue
         best = span["bbox"][0] if best is None else min(best, span["bbox"][0])
     return best
+
+
+def _span_tail_x0(page, span, field):
+    """x0 of the first non-space glyph of *span* that starts at or after the field's right edge."""
+    if not (span["bbox"][0] <= field.x0 + 0.5 and span["bbox"][2] > field.x1 + 0.5):
+        return None
+    for b in page.get_text("rawdict")["blocks"]:
+        for l in b.get("lines", []):
+            for sp in l["spans"]:
+                if abs(sp["origin"][1] - span["origin"][1]) > 0.5 or abs(sp["bbox"][0] - span["bbox"][0]) > 0.5:
+                    continue
+                xs = [c["bbox"][0] for c in sp["chars"] if c["c"].strip() and c["bbox"][0] >= field.x1 - 0.5]
+                return min(xs) if xs else None
+    return None
 
 
 def _is_column_cell(page, target_bbox, x: float,
@@ -3033,6 +3114,71 @@ def _pinned_at(positions, x: float, tol: float = 1.5) -> bool:
     conservative rather than conclude that nothing is pinned.
     """
     return any(abs(px - x) <= tol for px in positions)
+
+
+def _span_tail_chain(page, target_bbox, lspans, next_x0, size: float):
+    """The line past the field's own span, when what follows the field is the rest of that span.
+
+    [(x0, gap, is_cell)] for every later span of the line, in order; *gap* is the space between
+    it and whatever is left of it. None when the field is not followed by its own span's tail,
+    or the spans of the line overlap in a way that makes the order ambiguous."""
+    tb = fitz.Rect(target_bbox)
+    own = next((sp for sp in lspans
+                if sp["bbox"][0] <= tb.x0 + 0.5 and sp["bbox"][2] > tb.x1 + 0.5), None)
+    if own is None or next_x0 is None:
+        return None
+    tail = _span_tail_x0(page, own, tb)
+    if tail is None or abs(tail - next_x0) > 0.01:
+        return None
+    own_end = own["bbox"][2]
+    later = sorted((sp for sp in lspans
+                    if sp is not own and sp["bbox"][0] > tb.x0 + 0.5),
+                   key=lambda sp: sp["bbox"][0])
+    if any(sp["bbox"][0] < own_end - 0.5 for sp in later):
+        return None
+    out, prev_end = [], own_end
+    for sp in later[:12]:
+        out.append((sp["bbox"][0], sp["bbox"][0] - prev_end,
+                    _is_column_cell(page, target_bbox, sp["bbox"][0])))
+        prev_end = max(prev_end, sp["bbox"][2])
+    return out
+
+
+def _chain_room(chain, slack0: float, size: float, gap_keep: float):
+    """How much the field may grow before the line reaches a table cell, or None without one.
+
+    Every gutter wider than *gap_keep* absorbs its excess; the cell itself is approached to
+    within half an em and never moved."""
+    room = slack0
+    for _x, gap, cell in chain or ():
+        if cell:
+            return room + max(0.0, gap - 0.5 * size)
+        room += max(0.0, gap - gap_keep)
+    return None
+
+
+def _push_steps(reflow_from: float, dx: float, slack0: float, chain, gap_keep: float, size: float):
+    """[(x, shift)]: how far the text from *x* on moves when the field changes width by *dx*.
+
+    The same rule as everywhere else in this engine, applied gutter by gutter: up to two ems
+    is a real space and is kept, what is wider is a gutter and absorbs the change, and a table
+    cell never moves."""
+    if dx > 0:
+        p = max(0.0, dx - slack0)
+    else:
+        p = 0.0 if slack0 > 0 else dx
+    steps = [(reflow_from, p)]
+    for x, gap, cell in chain or ():
+        if dx > 0:
+            if p <= 0:
+                break
+            p = 0.0 if cell else max(0.0, p - max(0.0, gap - gap_keep))
+        else:
+            if p == 0:
+                break
+            p = 0.0 if (cell or gap > gap_keep) else p
+        steps.append((x, p))
+    return steps
 
 
 def _would_tear_line(seen, lspans, old_x1, push, gap_keep, tol: float = 0.6):
@@ -3759,22 +3905,66 @@ def _sub_target(page, target, start, length):
     return None
 
 
-def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
-         verify: bool = True) -> dict:
-    """In-place edit of `old` -> `new` (see _edit_core). When the whole span
-    can't be spliced for a structural reason, the changed words alone are
-    tried: a Word line whose apostrophes are drawn by a second font object
-    refused "programmation" -> "informatique" three words away from them."""
-    r = _edit_core(pdf_bytes, old, new, page, bbox, verify)
-    if r.get("ok") or r.get("reason") not in _NARROWABLE or old == new:
-        return r
+def _tail_origins(pdf_bytes, text, page, near_y, tail_len):
+    """x of the origin of each of the last *tail_len* characters of the span reading *text*
+    on *page*'s baseline *near_y* (PyMuPDF top-down y), or None."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for b in doc[page].get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
+            for l in b.get("lines", []):
+                for sp in l["spans"]:
+                    if abs(sp["origin"][1] - near_y) > 1.0:
+                        continue
+                    chars = sp["chars"]
+                    if "".join(c["c"] for c in chars) == text and len(chars) >= tail_len:
+                        return [c["origin"][0] for c in chars[len(chars) - tail_len:]]
+    finally:
+        doc.close()
+    return None
+
+
+def _tail_respaced(pdf_bytes, edited_b64, old, new, page, bbox, tol: float = 0.8):
+    """Did a whole-span edit change how the words AFTER the changed ones are spaced?
+
+    The tail should come out shifted as a whole. Where the producer spaced its glyphs itself
+    and the edit re-set them at the font's own advances, the tail's letters drift against
+    each other, which is what this measures: the largest change, in points, of any tail
+    character's position relative to the tail's first."""
+    start, old_mid, new_mid = _changed_words(old, new)
+    tail_o, tail_n = old[start + len(old_mid):], new[start + len(new_mid):]
+    if tail_o != tail_n or len(tail_o.strip()) < 2:
+        return False
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            pages = [page] if page is not None else range(doc.page_count)
+            at = next(((pno, sp) for pno in pages for sp in _spans(doc[pno])
+                       if sp["text"] == old and (bbox is None or fitz.Rect(sp["bbox"]).intersects(fitz.Rect(bbox)))),
+                      None)
+        finally:
+            doc.close()
+        if at is None:
+            return False
+        pno, sp = at
+        a = _tail_origins(pdf_bytes, old, pno, sp["origin"][1], len(tail_o))
+        b = _tail_origins(base64.b64decode(edited_b64), new, pno, sp["origin"][1], len(tail_n))
+    except Exception:  # noqa: BLE001 — a measurement that can't be made is not a reason to act
+        return False
+    if not a or not b or len(a) != len(b):
+        return False
+    return max(abs((x - a[0]) - (y - b[0])) for x, y in zip(a, b)) > tol
+
+
+def _edit_narrowed(pdf_bytes, old, new, page, bbox, verify):
+    """The edit of just the changed words of *old* -> *new*, or None when that is not a
+    narrower edit or the span can't be addressed. Returns _edit_core's result for it."""
     start, old_mid, new_mid = _changed_words(old, new)
     if not old_mid.strip() or old_mid == old:
-        return r
+        return None
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception:  # noqa: BLE001
-        return r
+        return None
     try:
         found = None
         pages = [page] if page is not None else range(doc.page_count)
@@ -3787,16 +3977,50 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
             if found:
                 break
         if not found:
-            return r
+            return None
         sub = _sub_target(doc[found[0]], found[1], start, len(old_mid))
     finally:
         doc.close()
     if sub is None:
-        return r
+        return None
     r2 = _edit_core(pdf_bytes, old_mid, new_mid, found[0], sub["bbox"], verify,
                     _target=(found[0], sub))
     if r2.get("ok"):
         r2["narrowed"] = {"from": old[:60], "to": old_mid}
+    return r2
+
+
+def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
+         verify: bool = True) -> dict:
+    """In-place edit of `old` -> `new` (see _edit_core). When the whole span
+    can't be spliced for a structural reason, the changed words alone are
+    tried: a Word line whose apostrophes are drawn by a second font object
+    refused "programmation" -> "informatique" three words away from them.
+
+    A whole-span edit that lands across several text runs re-sets everything from the
+    first changed glyph to the end of the span at the font's own advances. Where the
+    producer spaced those glyphs itself (Chrome puts every glyph on its own rounded `Td`)
+    that tightens the rest of the line and misjudges how far it extends, so the text after
+    it is pulled onto it. When words follow the changed ones, the changed words alone are
+    edited and the rest of the span is moved, not rewritten."""
+    r = _edit_core(pdf_bytes, old, new, page, bbox, verify)
+    if old == new:
+        return r
+    if r.get("ok"):
+        if r.get("case") == "multi_run":
+            start, old_mid, _ = _changed_words(old, new)
+            if (old_mid.strip() and start + len(old_mid) < len(old)
+                    and _tail_respaced(pdf_bytes, r["pdf_b64"], old, new, page, bbox)):
+                r2 = _edit_narrowed(pdf_bytes, old, new, page, bbox, verify)
+                if r2 and r2.get("ok"):
+                    return r2
+        return r
+    if r.get("reason") not in _NARROWABLE:
+        return r
+    r2 = _edit_narrowed(pdf_bytes, old, new, page, bbox, verify)
+    if r2 is None:
+        return r
+    if r2.get("ok"):
         return r2
     # The narrowed attempt got PAST locating a splice — it just doesn't fit or draw yet —
     # which is a more useful diagnosis of the actual edit than the outer refusal, and, unlike
@@ -4673,6 +4897,8 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # A table cell after the field never moves, in either direction:
         # moving one row's cell out of its column is visible at a glance.
         next_cell = next_pinned and _is_column_cell(odoc[tpage], target["bbox"], next_x0)
+        chain = (_span_tail_chain(odoc[tpage], target["bbox"], _lspans, next_x0, target["size"])
+                 if next_pinned and not next_cell else None)
         # A number in a right-aligned column keeps its RIGHT edge: it grows
         # leftward, into the space before it, and pushes nothing.
         right_col = _right_aligned_column(odoc[tpage], target)
@@ -4718,6 +4944,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # the tightening levers below, then an honest refusal.
         slack = max(0.0, (next_x0 - old_x1) - 0.5 * target["size"])
     trailing = max(0.0, (line_end_old or old_x1) - old_x1)
+    chain_room = _chain_room(chain, slack, target["size"], _gap_keep) if chain else None
 
     # When the extent can't be established at all, the overflow check and the
     # reflow are both skipped and the edit proceeds exactly as it did before
@@ -4773,6 +5000,8 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                     old_x1 + slack + (0.0 if next_cell else
                                       max(0.0, right_limit - old_x1 - trailing))
                     ) - old_x0
+        if chain_room is not None:
+            avail = min(right_limit, old_x1 + chain_room) - old_x0
         if right_col:
             avail = old_x1 - (left_x1 + 0.5 * target["size"])
         base_w = new_x1 - old_x0
@@ -4860,8 +5089,12 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # shrinks. This was `_dx - slack` unclamped: a qty going 1 -> 10
         # (+5.6pt against 44pt of slack) pulled the price and amount
         # columns 38.9pt LEFT, and 10 -> 1 pulled them 5.6pt.
+        reflow_from = min(old_x1, next_x0) if next_x0 is not None else old_x1
         if next_cell:
             _push = 0.0
+        elif chain:
+            push_plan = _push_steps(reflow_from, _dx, slack, chain, _gap_keep, target["size"])
+            _push = push_plan[0][1]
         elif _dx > 0:
             _push = max(0.0, _dx - slack)
         else:
@@ -4870,9 +5103,8 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # has to take its new width (a link shortened in front of a column
         # kept a 34pt rule trailing into empty space).
         if new_x1 is not None and (abs(_push) > 0.05 or abs(_dx) > 0.05):
-            reflow_from = min(old_x1, next_x0) if next_x0 is not None else old_x1
             n = _reflow_same_line(rdoc, rdoc[tpage], line_ys,
-                                  reflow_from, _push,
+                                  reflow_from, push_plan if chain and not next_cell else _push,
                                   slots=line_slots, rule_h=line_rule_h,
                                   field=(old_x0, old_x1, target["size"], new_x1))
             if n:
