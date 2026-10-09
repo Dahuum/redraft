@@ -2957,13 +2957,35 @@ def _next_text_x0(page, target_bbox):
     refused 18 otherwise-good edits on a LaTeX paper whose following text was
     far enough away that the longer value never reached it.
     """
-    x0 = fitz.Rect(target_bbox).x0
+    tb = fitz.Rect(target_bbox)
+    x0 = tb.x0
     best = None
     for span in _line_spans(page, target_bbox):
         if span["bbox"][0] <= x0 + 0.5:
-            continue              # the field itself, or text before it
+            # The field itself, or text before it. A field that is only part of its span
+            # (Word writes each word at its own x and MuPDF merges them) is followed by the
+            # rest of that span, and that is text too: counting it as empty gutter let a longer
+            # word print over it and a shorter one leave a hole.
+            tail = _span_tail_x0(page, span, tb)
+            if tail is not None:
+                best = tail if best is None else min(best, tail)
+            continue
         best = span["bbox"][0] if best is None else min(best, span["bbox"][0])
     return best
+
+
+def _span_tail_x0(page, span, field):
+    """x0 of the first non-space glyph of *span* that starts at or after the field's right edge."""
+    if not (span["bbox"][0] <= field.x0 + 0.5 and span["bbox"][2] > field.x1 + 0.5):
+        return None
+    for b in page.get_text("rawdict")["blocks"]:
+        for l in b.get("lines", []):
+            for sp in l["spans"]:
+                if abs(sp["origin"][1] - span["origin"][1]) > 0.5 or abs(sp["bbox"][0] - span["bbox"][0]) > 0.5:
+                    continue
+                xs = [c["bbox"][0] for c in sp["chars"] if c["c"].strip() and c["bbox"][0] >= field.x1 - 0.5]
+                return min(xs) if xs else None
+    return None
 
 
 def _is_column_cell(page, target_bbox, x: float,
