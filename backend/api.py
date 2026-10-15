@@ -1606,20 +1606,9 @@ def _apply_replacements(pdf_bytes: bytes, replacements: list,
                 ed.save(out_path)
 
             fonts_used = {sd["font"] for sd, _ in replacements}
-            report = []
-            for fn in sorted(fonts_used):
-                src = font_source(fn)
-                if (src.startswith("system:") or src.startswith("google")
-                        or src.startswith("builtin:")):
-                    status = "match"
-                elif src.startswith("substitute") or src.startswith("script-fallback"):
-                    status = "substitute"
-                elif src.startswith("BUILTIN") or src.startswith("SUBSET"):
-                    status = "fallback"
-                else:
-                    status = "unknown"
-                report.append({"font": fn.split("+")[-1], "status": status,
-                               "source": src})
+            embedded = _embedded_font_names(pdf_bytes)
+            report = [{"font": fn.split("+")[-1], "status": _status_of(fn, font_source(fn) or "", embedded),
+                       "source": font_source(fn)} for fn in sorted(fonts_used)]
 
             def _refusal_for(sd):
                 return next((r for r in inplace_refusals
@@ -1761,18 +1750,46 @@ def _font_cache_name(fontname: str) -> str:
     return _pe.font_cache_key(fontname)
 
 
-def _font_status(fontname: str) -> dict:
+def _embedded_font_names(pdf_bytes: bytes) -> set:
+    """Base names (subset prefix dropped) of the fonts the PDF carries inside it."""
+    names = set()
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                for f in page.get_fonts(full=False):
+                    if f[1] and f[1] != "n/a":
+                        names.add(f[3].split("+")[-1])
+    except Exception:  # noqa: BLE001
+        pass
+    return names
+
+
+def _status_of(fontname: str, src: str, embedded: set) -> str:
+    """builtin | match | embedded | substitute | fallback, as the edit will actually come out.
+
+    `embedded`: the document's own font is drawn, and the edit engines add any letter its
+    subset lacks from a donor — so it is not a font the user has to supply. A subset with no
+    full copy found used to be reported "missing glyphs render as boxes", which the engines
+    have not done since glyph injection; boxed fields are refused, never shipped."""
+    if src.startswith("builtin:"):
+        return "builtin"
+    if src.startswith(("system:", "google", "document:")):
+        return "match"
+    if src.startswith(("substitute", "script-fallback")):
+        return "substitute"
+    base = fontname.split("+")[-1]
+    # Span font names can be cut short ("HerrVonMuellerhoff-Regul"), so a prefix of an embedded name counts.
+    inside = base in embedded or (len(base) >= 8 and any(e.startswith(base) for e in embedded))
+    if src == "type3-family-donor" or (src.startswith("SUBSET") and inside):
+        return "embedded"
+    return "fallback"
+
+
+def _font_status(fontname: str, embedded: set = frozenset()) -> dict:
     """Resolve *fontname* and describe how well it matched (for the UI)."""
     resolve_full_font(fontname)          # populates font_source; result is memoised
     src = font_source(fontname) or ""
-    if src.startswith("builtin:"):
-        status = "builtin"
-    elif src.startswith("system:") or src.startswith("google"):
-        status = "match"
-    elif src.startswith("substitute"):
-        status = "substitute"
-    else:
-        status = "fallback"
+    status = _status_of(fontname, src, embedded)
     fam, weight, style = _pe._parse_font_name(fontname)
     return {
         "font":       fontname.split("+")[-1],
@@ -1780,7 +1797,7 @@ def _font_status(fontname: str) -> dict:
         "family":     fam,
         "weight":     weight,
         "style":      style,
-        "status":     status,            # builtin | match | substitute | fallback
+        "status":     status,            # builtin | match | embedded | substitute | fallback
         "source":     src,
         "cache_name": _font_cache_name(fontname),
     }
@@ -2569,7 +2586,8 @@ async def fonts(file: UploadFile = File(...), user: str = Depends(require_user))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
     distinct = sorted({s["font"] for s in spans})
-    report = [_font_status(f) for f in distinct]
+    embedded = _embedded_font_names(data)
+    report = [_font_status(f, embedded) for f in distinct]
     return {"count": len(report), "fonts": report, "auto_installed": auto}
 
 
