@@ -2053,10 +2053,22 @@ def parse_table(filename: str, data: bytes) -> tuple:
 # Routes
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _deployed_commit() -> str:
+    """The GitHub commit this server was deployed from (written by the deploy workflow)."""
+    try:
+        return Path(__file__).with_name("DEPLOY_SHA").read_text().strip()
+    except OSError:
+        return ""
+
+
+_COMMIT = _deployed_commit()
+
+
 @app.get("/")
 def root():
     return {"app": "Redraft API", "version": "1.0",
-            "endpoints": ["/extract", "/edit", "/bulk", "/v1/replace"], "auth": AUTH_ON}
+            "endpoints": ["/extract", "/edit", "/bulk", "/v1/replace"], "auth": AUTH_ON,
+            "commit": _COMMIT}
 
 
 @app.get("/me")

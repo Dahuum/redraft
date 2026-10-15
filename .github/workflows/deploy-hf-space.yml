@@ -7,6 +7,12 @@ name: Deploy backend to Hugging Face Space
 # was pushing to it. This workflow is that push, running automatically on
 # every change to backend/ so this can't silently drift again.
 #
+# It then WAITS for the Space: green only once Hugging Face has built the
+# pushed commit, the Space is RUNNING it, and the live server answers with
+# this GitHub commit. A build error or crash turns it red. The job is a GitHub
+# "deployment" (environment "Hugging Face"), so it shows next to Vercel's on
+# commits and pull requests, with a link to the server.
+#
 # Requires a repo secret HF_TOKEN: a Hugging Face access token with WRITE
 # access to the Dahuum/radraft Space (huggingface.co -> Settings -> Access
 # Tokens). Without it this job fails loudly on the push step, rather than
@@ -20,9 +26,20 @@ on:
       - '.github/workflows/deploy-hf-space.yml'
   workflow_dispatch: {}
 
+concurrency:
+  group: deploy-hf-space
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: Hugging Face
+      url: https://dahuum-radraft.hf.space/
+    env:
+      SPACE: Dahuum/radraft
+      LIVE: https://dahuum-radraft.hf.space/
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +56,7 @@ jobs:
           rm -rf /tmp/hf_space
           mkdir -p /tmp/hf_space
           cp -r backend/. /tmp/hf_space/
+          echo "${{ github.sha }}" > /tmp/hf_space/DEPLOY_SHA
 
           cd /tmp/hf_space
           git init -q -b main
@@ -46,5 +64,54 @@ jobs:
           git config user.name "GitHub Actions"
           git add -A
           git commit -q -m "Deploy from ${{ github.sha }}"
-          git remote add space "https://Dahuum:${HF_TOKEN}@huggingface.co/spaces/Dahuum/radraft"
+          echo "HF_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git remote add space "https://Dahuum:${HF_TOKEN}@huggingface.co/spaces/${SPACE}"
           git push --force space main
+
+      - name: Wait for Hugging Face to build and run it
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date +%s) + 30*60 ))
+          last=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            rt=$(curl -fsS -H "Authorization: Bearer ${HF_TOKEN}" "https://huggingface.co/api/spaces/${SPACE}/runtime" || echo '{}')
+            stage=$(echo "$rt" | jq -r '.stage // "UNKNOWN"')
+            sha=$(echo "$rt" | jq -r '.sha // ""')
+            now="$stage ${sha:0:12}"
+            if [ "$now" != "$last" ]; then echo "$(date -u +%H:%M:%S)  Space: $now (waiting for RUNNING ${HF_SHA:0:12})"; last="$now"; fi
+            case "$stage" in
+              BUILD_ERROR|CONFIG_ERROR|RUNTIME_ERROR|NO_APP_FILE)
+                if [ "$sha" = "$HF_SHA" ] || [ -z "$sha" ]; then
+                  echo "::error::Hugging Face could not run this commit: $stage. Logs: https://huggingface.co/spaces/${SPACE}?logs=build"
+                  exit 1
+                fi ;;
+              RUNNING)
+                if [ "$sha" = "$HF_SHA" ]; then echo "Space is RUNNING the pushed commit."; exit 0; fi ;;
+            esac
+            sleep 15
+          done
+          echo "::error::Timed out after 30 min; the Space is at: $last"
+          exit 1
+
+      - name: Check the live server answers with this commit
+        run: |
+          set -uo pipefail
+          for i in $(seq 1 40); do
+            got=$(curl -fsS --max-time 20 "$LIVE" | jq -r '.commit // ""' || true)
+            if [ "$got" = "${{ github.sha }}" ]; then
+              echo "Live server reports commit $got."
+              {
+                echo "### Hugging Face backend is live"
+                echo ""
+                echo "- Commit: \`${{ github.sha }}\`"
+                echo "- Server: $LIVE"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Live server reports '${got:-nothing}', expecting ${{ github.sha }}; retrying."
+            sleep 15
+          done
+          echo "::error::The Space says RUNNING, but the live server does not report commit ${{ github.sha }}."
+          exit 1
