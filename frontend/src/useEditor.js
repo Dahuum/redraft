@@ -161,7 +161,7 @@ export function useEditor() {
     for (const [id, pos] of Object.entries(moves)) {
       const sp = spanById.get(Number(id));
       if (!sp) continue;
-      editArr.push({ index: Number(id), new_text: "" }); // erase original
+      editArr.push({ index: Number(id), new_text: "", erase: true }); // erase where it stands; nothing else moves
       const fl = sp.flags || 0;
       moveStamps.push({
         kind: "text", page: sp.page, x: pos.x, y: pos.y,

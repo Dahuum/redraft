@@ -3993,7 +3993,7 @@ def _edit_narrowed(pdf_bytes, old, new, page, bbox, verify):
 
 
 def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
-         verify: bool = True) -> dict:
+         verify: bool = True, hold: bool = False) -> dict:
     """In-place edit of `old` -> `new` (see _edit_core). When the whole span
     can't be spliced for a structural reason, the changed words alone are
     tried: a Word line whose apostrophes are drawn by a second font object
@@ -4005,8 +4005,8 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
     that tightens the rest of the line and misjudges how far it extends, so the text after
     it is pulled onto it. When words follow the changed ones, the changed words alone are
     edited and the rest of the span is moved, not rewritten."""
-    r = _edit_core(pdf_bytes, old, new, page, bbox, verify)
-    if old == new:
+    r = _edit_core(pdf_bytes, old, new, page, bbox, verify, hold=hold)
+    if old == new or hold:
         return r
     if r.get("ok"):
         if r.get("case") == "multi_run":
@@ -4529,7 +4529,7 @@ def _recentre_line(pdf: bytes, tpage: int, target, base_ys, tol: float = 0.6):
 
 
 def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
-               verify: bool = True, _target=None) -> dict:
+               verify: bool = True, _target=None, hold: bool = False) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof.
 
@@ -4978,7 +4978,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     # spacing on it: nothing sets Tw for ragged text. Without the second
     # route a two-line fpdf2 paragraph was never re-justified, and the fit
     # logic squeezed its letters (Tc) instead — every word visibly tighter.
-    if not right_col and new_x1 not in (None, _TRUNCATED) \
+    if not hold and not right_col and new_x1 not in (None, _TRUNCATED) \
             and abs(new_x1 - old_x1) > 0.05:
         # A producer keeps a justified line flush to its margin by respacing
         # the words; a fixed-spacing edit left fpdf2 and ReportLab paragraphs
@@ -5088,7 +5088,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                             f"text or its size.")}
 
     right_shifted = False
-    if right_col and new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
+    if not hold and right_col and new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
         sdoc = fitz.open(stream=edited, filetype="pdf")
         try:
             if _shift_field_object(sdoc, sdoc[tpage], line_ys, old_x0, old_x1,
@@ -5122,7 +5122,12 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # Called even when nothing is pushed: the field's own underline still
         # has to take its new width (a link shortened in front of a column
         # kept a 34pt rule trailing into empty space).
-        if new_x1 is not None and (abs(_push) > 0.05 or abs(_dx) > 0.05):
+        if hold:
+            # An erase for a MOVE: the field leaves, everything else on the line stays exactly
+            # where it was. Closing up behind it pulled a comma Word had drawn over the end of
+            # "Essaouira" 56pt left, in front of the "à" before it.
+            _push = 0.0
+        elif new_x1 is not None and (abs(_push) > 0.05 or abs(_dx) > 0.05):
             n = _reflow_same_line(rdoc, rdoc[tpage], line_ys,
                                   reflow_from, push_plan if chain and not next_cell else _push,
                                   slots=line_slots, rule_h=line_rule_h,
