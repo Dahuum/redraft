@@ -2867,8 +2867,9 @@ _TRUNCATED = object()
 # Bounds on the search for the right (font object, encoding, occurrence).
 # The ordinary case resolves on the first attempt; these only stop a
 # pathological page from turning one edit into hundreds of parses.
-_MAX_OCCURRENCE_TRIES = 6
-_MAX_LOCATE_ATTEMPTS = 24
+_MAX_OCCURRENCE_TRIES = 16
+_OCCURRENCE_SPECIFIC = {"ragged_multirun_boundary", "kerning_split_within_run", "spans_multiple_streams"}
+_MAX_LOCATE_ATTEMPTS = 40
 
 # How informative each refusal is, highest first. The search tries several
 # (font object, encoding, occurrence) combinations, and most of them fail
@@ -4636,6 +4637,18 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         except Exception:  # noqa: BLE001
             return False
         try:
+            if not _norm(new).strip():
+                # A DELETION has no replacement to find: it hit when the old text is gone from
+                # where the caller pointed. Looking for the replacement's beginning, as below,
+                # made every deletion fail verification — a comma Word had placed over the end
+                # of "Essaouira" could not be removed or moved at all.
+                gone = _norm(old_n).strip()
+                for s2 in _spans(probe[tpage], phrases=bool(target.get("merged"))):
+                    if abs(s2["origin"][1] - target["origin"][1]) > 1.0:
+                        continue
+                    if fitz.Rect(s2["bbox"]).intersects(target_rect) and gone in _norm(s2["text"]):
+                        return False
+                return True
             for s2 in _spans(probe[tpage], phrases=bool(target.get("merged"))):
                 if abs(s2["origin"][1] - target["origin"][1]) > 1.0:
                     continue
@@ -4713,6 +4726,12 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                         prep_error = _better_refusal(prep_error, res)
                     else:
                         prep_error_other = _better_refusal(prep_error_other, res)
+                    # A refusal about WHERE this occurrence sits says nothing about the next
+                    # one: ", " occurs ten times on the attestation, the third match was the
+                    # end of "2001" plus a space (ragged), and stopping there meant the comma
+                    # the user clicked — the fourth, cleanly its own run — was never tried.
+                    if res.get("reason") in _OCCURRENCE_SPECIFIC:
+                        continue
                     break
                 if which >= res["loc"].get("n_occurrences", 1):
                     adoc.close()
