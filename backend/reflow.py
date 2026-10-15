@@ -2027,9 +2027,19 @@ def _verify(out, pno, para, new_lines, ys, cut, dy, lines_before, unhang=False):
                 and w[0] >= min(x0, xf) - 0.5]
         mine = [r for r in band if any(abs(r.y1 - y) < 0.6 * para[0]["chars"][0]["size"]
                                        for y in ys)]
-        others = [fitz.Rect(w[:4]) for w in ws if fitz.Rect(w[:4]) not in mine]
+        # Same test as ever, without the quadratic cost of pymupdf Rect arithmetic over a whole
+        # page of words (an IRS page: 119k intersections and 125k equality tests, 3.7s of one
+        # edit). Membership by exact coordinates is what Rect equality means; a pair whose boxes
+        # do not overlap with positive width and height cannot pass the area test, so only
+        # pairs that do reach the original Rect code below.
+        mine_keys = {tuple(r) for r in mine}
+        others = [fitz.Rect(w[:4]) for w in ws if tuple(fitz.Rect(w[:4])) not in mine_keys]
+        boxes = [(o, o.x0, o.y0, o.x1, o.y1) for o in others]
         for r in mine:
-            for o in others:
+            rx0, ry0, rx1, ry1 = r.x0, r.y0, r.x1, r.y1
+            for o, ox0, oy0, ox1, oy1 in boxes:
+                if min(rx1, ox1) <= max(rx0, ox0) or min(ry1, oy1) <= max(ry0, oy0):
+                    continue
                 ov = r & o
                 if ov.is_valid and ov.get_area() > 0.15 * min(r.get_area(), o.get_area()):
                     return "the re-wrapped text would print over other text"

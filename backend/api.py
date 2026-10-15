@@ -756,8 +756,14 @@ def _crowds_neighbour(before: bytes, after: bytes, sd: dict, other_boxes=()) -> 
     def same(a, b):
         return a[0] == b[0] and all(abs(p - q) <= tol for p, q in zip(a[1], b[1]))
 
-    fresh = [a for a in sa if not any(same(a, b) for b in sb)]
-    stayed = [a for a in sa if any(same(a, b) for b in sb)]
+    # same() needs equal text, so only spans with the same text are compared — and each span is
+    # judged once, not twice. An IRS page was 895k comparisons for one edit.
+    by_text: dict = {}
+    for b in sb:
+        by_text.setdefault(b[0], []).append(b)
+    kept = [any(same(a, b) for b in by_text.get(a[0], ())) for a in sa]
+    fresh = [a for a, k in zip(sa, kept) if not k]
+    stayed = [a for a, k in zip(sa, kept) if k]
 
     def line_overlap(a, b):
         ov = min(a[3], b[3]) - max(a[1], b[1])
