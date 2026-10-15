@@ -57,6 +57,24 @@ _DOC_FONTS: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_fonts
 # Type3 fonts of THIS request's document: {display name: callable -> donor font bytes or None}.
 # Lazy — resolving a donor can download and instance a variable font, and most edits never redraw.
 _DOC_TYPE3: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_type3", default=None)
+# Full font names of THIS request's document. The text extractor cuts a span's font name at 24
+# characters, and the end is where the style is: "ITCFranklinGothicStd-Dem" is really "-Demi"
+# (SemiBold), "LiberationSans-BoldItali" is really "-BoldItalic". Read as given, the weight or
+# the slant is lost and the wrong font — or none — is found for it.
+_DOC_FULLNAMES: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_fullnames", default=None)
+_EXTRACTOR_NAME_LIMIT = 24
+
+
+def _full_font_name(bare: str) -> str:
+    """*bare* as the document names it in full, when the extractor cut it short; else *bare*.
+
+    Only a name exactly at the extractor's limit is a candidate, and only a single full name
+    in this document that starts with it is taken — an ambiguous cut stays as it is."""
+    names = _DOC_FULLNAMES.get()
+    if not names or len(bare) != _EXTRACTOR_NAME_LIMIT or bare in names:
+        return bare
+    hits = [n for n in names if n.startswith(bare)]
+    return hits[0] if len(hits) == 1 else bare
 
 
 def font_cache_key(fontname: str) -> str:
@@ -332,7 +350,7 @@ def _parse_font_name(fontname: str) -> tuple:
     'Inter18pt-Bold'      → ('Inter', 700, 'normal')   ← alias applied
     'ariitaft'            → ('Arial', 400, 'normal')   ← truncated alias
     """
-    bare = fontname.split("+")[-1]
+    bare = _full_font_name(fontname.split("+")[-1])
     # Foundry suffixes carry no style: "Arial-BoldMT", "TimesNewRomanPSMT".
     bare = re.sub(r"(?<=[a-z])(PSMT|MT)$", "", bare) if bare not in _WEIGHT_OVERRIDES else bare
     if "-" in bare:

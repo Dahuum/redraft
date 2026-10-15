@@ -1937,10 +1937,17 @@ def _ingest_embedded_fonts(pdf_bytes: bytes, user: str = None) -> list:
     # _DOC_FONTS): the signed-in user's own fonts, then this document's.
     overlay: dict = dict(_user_fonts(user))
     _pe._DOC_FONTS.set(overlay)
+    _pe._DOC_FULLNAMES.set(None)
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception:  # noqa: BLE001
         return installed
+    try:
+        _pe._DOC_FULLNAMES.set(frozenset(
+            fo[3].split("+")[-1] for pno in range(doc.page_count)
+            for fo in doc[pno].get_fonts(full=False) if fo[3]))
+    except Exception:  # noqa: BLE001 — names are a refinement, never a reason to fail
+        pass
     seen = set()
     try:
         t3 = {}

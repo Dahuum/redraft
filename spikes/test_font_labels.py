@@ -61,8 +61,9 @@ inv = labels(ex("invoice-type3.pdf"))
 check("Type3 invoice: fonts with a family donor are the document's own", inv and all(v == "embedded" for v in inv.values()), inv)
 
 con = labels(ex("contract-type3.pdf"))
+# With its full name recovered (test_font_names.py) the genuine family is found: "match".
 check("contract: the signature font is found despite its name being cut short",
-      con.get("HerrVonMuellerhoff-Regul") == "embedded", con.get("HerrVonMuellerhoff-Regul"))
+      con.get("HerrVonMuellerhoff-Regul") in ("match", "embedded"), con.get("HerrVonMuellerhoff-Regul"))
 check("contract: the two one-glyph Type3 fonts an edit really draws in Helvetica stay flagged",
       con.get("Type3 (5 0 R)") == "fallback" and con.get("Type3 (17 0 R)") == "fallback",
       (con.get("Type3 (5 0 R)"), con.get("Type3 (17 0 R)")))
