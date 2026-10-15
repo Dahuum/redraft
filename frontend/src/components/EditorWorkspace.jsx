@@ -398,6 +398,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
               placement={placement}
               onPlace={handlePlace}
               moves={previewData ? {} : moves}
+              movedTo={moves}
               edits={edits}
               onSpanMove={moveSpan}
               onSpanMoveClear={clearMove}

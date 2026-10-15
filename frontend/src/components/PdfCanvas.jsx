@@ -37,6 +37,7 @@ export default function PdfCanvas({
   onPlace = () => {},
   // ---- Move existing text spans to a new position ----
   moves = {}, // { spanId: {x,y} } new top-left in PDF points
+  movedTo = {}, // the same, kept while a render shows them baked in: the outline follows the field
   edits = {}, // { spanId: newText } — so a moved+edited span shows the new text
   onSpanMove = () => {},
   onSpanMoveClear = () => {},
@@ -134,7 +135,7 @@ export default function PdfCanvas({
   };
   const startSpanMove = (e, s) => {
     e.stopPropagation();
-    const cur = moves[s.id];
+    const cur = moves[s.id] || movedTo[s.id];
     const [x0, y0] = s.bbox;
     spanDrag.current = {
       id: s.id, sx: e.clientX, sy: e.clientY,
@@ -288,6 +289,7 @@ export default function PdfCanvas({
             // The box follows the new text: an edited name twice as long was outlined only over
             // its first half.
             const boxW = Math.max((x1 - x0) * scale, textWidth(s, edits[s.id] ?? s.text));
+            const at = movedTo[s.id];   // already moved and rendered there
             return (
               <div
                 key={s.id}
@@ -295,8 +297,8 @@ export default function PdfCanvas({
                 title={isSel ? "Drag to move this text" : undefined}
                 className="absolute rounded-[2px] animate-pop"
                 style={{
-                  left: x0 * scale,
-                  top: y0 * scale,
+                  left: (at ? at.x : x0) * scale,
+                  top: (at ? at.y : y0) * scale,
                   width: boxW,
                   height: (y1 - y0) * scale,
                   outline: "2px solid #4f75fe",
@@ -322,9 +324,11 @@ export default function PdfCanvas({
               const text = edits[s.id] ?? s.text;
               return (
                 <div key={`mv-${s.id}`}>
-                  {/* erase preview over the original location */}
+                  {/* erase preview over the original location. Text the patch also covers —
+                      Word drew this comma over the end of "Essaouira" — is drawn back on top,
+                      clipped to the patch, so only the moved field disappears. */}
                   <div
-                    className="absolute"
+                    className="absolute overflow-hidden"
                     style={{
                       left: (x0 - 1) * scale,
                       top: (y0 - 1) * scale,
@@ -332,7 +336,29 @@ export default function PdfCanvas({
                       height: (y1 - y0 + 2) * scale,
                       background: sampleBg(x0 + 0.5, y0 + 0.5),
                     }}
-                  />
+                  >
+                    {pageSpans
+                      .filter((o) => o.id !== s.id && !moves[o.id] && !o.invisible
+                        && o.bbox[0] < x1 + 1 && o.bbox[2] > x0 - 1 && o.bbox[1] < y1 + 1 && o.bbox[3] > y0 - 1)
+                      .map((o) => {
+                        const oh = (o.bbox[3] - o.bbox[1]) * scale;
+                        return (
+                          <div
+                            key={`under-${o.id}`}
+                            className="absolute whitespace-pre"
+                            style={{
+                              left: (o.bbox[0] - x0 + 1) * scale,
+                              top: (o.bbox[1] - y0 + 1) * scale,
+                              height: oh, lineHeight: `${oh}px`,
+                              fontSize: Math.max(6, o.size * scale),
+                              ...spanStyle(o),
+                            }}
+                          >
+                            {edits[o.id] ?? o.text}
+                          </div>
+                        );
+                      })}
+                  </div>
                   {/* the text at its new position */}
                   <div
                     onPointerDown={(e) => startSpanMove(e, s)}

@@ -431,7 +431,7 @@ def _apply_stamps(pdf_bytes: bytes, stamps: list) -> bytes:
                 size = float(st.get("size") or 14)
                 color = _hex_to_rgb(st.get("color"))
                 x = float(st.get("x") or 0)
-                y = float(st.get("y") or 0) + size * 0.82   # box-top → baseline
+                top = float(st.get("y") or 0)
                 bold = bool(st.get("bold"))
                 italic = bool(st.get("italic"))
                 font_name = str(st.get("font") or "")
@@ -452,16 +452,26 @@ def _apply_stamps(pdf_bytes: bytes, stamps: list) -> bytes:
                             raw = None
                 builtin = {(False, False): "helv", (True, False): "hebo",
                            (False, True): "heit", (True, True): "hebi"}[(bold, italic)]
-                try:
-                    if raw:
-                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
-                                         color=color, fontname=f"inj{i}", fontbuffer=raw)
-                    else:
-                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
-                                         color=color, fontname=builtin)
-                except Exception:  # noqa: BLE001 — safe builtin fallback
+                # The document's own font, registered on the page first: insert_text has no
+                # fontbuffer argument, so passing one raised and every stamp — every MOVED field —
+                # fell back to Helvetica, larger and in the wrong typeface. Only a font that lacks
+                # one of the characters falls back, rather than printing boxes.
+                ascender = 0.82
+                drawn = False
+                if raw:
                     try:
-                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
+                        fobj = fitz.Font(fontbuffer=raw)
+                        if all(fobj.has_glyph(ord(ch)) for ch in text if not ch.isspace()):
+                            ascender = fobj.ascender or ascender
+                            page.insert_font(fontname=f"inj{i}", fontbuffer=raw)
+                            page.insert_text(fitz.Point(x, top + size * ascender), text, fontsize=size,
+                                             color=color, fontname=f"inj{i}")
+                            drawn = True
+                    except Exception:  # noqa: BLE001 — fall back to the builtin below
+                        drawn = False
+                if not drawn:
+                    try:
+                        page.insert_text(fitz.Point(x, top + size * 0.82), text, fontsize=size,
                                          color=color, fontname=builtin)
                     except Exception:  # noqa: BLE001
                         continue
@@ -826,7 +836,8 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             continue
         done.add(id(sd))
         before_this = current
-        rr = _joint_rewrap(current, replacements, sd, new_text, done, reflowed, pdf_bytes)
+        hold = bool(sd.get("_erase"))
+        rr = None if hold else _joint_rewrap(current, replacements, sd, new_text, done, reflowed, pdf_bytes)
         if rr and not _shift_ok(rr, sd):
             rr = None
         if rr:
@@ -839,7 +850,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             continue
         try:
             r = _spike.edit(current, sd["text"], new_text,
-                            page=sd["page"], bbox=sd["bbox"], verify=False)
+                            page=sd["page"], bbox=sd["bbox"], verify=False, hold=hold)
         except Exception:  # noqa: BLE001
             r = {"ok": False, "reason": "engine_error"}
         if r.get("ok"):
@@ -859,6 +870,8 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                 # sat under "o" and blank paper.
                 try:
                     pg = sd.get("page", 0)
+                    if hold:
+                        raise StopIteration   # nothing on the line moved: no underline follows
                     cand = _reflow.carry_underlines(current, cand, pg,
                                                     (sd["bbox"][1] - 1, sd["bbox"][3] + 3),
                                                     field=sd["bbox"],
@@ -867,7 +880,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                     pass
                 current = cand
                 in_place_count += 1
-        if r.get("ok") and _may_rewrap(_pending(sd) + [(sd, new_text)], sd):
+        if r.get("ok") and not hold and _may_rewrap(_pending(sd) + [(sd, new_text)], sd):
             # In place succeeded — but if re-wrapping the paragraph would
             # change its line breaks, the producer's own re-print has the
             # re-wrapped layout, not the in-place one (a shorter name leaves a
@@ -915,7 +928,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             # then be stale. (Taken bottom-up, one rarely does.)
             later = any(o.get("page", 0) == sd.get("page", 0)
                         and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in _pending(sd))
-            if not later:
+            if not later and not hold:
                 try:
                     rr = _reflow.reflow(current, sd, new_text,
                                         multiline_only=r.get("reason") not in _REFLOW_REASONS,
@@ -2281,7 +2294,10 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
             raise HTTPException(400, "Each edit needs an integer `index` and "
                                      "a `new_text` string.")
         if 0 <= i < len(spans):
-            replacements.append((spans[i], nt))
+            # `erase`: the field is being MOVED (the editor stamps it elsewhere), so it is removed
+            # where it stands and nothing else on the line closes up, re-spaces or re-wraps.
+            sd = dict(spans[i], _erase=True) if (e.get("erase") and not nt.strip()) else spans[i]
+            replacements.append((sd, nt))
 
     if not replacements and not stamp_list:
         raise HTTPException(400, "Nothing to apply — no edits or added items.")
