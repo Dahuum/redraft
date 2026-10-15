@@ -133,6 +133,15 @@ export async function checkFonts(file) {
   return res.json();
 }
 
+// POST /webfonts → the document's own fonts as small WOFF files → { fonts: [{font, family, woff}], missing }
+export async function fetchWebFonts(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`${API_BASE}/webfonts`, { method: "POST", body: fd, headers: await authHeaders() });
+  if (!res.ok) throw await asError(res);
+  return res.json();
+}
+
 // POST /font → install a real .ttf/.otf for an unmatched font → { ok, installed_as, font }
 export async function uploadFont(fontname, file) {
   const fd = new FormData();

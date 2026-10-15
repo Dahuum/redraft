@@ -2591,6 +2591,170 @@ async def fonts(file: UploadFile = File(...), user: str = Depends(require_user))
     return {"count": len(report), "fonts": report, "auto_installed": auto}
 
 
+_WEBFONT_CACHE: dict = {}
+_WEBFONT_BASE = "".join(map(chr, list(range(0x20, 0x7F)) + list(range(0xA0, 0x180))
+                         + list(range(0x2010, 0x2027)) + [0x2030, 0x2039, 0x203A, 0x20AC, 0x2122]))
+_SFNT = (b"\x00\x01\x00\x00", b"OTTO", b"true")
+
+
+def _web_font(raw: bytes, chars: str):
+    """*raw* (TrueType/OpenType) cut down to *chars* plus common Latin, as WOFF; None if it can't be."""
+    key = hashlib.sha1(raw + chars.encode("utf-8", "surrogatepass")).hexdigest()
+    if key in _WEBFONT_CACHE:
+        return _WEBFONT_CACHE[key]
+    out = None
+    try:
+        from fontTools import subset
+        from fontTools.ttLib import TTFont
+        font = TTFont(io.BytesIO(raw), lazy=False)
+        opts = subset.Options()
+        opts.flavor = "woff"
+        opts.layout_features = ["*"]
+        opts.name_IDs = ["*"]
+        opts.notdef_outline = True
+        opts.ignore_missing_unicodes = True
+        opts.drop_tables += ["FFTM"]
+        sub = subset.Subsetter(opts)
+        sub.populate(text=chars + _WEBFONT_BASE)
+        sub.subset(font)
+        buf = io.BytesIO()
+        font.flavor = "woff"
+        font.save(buf)
+        out = buf.getvalue()
+    except Exception:  # noqa: BLE001 — a font the browser can't get is drawn in a generic face instead
+        out = None
+    if len(_WEBFONT_CACHE) > 256:
+        _WEBFONT_CACHE.clear()
+    _WEBFONT_CACHE[key] = out
+    return out
+
+
+def _embedded_sfnt(pdf_bytes: bytes) -> dict:
+    """Base font name → the PDF's own TrueType/OpenType program, for fonts nothing else resolves."""
+    found = {}
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                for f in page.get_fonts(full=False):
+                    name = f[3].split("+")[-1]
+                    if name in found:
+                        continue
+                    try:
+                        buf = doc.extract_font(f[0])[3]
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if buf and buf[:4] in _SFNT:
+                        found[name] = buf
+    except Exception:  # noqa: BLE001
+        pass
+    return found
+
+
+_COMPLETE_CHARS = "".join(map(chr, list(range(0x21, 0x7F)) + list(range(0xC0, 0x100))))
+_COMPLETE_CACHE: dict = {}
+
+
+def _complete_font(doc, name: str, raw: bytes) -> bytes:
+    """*raw* with the common Latin letters an embedded subset lacks added, from the same donors and
+    in the same order the edit engines use (the genuine family, another cut in this document, a
+    measured substitute), so text typed into the editor is drawn as the edit will come out."""
+    try:
+        from fontTools.ttLib import TTFont
+        import font_extend
+        if "glyf" not in TTFont(io.BytesIO(raw), lazy=True):
+            return raw
+        have = TTFont(io.BytesIO(raw), lazy=True).getBestCmap() or {}
+    except Exception:  # noqa: BLE001
+        return raw
+    missing = [c for c in _COMPLETE_CHARS if ord(c) not in have]
+    if not missing:
+        return raw
+    key = hashlib.sha1(raw).hexdigest()
+    if key in _COMPLETE_CACHE:
+        return _COMPLETE_CACHE[key]
+    display = name.split("+")[-1]
+    out = raw
+
+    def donor_has(donor: bytes):
+        try:
+            cmap = TTFont(io.BytesIO(donor), lazy=True).getBestCmap() or {}
+        except Exception:  # noqa: BLE001
+            return []
+        return [c for c in missing if ord(c) in cmap]
+
+    try:
+        donor, kind = font_extend.resolve_donor_detailed(display)
+    except Exception:  # noqa: BLE001
+        donor, kind = None, None
+    try:
+        if donor and kind == "family" and donor_has(donor):
+            out = font_extend.extend_font(raw, donor, donor_has(donor))["font_bytes"]
+        else:
+            import font_donors
+            import glyph_synth
+            in_doc = None
+            try:
+                in_doc = font_donors.find_in_document_donor(doc, display, missing)
+            except Exception:  # noqa: BLE001
+                in_doc = None
+            if in_doc and in_doc.get("glyphs"):
+                out = glyph_synth.inject_into_font(raw, in_doc["glyphs"])["font_bytes"]
+            elif donor and donor_has(donor):
+                corrected = font_donors.correct_external_donor(raw, donor, donor_has(donor))
+                out = (glyph_synth.inject_into_font(raw, corrected["glyphs"])["font_bytes"] if corrected
+                       else font_extend.extend_font(raw, donor, donor_has(donor))["font_bytes"])
+    except Exception:  # noqa: BLE001 — the subset as it is, letters it lacks drawn by the fallback
+        out = raw
+    if len(_COMPLETE_CACHE) > 64:
+        _COMPLETE_CACHE.clear()
+    _COMPLETE_CACHE[key] = out
+    return out
+
+
+def _web_fonts_for(data: bytes, user: str) -> dict:
+    _ingest_embedded_fonts(data, user)
+    spans = extract_spans(data)
+    used: dict = {}
+    for s in spans:
+        used.setdefault(s["font"], set()).update(s["text"])
+    embedded = None
+    fonts, missing = [], []
+    for name in sorted(used):
+        raw = resolve_full_font(name)
+        if not raw or raw[:4] not in _SFNT:
+            if embedded is None:
+                embedded = _embedded_sfnt(data)
+            base = name.split("+")[-1]
+            raw = embedded.get(base) or next((v for k, v in embedded.items()
+                                              if len(base) >= 8 and k.startswith(base)), None)
+        if raw:
+            with fitz.open(stream=data, filetype="pdf") as doc:
+                raw = _complete_font(doc, name, raw)
+        woff = _web_font(raw, "".join(sorted(used[name]))) if raw else None
+        if woff:
+            fonts.append({"font": name, "family": "rd-" + hashlib.sha1(woff).hexdigest()[:12],
+                          "woff": base64.b64encode(woff).decode()})
+        else:
+            missing.append(name)
+    return {"fonts": fonts, "missing": missing}
+
+
+@app.post("/webfonts")
+async def webfonts(file: UploadFile = File(...), user: str = Depends(optional_user)):
+    """Upload a PDF → its fonts as small WOFF files, so the editor can draw text being typed in the
+    document's own typeface before the exact render comes back. Fonts the browser cannot be given
+    (bare CFF, Type1) are listed in `missing`; the editor draws those in a generic face."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
+    _check_readable("The PDF", data, getattr(file, "filename", ""))
+    try:
+        return await run_in_threadpool(_web_fonts_for, data, user)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
+
+
 @app.post("/font")
 async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
                       user: str = Depends(require_user)):
