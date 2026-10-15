@@ -1,4 +1,9 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+// The live text drawn while typing is only an approximation in the app's own font; the real
+// result, in the document's own font, is the server's render. It is fetched on its own once the
+// user pauses, so what they look at is what they will download.
+const AUTO_PREVIEW_MS = 900;
 import { extractSpans, editPdf } from "./api.js";
 
 // Holds the loaded document + edit state and the actions the UI calls.
@@ -27,7 +32,11 @@ export function useEditor() {
   const fonts = useMemo(() => [...new Set(spans.map((s) => s.font))].filter(Boolean), [spans]);
   const hasChanges = nEdits > 0 || overlays.length > 0 || nMoves > 0;
 
+  // Bumped on every change: a preview that comes back after a newer change is stale and dropped.
+  const generation = useRef(0);
+
   const resetPreview = useCallback(() => {
+    generation.current += 1;
     setPreviewUrl((u) => {
       if (u) URL.revokeObjectURL(u);
       return null;
@@ -152,14 +161,16 @@ export function useEditor() {
     resetPreview();
   }, [resetPreview]);
 
-  const preview = useCallback(async () => {
+  const preview = useCallback(async ({ auto = false } = {}) => {
     if (!file || !hasChanges) return null;
+    const mine = generation.current;
     setError(null);
     setBusy(true);
     try {
       const { editArr, stamps } = buildPayload();
       const { blob, fontReport: fr } = await editPdf(file, editArr, stamps);
       const buf = await blob.arrayBuffer();
+      if (mine !== generation.current) return null;
       const url = URL.createObjectURL(blob);
       setPreviewUrl((u) => {
         if (u) URL.revokeObjectURL(u);
@@ -167,15 +178,21 @@ export function useEditor() {
       });
       setPreviewData(buf);
       setFontReport(fr);
-      window.rdTrack?.("edit_preview");
+      if (!auto) window.rdTrack?.("edit_preview");
       return url;
     } catch (e) {
-      setError(e.message || "Couldn't apply edits.");
+      if (mine === generation.current) setError(e.message || "Couldn't apply edits.");
       return null;
     } finally {
       setBusy(false);
     }
-  }, [file, edits]);
+  }, [file, hasChanges, buildPayload]);
+
+  useEffect(() => {
+    if (!file || !hasChanges || previewData) return undefined;
+    const t = setTimeout(() => preview({ auto: true }), AUTO_PREVIEW_MS);
+    return () => clearTimeout(t);
+  }, [file, hasChanges, previewData, preview]);
 
   // Always bakes the current edits, overlays AND moves fresh (they're live on the
   // canvas, never in the text-only preview, so we can't reuse previewUrl here).
