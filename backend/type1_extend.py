@@ -256,7 +256,8 @@ def donor_program(ps_name: str):
     path = os.path.join(_CACHE, lc + ".pfb")
     if not os.path.exists(path) or os.path.getsize(path) < 1000:
         raw = None
-        for url in _DONOR_URLS:
+        from pdf_editor import offline
+        for url in () if offline() else _DONOR_URLS:
             try:
                 req = urllib.request.Request(url.format(lc=lc), headers={"User-Agent": "redraft-type1/0.1"})
                 with urllib.request.urlopen(req, timeout=20) as r:

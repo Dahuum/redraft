@@ -645,11 +645,52 @@ def _instance_variable_font(raw: bytes, weight: int) -> bytes:
 _GF_RAW = "https://raw.githubusercontent.com/google/fonts/main"
 
 
+def offline() -> bool:
+    """REDRAFT_OFFLINE=1: the engine never opens a connection. Every font it needs must
+    already be installed or in .font_cache (warm_fonts.py puts them there at image build)."""
+    return os.environ.get("REDRAFT_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+_RAW_DIR = os.path.join(_FONT_CACHE_DIR, "raw")
+
+
+def _raw_path(url: str) -> str:
+    """raw/<license>/<family>/<file>, the catalogue's own layout, so a copy is easy to find."""
+    parts = [re.sub(r"[^A-Za-z0-9._\[\],-]", "_", p) for p in url.split("/main/", 1)[-1].split("/")]
+    return os.path.join(_RAW_DIR, *[p for p in parts if p not in ("", ".", "..")])
+
+
+def fetch(url: str, timeout: int = 15) -> bytes:
+    """The bytes at *url*: from the disk copy if there is one, else downloaded and kept.
+    Raises when there is no copy and no network (offline mode, or a failed request)."""
+    path = _raw_path(url)
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if len(data) >= 1000:
+            return data
+    except OSError:
+        pass
+    if offline():
+        raise OSError(f"offline, and {url.rsplit('/', 1)[-1]} is not in the font cache")
+    req = urllib.request.Request(url, headers={"User-Agent": "redraft-fonts/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = r.read()
+    if len(data) >= 1000:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)                  # a reader never sees a half-written file
+        except OSError:
+            pass                                   # an unwritable cache must not break an edit
+    return data
+
+
 def _gh_get(url: str, timeout: int = 10) -> bytes | None:
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "pdf-editor/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
+        return fetch(url, timeout)
     except Exception:
         return None
 

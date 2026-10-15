@@ -32,6 +32,10 @@ function appRewrite() {
   };
 }
 
+// REDRAFT_UI=container builds only the editor (app.html), for the one-container image; the
+// marketing and SEO pages belong to the hosted site. scripts/container-ui.mjs finishes it.
+const containerUI = process.env.REDRAFT_UI === "container";
+
 // Multi-page: index.html = marketing landing (served at / in prod), app.html =
 // the React tool (served at /app via vercel.json rewrites). The React dev server
 // runs on :5173 and talks to the FastAPI backend (VITE_API_BASE, default :8000).
@@ -40,7 +44,7 @@ export default defineConfig({
   server: { port: 5173, host: true },
   build: {
     rollupOptions: {
-      input: {
+      input: containerUI ? { app: "app.html" } : {
         main: "index.html",              // landing
         app: "app.html",                 // React app
         new: "new.html",                 // public text→PDF compose page (guest)

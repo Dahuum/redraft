@@ -23,6 +23,7 @@ Design notes
 import base64
 import csv
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -31,11 +32,13 @@ import shutil
 import re
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
 import warnings
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -43,7 +46,8 @@ from typing import List
 import fitz
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -58,7 +62,96 @@ from annex_model import (  # noqa: E402  — annex rules
     build_model, plan_edits, plan_header_edits, parse_num, detect_template,
 )
 
-app = FastAPI(title="Redraft API", version="1.0")
+@asynccontextmanager
+async def _lifespan(_app):
+    """REDRAFT_WATCH=<folder>: also edit every PDF dropped in <folder>/in (see watcher.py)."""
+    stop = threading.Event()
+    root = os.environ.get("REDRAFT_WATCH", "").strip()
+    if root:
+        import watcher
+        url = os.environ.get("REDRAFT_URL") or f"http://127.0.0.1:{os.environ.get('PORT', '7860')}"
+        key = API_KEYS[0].decode() if API_KEYS else ""
+        threading.Thread(target=watcher.run, args=(root, url, key, stop), daemon=True, name="watcher").start()
+    yield
+    stop.set()
+
+
+app = FastAPI(title="Redraft API", version="1.0", lifespan=_lifespan)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Self-hosted mode. REDRAFT_API_KEY (comma-separated, so a key can be rotated without
+# downtime) locks every route behind `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+# It is how the one-container deployment stays closed on the customer's network. Left
+# unset the API behaves exactly as before. A key replaces the Supabase login — there is
+# no account to meter — so a container configured with one never talks to Supabase.
+# ─────────────────────────────────────────────────────────────────────────────
+API_KEYS = [k.strip().encode() for k in os.environ.get("REDRAFT_API_KEY", "").split(",") if k.strip()]
+API_KEY_OPEN = ("/health", "/docs", "/redoc", "/openapi.json")   # reachable without a key
+
+# The editor page, when the image carries it (the one-container build puts it in ui/). It must load
+# before it can ask for the key, so its own files — and only those — are open.
+UI_DIR = Path(os.environ.get("REDRAFT_UI_DIR") or Path(__file__).parent / "ui")
+UI_ON = (UI_DIR / "app.html").is_file()
+UI_FILES = frozenset("/" + f.relative_to(UI_DIR).as_posix() for f in UI_DIR.rglob("*") if f.is_file()) if UI_ON else frozenset()
+
+
+def _key_open(path: str) -> bool:
+    return (path == "/" or path in UI_FILES or (UI_ON and (path == "/app" or path.startswith("/app/")))
+            or any(path == p or path.startswith(p + "/") for p in API_KEY_OPEN))
+
+
+def _keys_given(headers) -> list:
+    got = []
+    for name, value in headers:
+        if name == b"x-api-key":
+            got.append(value.strip())
+        elif name == b"authorization" and value[:7].lower() == b"bearer ":
+            got.append(value[7:].strip())
+    return got
+
+
+class _ApiKeyGate:
+    """Plain ASGI, so a call without the key is refused before its body is read."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if (API_KEYS and scope["type"] in ("http", "websocket") and scope.get("method") != "OPTIONS"
+                and not _key_open(scope["path"])):
+            ok = False
+            for given in _keys_given(scope["headers"]):
+                for key in API_KEYS:               # no early exit: every key is compared
+                    ok |= hmac.compare_digest(given, key)
+            if not ok:
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                    return
+                await JSONResponse(
+                    {"detail": "An API key is required. Send it as `Authorization: Bearer <key>` "
+                               "or `X-API-Key: <key>`."},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer", "X-Redraft-Key": "required"})(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
+_openapi_plain = app.openapi
+
+
+def _openapi_with_key():
+    schema = _openapi_plain()
+    if API_KEYS and "securitySchemes" not in schema.get("components", {}):
+        schema.setdefault("components", {})["securitySchemes"] = {
+            "ApiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+            "Bearer": {"type": "http", "scheme": "bearer"}}
+        schema["security"] = [{"ApiKey": []}, {"Bearer": []}]
+    return schema
+
+
+app.openapi = _openapi_with_key
+
+app.add_middleware(_ApiKeyGate)   # added first, so CORS (below) wraps it and a browser can read the 401
 
 # CORS: allow the Vercel app (prod + preview deploys) and local dev. The real
 # security is the JWT check below, not CORS (CORS only constrains browsers).
@@ -81,7 +174,7 @@ app.add_middleware(
 SUPABASE_URL     = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON    = os.environ.get("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE = os.environ.get("SUPABASE_SERVICE_KEY", "")
-AUTH_ON = bool(SUPABASE_URL and SUPABASE_ANON and SUPABASE_SERVICE)
+AUTH_ON = bool(SUPABASE_URL and SUPABASE_ANON and SUPABASE_SERVICE) and not API_KEYS
 
 # Plan limits — documents generated per calendar month.
 PLANS = {
@@ -2034,9 +2127,17 @@ def parse_table(filename: str, data: bytes) -> tuple:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/")
-def root():
+def root(request: Request):
+    if UI_ON and "text/html" in (request.headers.get("accept") or ""):
+        return RedirectResponse("/app")          # a browser, not a client: show the editor
     return {"app": "Redraft API", "version": "1.0",
-            "endpoints": ["/extract", "/edit", "/bulk", "/v1/replace"], "auth": AUTH_ON}
+            "endpoints": ["/extract", "/edit", "/bulk", "/v1/replace"], "auth": AUTH_ON,
+            "key": bool(API_KEYS)}
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 
 @app.get("/me")
@@ -2978,6 +3079,19 @@ async def spike_edit(file: UploadFile = File(...), old: str = Form(...),
         return await run_in_threadpool(_spike.edit, data, old, new)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"In-place edit failed ({type(exc).__name__}).")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The editor page, served by the same process (one-container image). Last, because the static
+# mount at "/" answers whatever no route above claimed.
+# ─────────────────────────────────────────────────────────────────────────────
+if UI_ON:
+    @app.get("/app", include_in_schema=False)
+    @app.get("/app/{rest:path}", include_in_schema=False)
+    def ui_page():
+        return FileResponse(UI_DIR / "app.html", headers={"Cache-Control": "no-cache"})
+
+    app.mount("/", StaticFiles(directory=UI_DIR), name="ui")
 
 
 if __name__ == "__main__":
