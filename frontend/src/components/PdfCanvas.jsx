@@ -150,18 +150,26 @@ export default function PdfCanvas({
     const fn = (s.font || "").toLowerCase();
     const c = Array.isArray(s.color) ? s.color : [0.1, 0.1, 0.1];
     const color = `rgb(${c.slice(0, 3).map((v) => Math.round(v * 255)).join(",")})`;
-    const own = webFonts[s.font];
-    if (own) return { fontFamily: `"${own}", serif`, fontWeight: 400, fontStyle: "normal", fontSynthesis: "none", color };
     const generic = /script|hand|brush|muellerhoff|allura|pinyon|signature|dafoe|yellowtail/.test(fn) ? "cursive"
       : /mono|courier|consol|sftt|cmtt/.test(fn) ? "ui-monospace, monospace"
       : /serif(?!.*sans)|times|roman|georgia|garamond|minion|cambria|book|cm[rbm]|nimbusrom|caslon|baskerville|palatino/.test(fn) ? "Georgia, 'Times New Roman', serif"
       : "Inter, system-ui, sans-serif";
-    return {
-      fontFamily: generic,
-      fontWeight: (fl & 16) !== 0 || /bold|black|heavy|semibold/.test(fn) ? 700 : 400,
-      fontStyle: (fl & 2) !== 0 || /italic|oblique/.test(fn) ? "italic" : "normal",
-      color,
-    };
+    const weight = (fl & 16) !== 0 || /bold|black|heavy|semibold/.test(fn) ? 700 : 400;
+    const style = (fl & 2) !== 0 || /italic|oblique/.test(fn) ? "italic" : "normal";
+    const own = webFonts[s.font];
+    // A letter the document's font lacks falls back to the same kind of face, not to a serif.
+    if (own) return { fontFamily: `"${own}", ${generic}`, fontWeight: 400, fontStyle: "normal", fontSynthesis: "none", color };
+    return { fontFamily: generic, fontWeight: weight, fontStyle: style, color };
+  };
+
+  // Width in CSS px of `text` as the live layer draws it for span `s`.
+  const measureCtx = useRef(null);
+  const textWidth = (s, text) => {
+    if (!text) return 0;
+    const st = spanStyle(s);
+    const ctx = measureCtx.current || (measureCtx.current = document.createElement("canvas").getContext("2d"));
+    ctx.font = `${st.fontStyle} ${st.fontWeight} ${Math.max(6, s.size * scale)}px ${st.fontFamily}`;
+    return ctx.measureText(text).width;
   };
 
   function handleClick(e) {
@@ -240,13 +248,17 @@ export default function PdfCanvas({
             const [x0, y0, x1, y1] = s.bbox;
             const numeric = /\d/.test(s.text) && /^[\s\d.,%:+\-−–/()A-Za-z$€£¥]*$/.test(s.text) && s.text.replace(/[^\d]/g, "").length >= s.text.replace(/\s/g, "").length * 0.5;
             const h = (y1 - y0) * scale;
+            // Hide what the page image shows for this field: the original word, or a previous
+            // render's longer value ("Casablanca" left "ca" showing when the field was shortened).
+            const shownW = Math.max((x1 - x0) * scale, textWidth(s, onScreen[s.id] ?? s.text));
             return (
               <div key={`live-${s.id}`}>
                 <div
                   className="absolute"
                   style={{
-                    left: (x0 - 1.5) * scale, top: (y0 - 1) * scale,
-                    width: (x1 - x0 + 3) * scale, height: (y1 - y0 + 2) * scale,
+                    ...(numeric ? { left: x1 * scale - shownW - 1.5 * scale } : { left: (x0 - 1.5) * scale }),
+                    top: (y0 - 1) * scale,
+                    width: shownW + 3 * scale, height: (y1 - y0 + 2) * scale,
                     background: sampleBg(x0 + 0.5, y0 + 0.5),
                   }}
                 />
@@ -273,6 +285,9 @@ export default function PdfCanvas({
             const isEdited = editedIds.has(s.id);
             if (moves[s.id]) return null; // moved spans are drawn in the moves layer
             if (!isSel && !isEdited) return null;
+            // The box follows the new text: an edited name twice as long was outlined only over
+            // its first half.
+            const boxW = Math.max((x1 - x0) * scale, textWidth(s, edits[s.id] ?? s.text));
             return (
               <div
                 key={s.id}
@@ -282,7 +297,7 @@ export default function PdfCanvas({
                 style={{
                   left: x0 * scale,
                   top: y0 * scale,
-                  width: (x1 - x0) * scale,
+                  width: boxW,
                   height: (y1 - y0) * scale,
                   outline: "2px solid #4f75fe",
                   background: isSel ? "rgba(79,117,254,.12)" : "rgba(79,117,254,.05)",

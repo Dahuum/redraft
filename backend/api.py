@@ -1028,7 +1028,23 @@ def _layout_gap(before: bytes, after: bytes, sd: dict):
 
     def vis(l):
         return [c for c in l["chars"] if c["c"].strip()]
+
+    def first_word(l):
+        word = []
+        for c in l["chars"]:
+            if not c["c"].strip():
+                break
+            word.append(c)
+        return word
     R = max(vis(l)[-1]["x1"] for l in para if vis(l))
+    # Only lines the author's software WRAPPED can look wrong after an edit: in a wrapped
+    # paragraph the next line's first word never fits at the end of the line above. Lines
+    # broken by hand — a form's "M /Mme <name> ," over "Né le ... à <city>" — leave room
+    # for it, and their longest line is not a margin anything can overrun.
+    for i in range(len(para) - 1):
+        a, w = vis(para[i]), first_word(para[i + 1])
+        if a and w and a[-1]["x1"] + 0.28 * w[0]["size"] + (w[-1]["x1"] - w[0]["x0"]) <= R - 0.5:
+            return None
     k = next((i for i, l in enumerate(para) if abs(l["y"] - sd["origin"][1]) <= 0.6), None)
     if k is None:
         return None
@@ -1040,13 +1056,6 @@ def _layout_gap(before: bytes, after: bytes, sd: dict):
     if end_a > R + 1.0 and end_b <= R + 0.5:
         return "overrun"
     if k + 1 < len(para):
-        def first_word(l):
-            word = []
-            for c in l["chars"]:
-                if not c["c"].strip():
-                    break
-                word.append(c)
-            return word
         nxt_a = next((l for l in la if abs(l["y"] - para[k + 1]["y"]) <= 0.6
                       and abs(l["x0"] - para[k + 1]["x0"]) <= 1.0), None)
         wb, wa = first_word(para[k + 1]), first_word(nxt_a) if nxt_a else []
@@ -2678,26 +2687,30 @@ _COMPLETE_CHARS = "".join(map(chr, list(range(0x21, 0x7F)) + list(range(0xC0, 0x
 _COMPLETE_CACHE: dict = {}
 
 
-def _complete_font(doc, name: str, raw: bytes) -> bytes:
-    """*raw* with the common Latin letters an embedded subset lacks added, from the same donors and
-    in the same order the edit engines use (the genuine family, another cut in this document, a
-    measured substitute), so text typed into the editor is drawn as the edit will come out."""
+def _complete_font(doc, name: str, raw: bytes):
+    """(*raw* with the common Latin letters an embedded subset lacks added, note).
+
+    The letters come from the same donors, in the same order, as the edit engines use (the genuine
+    family, another cut in this document, a measured substitute), so text typed into the editor is
+    drawn as the edit will come out. *note* says what happened ("complete", "added 121 from
+    substitute", or why nothing could be added) and is returned to the client, because a font that
+    silently stayed a bare subset showed as letters in the wrong typeface with nothing to say why.
+    Only successes are cached: a failure is retried on the next request."""
     try:
         from fontTools.ttLib import TTFont
         import font_extend
         if "glyf" not in TTFont(io.BytesIO(raw), lazy=True):
-            return raw
+            return raw, "not a TrueType outline font; served as embedded"
         have = TTFont(io.BytesIO(raw), lazy=True).getBestCmap() or {}
-    except Exception:  # noqa: BLE001
-        return raw
+    except Exception as exc:  # noqa: BLE001
+        return raw, f"unreadable: {type(exc).__name__}: {exc}"[:200]
     missing = [c for c in _COMPLETE_CHARS if ord(c) not in have]
     if not missing:
-        return raw
+        return raw, "complete"
     key = hashlib.sha1(raw).hexdigest()
     if key in _COMPLETE_CACHE:
         return _COMPLETE_CACHE[key]
     display = name.split("+")[-1]
-    out = raw
 
     def donor_has(donor: bytes):
         try:
@@ -2706,33 +2719,53 @@ def _complete_font(doc, name: str, raw: bytes) -> bytes:
             return []
         return [c for c in missing if ord(c) in cmap]
 
+    steps = []
     try:
         donor, kind = font_extend.resolve_donor_detailed(display)
-    except Exception:  # noqa: BLE001
+        steps.append(f"donor={kind or 'none'}")
+    except Exception as exc:  # noqa: BLE001
         donor, kind = None, None
+        steps.append(f"donor lookup failed: {type(exc).__name__}: {exc}")
+    out = None
     try:
         if donor and kind == "family" and donor_has(donor):
             out = font_extend.extend_font(raw, donor, donor_has(donor))["font_bytes"]
+            steps.append("family extend")
         else:
             import font_donors
             import glyph_synth
             in_doc = None
             try:
                 in_doc = font_donors.find_in_document_donor(doc, display, missing)
-            except Exception:  # noqa: BLE001
-                in_doc = None
+            except Exception as exc:  # noqa: BLE001
+                steps.append(f"in-document donor failed: {type(exc).__name__}: {exc}")
             if in_doc and in_doc.get("glyphs"):
                 out = glyph_synth.inject_into_font(raw, in_doc["glyphs"])["font_bytes"]
+                steps.append("in-document cut")
             elif donor and donor_has(donor):
                 corrected = font_donors.correct_external_donor(raw, donor, donor_has(donor))
-                out = (glyph_synth.inject_into_font(raw, corrected["glyphs"])["font_bytes"] if corrected
-                       else font_extend.extend_font(raw, donor, donor_has(donor))["font_bytes"])
-    except Exception:  # noqa: BLE001 — the subset as it is, letters it lacks drawn by the fallback
-        out = raw
+                if corrected:
+                    out = glyph_synth.inject_into_font(raw, corrected["glyphs"])["font_bytes"]
+                    steps.append("measured substitute")
+                else:
+                    out = font_extend.extend_font(raw, donor, donor_has(donor))["font_bytes"]
+                    steps.append("substitute, unmeasured")
+            else:
+                steps.append("no donor has these letters")
+    except Exception as exc:  # noqa: BLE001
+        steps.append(f"failed: {type(exc).__name__}: {exc}")
+        out = None
+    if out is None:
+        return raw, ("; ".join(steps))[:300]
+    try:
+        added = len(TTFont(io.BytesIO(out), lazy=True).getBestCmap() or {}) - len(have)
+    except Exception:  # noqa: BLE001
+        added = -1
+    result = (out, f"added {added} ({'; '.join(steps)})"[:300])
     if len(_COMPLETE_CACHE) > 64:
         _COMPLETE_CACHE.clear()
-    _COMPLETE_CACHE[key] = out
-    return out
+    _COMPLETE_CACHE[key] = result
+    return result
 
 
 def _web_fonts_for(data: bytes, user: str) -> dict:
@@ -2742,7 +2775,7 @@ def _web_fonts_for(data: bytes, user: str) -> dict:
     for s in spans:
         used.setdefault(s["font"], set()).update(s["text"])
     embedded = None
-    fonts, missing = [], []
+    fonts, missing, notes = [], [], {}
     for name in sorted(used):
         raw = resolve_full_font(name)
         if not raw or raw[:4] not in _SFNT:
@@ -2753,14 +2786,14 @@ def _web_fonts_for(data: bytes, user: str) -> dict:
                                               if len(base) >= 8 and k.startswith(base)), None)
         if raw:
             with fitz.open(stream=data, filetype="pdf") as doc:
-                raw = _complete_font(doc, name, raw)
+                raw, notes[name] = _complete_font(doc, name, raw)
         woff = _web_font(raw, "".join(sorted(used[name]))) if raw else None
         if woff:
             fonts.append({"font": name, "family": "rd-" + hashlib.sha1(woff).hexdigest()[:12],
                           "woff": base64.b64encode(woff).decode()})
         else:
             missing.append(name)
-    return {"fonts": fonts, "missing": missing}
+    return {"fonts": fonts, "missing": missing, "notes": notes}
 
 
 @app.post("/webfonts")
@@ -2774,7 +2807,9 @@ async def webfonts(file: UploadFile = File(...), user: str = Depends(optional_us
     _check_size("The PDF", data, MAX_PDF_BYTES)
     _check_readable("The PDF", data, getattr(file, "filename", ""))
     try:
-        return await run_in_threadpool(_web_fonts_for, data, user)
+        # In the request loop like every other engine call: PyMuPDF is not safe to use from two
+        # threads at once, and this runs while the editor is loading the same document.
+        return _web_fonts_for(data, user)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
 
