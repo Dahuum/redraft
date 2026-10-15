@@ -44,6 +44,7 @@ export default function PdfCanvas({
   selectedPopover = null, // (span, below:boolean) => node
   liveEdits = false, // draw edited text on the page as it is typed (until a real render replaces it)
   shownEdits = {}, // the edits the page image already contains; only fields that differ are drawn live
+  webFonts = {}, // { spanFontName: cssFamily } — the document's own fonts, loaded into the page
   onZoomFactor = null, // (factor) => void, Ctrl+wheel / pinch over the board
 }) {
   const canvasRef = useRef(null);
@@ -141,14 +142,25 @@ export default function PdfCanvas({
     };
     onSelect(s.id);
   };
+  // Text drawn on the page before the exact render arrives: in the document's own font when the
+  // server could hand it over (that face already is the right weight and slant, so the browser
+  // must not embolden or slant it again); otherwise in the nearest generic style.
   const spanStyle = (s) => {
     const fl = s.flags || 0;
     const fn = (s.font || "").toLowerCase();
     const c = Array.isArray(s.color) ? s.color : [0.1, 0.1, 0.1];
+    const color = `rgb(${c.slice(0, 3).map((v) => Math.round(v * 255)).join(",")})`;
+    const own = webFonts[s.font];
+    if (own) return { fontFamily: `"${own}", serif`, fontWeight: 400, fontStyle: "normal", fontSynthesis: "none", color };
+    const generic = /script|hand|brush|muellerhoff|allura|pinyon|signature|dafoe|yellowtail/.test(fn) ? "cursive"
+      : /mono|courier|consol|sftt|cmtt/.test(fn) ? "ui-monospace, monospace"
+      : /serif(?!.*sans)|times|roman|georgia|garamond|minion|cambria|book|cm[rbm]|nimbusrom|caslon|baskerville|palatino/.test(fn) ? "Georgia, 'Times New Roman', serif"
+      : "Inter, system-ui, sans-serif";
     return {
+      fontFamily: generic,
       fontWeight: (fl & 16) !== 0 || /bold|black|heavy|semibold/.test(fn) ? 700 : 400,
       fontStyle: (fl & 2) !== 0 || /italic|oblique/.test(fn) ? "italic" : "normal",
-      color: `rgb(${c.slice(0, 3).map((v) => Math.round(v * 255)).join(",")})`,
+      color,
     };
   };
 

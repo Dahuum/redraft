@@ -4,7 +4,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // result, in the document's own font, is the server's render. It is fetched on its own once the
 // user pauses, so what they look at is what they will download.
 const AUTO_PREVIEW_MS = 900;
-import { extractSpans, editPdf } from "./api.js";
+import { extractSpans, editPdf, fetchWebFonts } from "./api.js";
+
+// Loads the document's own fonts into the page so text being typed is drawn in them.
+// Resolves to { spanFontName: cssFamily } for every font the browser accepted.
+async function loadDocFonts(file) {
+  const { fonts = [] } = await fetchWebFonts(file);
+  const map = {};
+  await Promise.all(fonts.map(async (f) => {
+    try {
+      const bytes = Uint8Array.from(atob(f.woff), (c) => c.charCodeAt(0));
+      const face = new FontFace(f.family, bytes);
+      await face.load();
+      document.fonts.add(face);
+      map[f.font] = f.family;
+    } catch { /* that font is drawn in a generic face */ }
+  }));
+  return map;
+}
 
 // Holds the loaded document + edit state and the actions the UI calls.
 // Shared by the Editor (edits/preview/download) and the Bulk template.
@@ -25,6 +42,8 @@ export function useEditor() {
   const [zoom, setZoom] = useState(1);
   const [overlays, setOverlays] = useState([]); // added text + signature stamps
   const [moves, setMoves] = useState({}); // { spanId: {x,y} } — repositioned spans (new top-left, PDF pts)
+  const [webFonts, setWebFonts] = useState({}); // { spanFontName: cssFamily } — the document's fonts, loaded
+  const loadingFile = useRef(null);
 
   const nEdits = Object.keys(edits).length;
   const nMoves = Object.keys(moves).length;
@@ -69,6 +88,11 @@ export function useEditor() {
         setMoves({});
         resetPreview();
         setSelectedId(null); // document-first: nothing is open until you click text
+        setWebFonts({});
+        loadingFile.current = f;
+        loadDocFonts(f)
+          .then((map) => loadingFile.current === f && setWebFonts(map))
+          .catch(() => { /* typed text falls back to a generic face */ });
         window.rdTrack?.("doc_opened", { pages: res.pages.length, fields: res.spans.length });
         return res;
       } catch (e) {
@@ -245,7 +269,7 @@ export function useEditor() {
   return {
     file, fileData, spans, pages, pageIndex, setPageIndex,
     selectedId, setSelectedId, edits, nEdits, editedIds,
-    previewData, previewFor, previewUrl, fontReport, busy, error,
+    previewData, previewFor, previewUrl, fontReport, busy, error, webFonts,
     zoom, setZoom,
     overlays, addOverlay, updateOverlay, removeOverlay, fonts, hasChanges,
     moves, movedIds, moveSpan, clearMove,
