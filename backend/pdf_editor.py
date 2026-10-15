@@ -1098,7 +1098,7 @@ def get_spans(doc: fitz.Document, page_num: int = 0) -> list:
 
 # ── Alignment detection ───────────────────────────────────────────────────────
 
-def _detect_alignments(spans: list) -> dict:
+def _detect_alignments(spans: list, wanted=None) -> dict:
     """
     Return a dict mapping each span's origin key ``(round(ox,1), round(oy,1))``
     to ``'left'``, ``'right'``, or ``'center'``.
@@ -1158,6 +1158,11 @@ def _detect_alignments(spans: list) -> dict:
 
     for i, s in enumerate(spans):
         key    = (round(s["origin"][0], 1), round(s["origin"][1], 1))
+        # *wanted*: the only keys the caller will look up. Every span is still compared against
+        # all others, so each answer is unchanged; the others are simply not computed — on an
+        # IRS page that was 900 x 900 comparisons for the 1-3 fields being redrawn.
+        if wanted is not None and key not in wanted:
+            continue
         x0_i   = x0s[i]
         x1_i   = x1s[i]
         cx_i   = cxs[i]
@@ -1389,7 +1394,9 @@ class PDFEditor:
 
             # Build alignment map from ALL spans on this page (column context)
             all_spans  = get_spans(self.doc, page_num)
-            align_map  = _detect_alignments(all_spans)
+            align_map  = _detect_alignments(
+                all_spans, wanted={(round(sp["origin"][0], 1), round(sp["origin"][1], 1))
+                                   for sp, _ in items})
 
             # Build stamp (created now, not after redaction, because the
             # measure pass below needs it to register fonts for width
