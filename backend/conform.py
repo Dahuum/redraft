@@ -12,6 +12,7 @@ import re
 from collections import Counter
 
 import fitz
+import pdfsave as _pdfsave
 
 _CATS = ("Font", "XObject", "ExtGState")
 _NAME_RE = re.compile(r"/([^\s/<>\[\]()]+)\s+(\d+\s+0\s+R|<<)")
@@ -188,7 +189,7 @@ def _conform_fonts(src, out):
     if not changed:
         doc.close()
         return out
-    res = doc.tobytes(garbage=1, deflate=True)
+    res = _pdfsave.to_bytes(doc, garbage=1, deflate=True)
     doc.close()
     # Proven: same pixels on every page that uses a renamed font.
     a, b = fitz.open(stream=out, filetype="pdf"), fitz.open(stream=res, filetype="pdf")
@@ -284,7 +285,7 @@ def _conform(src, out):
             new_data = pat.sub(b"/" + new.encode(), new_data)
         if new_data != data:
             doc.update_stream(x, new_data)
-    res = doc.tobytes(garbage=1, deflate=True)
+    res = _pdfsave.to_bytes(doc, garbage=1, deflate=True)
     doc.close()
     # Proven: same pixels on every page that uses a renamed resource.
     a, b = fitz.open(stream=out, filetype="pdf"), fitz.open(stream=res, filetype="pdf")

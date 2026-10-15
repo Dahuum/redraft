@@ -48,6 +48,7 @@ import re
 import unicodedata
 
 import fitz
+import pdfsave as _pdfsave
 
 import inplace_spike as S
 
@@ -304,7 +305,7 @@ def carry_underlines(before: bytes, after: bytes, pno: int, band, field=None,
             if mv is not None:
                 moved.append((f, mv))
         _restore_links(page, links_before, moved)
-        return a.tobytes(garbage=1, deflate=True)
+        return _pdfsave.to_bytes(a, garbage=1, deflate=True)
     finally:
         b.close()
         a.close()
@@ -1784,7 +1785,7 @@ def _reflow(doc, span, new_text, multiline_only=False, also=(), ldoc=None, unhan
     # the text a clip hid was still in the text layer, so a copy of the page read
     # "3. Services" twice. Where the splice cannot be proven, the re-wrap is
     # refused instead.)
-    base = doc.tobytes()
+    base = _pdfsave.to_bytes(doc)
     try:
         out = _splice(base, pno, data, anchor, dy, cut, links_before,
                       [(fitz.Rect(lk["from"]), rs) for lk, rs in moved_links])
@@ -1945,7 +1946,7 @@ def _splice(base: bytes, pno: int, data: bytes, anchor, dy: float, cut: float,
     d.update_stream(xs[0], head + b"\n" + new + tail)
     d.xref_set_key(page.xref, "Contents", "%d 0 R" % xs[0])
     _restore_links(page, links_before, moved)
-    return d.tobytes(garbage=3, deflate=True)
+    return _pdfsave.to_bytes(d, garbage=1, deflate=True)
 
 
 def _inked(base: bytes, out: bytes, pno: int, new_lines, ys, x0, xf) -> bool:

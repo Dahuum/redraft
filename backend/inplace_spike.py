@@ -74,6 +74,7 @@ import io
 import re
 
 import fitz
+import pdfsave as _pdfsave
 
 import font_extend
 
@@ -4521,7 +4522,7 @@ def _recentre_line(pdf: bytes, tpage: int, target, base_ys, tol: float = 0.6):
                 a, b = obj["x_at"]
                 data = data[:a] + f"{float(data[a:b]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b:]
             doc.update_stream(xref, data)
-        return doc.tobytes(garbage=4, deflate=True)
+        return _pdfsave.to_bytes(doc, garbage=1, deflate=True)
     finally:
         doc.close()
 
@@ -4789,7 +4790,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     old_x0 = target["origin"][0]
     page_h = doc[tpage].rect.height
     base_y_pdf = page_h - target["origin"][1]
-    edited = doc.tobytes(garbage=4, deflate=True)
+    edited = _pdfsave.to_bytes(doc, garbage=1, deflate=True)
     doc.close()
 
     # ── reflow: push whatever follows on this line so it keeps its place ──
@@ -4971,7 +4972,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
             if _rejustify(jdoc, jdoc[tpage], base_y_pdf, old_x0, new_x1 - old_x1,
                           max_shrink_em=0.12, max_grow_em=0.6, size=target["size"],
                           need_spacing=just_margin is None):
-                edited = jdoc.tobytes(garbage=4, deflate=True)
+                edited = _pdfsave.to_bytes(jdoc, garbage=1, deflate=True)
                 rejustified = True
                 new_x1 = old_x1
             elif word_margin is not None:
@@ -4981,7 +4982,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                 try:
                     if _rejustify_words(mdoc[tpage], jdoc, jdoc[tpage], base_y_pdf, old_x0,
                                         new_x1 - old_x1, target["size"], word_margin):
-                        edited = jdoc.tobytes(garbage=4, deflate=True)
+                        edited = _pdfsave.to_bytes(jdoc, garbage=1, deflate=True)
                         rejustified = words_respaced = True
                         new_x1 = old_x1
                 finally:
@@ -5041,7 +5042,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                 applied = _apply_text_state(tdoc, tdoc[tpage], base_y_pdf, old_x0,
                                             plan["tc"], plan["tw"], plan["tz"])
                 if applied:
-                    edited = tdoc.tobytes(garbage=4, deflate=True)
+                    edited = _pdfsave.to_bytes(tdoc, garbage=1, deflate=True)
                     tracking = plan["tc"]
                     wordspace = plan["tw"]
                     glyph_scale = plan["tz"]
@@ -5073,7 +5074,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         try:
             if _shift_field_object(sdoc, sdoc[tpage], line_ys, old_x0, old_x1,
                                    -(new_x1 - old_x1)):
-                edited = sdoc.tobytes(garbage=4, deflate=True)
+                edited = _pdfsave.to_bytes(sdoc, garbage=1, deflate=True)
                 right_shifted = True
         finally:
             sdoc.close()
@@ -5109,7 +5110,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                                   field=(old_x0, old_x1, target["size"], new_x1))
             if n:
                 reflowed = n
-                edited = rdoc.tobytes(garbage=4, deflate=True)
+                edited = _pdfsave.to_bytes(rdoc, garbage=1, deflate=True)
     except Exception:  # noqa: BLE001 — reflow is an improvement, never a
         reflowed = 0   # reason to lose an otherwise-good edit
     finally:

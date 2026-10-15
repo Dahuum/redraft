@@ -41,6 +41,9 @@ from pathlib import Path
 from typing import List
 
 import fitz
+import pdfsave as _pdfsave  # noqa: E402
+import textcache as _textcache  # noqa: E402
+_textcache.install()
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -1390,7 +1393,7 @@ def _like_input(src: bytes, out: bytes) -> bytes:
             kw = {"garbage": 1, "deflate": True}
             if objstm:
                 kw["use_objstms"] = 1
-            res = d.tobytes(**kw)
+            res = _pdfsave.to_bytes(d, **kw)
         finally:
             d.close()
         if linear:
@@ -1433,7 +1436,7 @@ def _drop_id(out: bytes) -> bytes:
         d = fitz.open(stream=out, filetype="pdf")
         try:
             d.xref_set_key(-1, "ID", "null")
-            res = d.tobytes(garbage=1, deflate=True, no_new_id=1,
+            res = _pdfsave.to_bytes(d, garbage=1, deflate=True, no_new_id=1,
                             **({"use_objstms": 1} if b"/ObjStm" in out else {}))
         finally:
             d.close()
@@ -2200,6 +2203,19 @@ async def extract(file: UploadFile = File(...), user: str = Depends(optional_use
             "span_count": len(spans), "spans": spans}
 
 
+_EDIT_RESULTS: dict = {}       # request key -> (edited bytes, report json); insertion-ordered
+_EDIT_RESULTS_MAX = 24
+
+
+def _remember_edit(key: str, edited: bytes, report: dict) -> None:
+    try:
+        _EDIT_RESULTS[key] = (edited, json.dumps(report))
+    except (TypeError, ValueError):
+        return
+    while len(_EDIT_RESULTS) > _EDIT_RESULTS_MAX:
+        _EDIT_RESULTS.pop(next(iter(_EDIT_RESULTS)))
+
+
 @app.post("/edit")
 async def edit(request: Request, file: UploadFile = File(...), edits: str = Form(...),
                stamps: str = Form("[]"), final: str = Form(""),
@@ -2256,12 +2272,20 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
         elif AUTH_ON:  # guest download → per-IP daily cap
             _guest_meter_check(ip, 1)
 
+    # The editor previews and then downloads the same edits: the second request is answered from
+    # the first instead of running every edit again.
+    rkey = hashlib.sha1(b"\0".join([data, edits.encode(), stamps.encode(), (user or "").encode()])).hexdigest()
     try:
-        if replacements:
-            edited, report = apply_replacements(data, replacements, try_inplace=True)
+        hit = _EDIT_RESULTS.get(rkey)
+        if hit is not None:
+            edited, report = hit[0], json.loads(hit[1])
         else:
-            edited, report = data, {"fonts": [], "warnings": []}
-        edited = _apply_stamps(edited, stamp_list)
+            if replacements:
+                edited, report = apply_replacements(data, replacements, try_inplace=True)
+            else:
+                edited, report = data, {"fonts": [], "warnings": []}
+            edited = _apply_stamps(edited, stamp_list)
+            _remember_edit(rkey, edited, report)
         if final and _wants_attribution(user):     # Loop A — free/guest footer
             edited = _add_attribution(edited)
     except Exception as exc:  # noqa: BLE001
@@ -2780,6 +2804,7 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
     path = os.path.abspath(os.path.join(udir, name))
     if os.path.dirname(path) != udir:
         raise HTTPException(400, "Invalid font name.")
+    _EDIT_RESULTS.clear()   # an installed font changes how the same edits come out
     try:
         with open(path, "wb") as f:
             f.write(raw)

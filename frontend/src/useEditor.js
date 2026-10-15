@@ -230,10 +230,13 @@ export function useEditor() {
   }, [hasChanges, previewData, resetPreview]);
 
   useEffect(() => {
-    if (!file || !hasChanges || (previewData && previewFor === edits)) return undefined;
+    // One render at a time: the server works through requests in order, so a second one sent while
+    // the first runs only waits behind it. When the running one returns, this runs again with the
+    // latest text.
+    if (!file || !hasChanges || busy || (previewData && previewFor === edits)) return undefined;
     const t = setTimeout(() => preview({ auto: true }), AUTO_PREVIEW_MS);
     return () => clearTimeout(t);
-  }, [file, hasChanges, previewData, previewFor, edits, preview]);
+  }, [file, hasChanges, busy, previewData, previewFor, edits, preview]);
 
   // Always bakes the current edits, overlays AND moves fresh (they're live on the
   // canvas, never in the text-only preview, so we can't reuse previewUrl here).
