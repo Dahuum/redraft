@@ -117,7 +117,18 @@ for label, path in docs[:14]:
                  if len(s["text"].strip()) >= 8 and s.get("size", 0) > 5]
     except Exception:  # noqa: BLE001
         continue
-    sd = first_inplace_span(data, spans)
+    # A field that takes the FIRST value in place. Picking one by a benign replacement and then
+    # demanding "Alpha One" asked a font for letters it may not have: an IRS heading in
+    # embedded ITC Franklin Gothic refuses them honestly, which is not what this measures.
+    sd = None
+    for cand in spans[:30]:
+        try:
+            _o, _r = apply_replacements(data, [(cand, VALUES[0])], preserve_size=True, try_inplace=True)
+        except Exception:  # noqa: BLE001
+            continue
+        if _r["in_place"]["count"]:
+            sd = cand
+            break
     if sd is None:
         continue
     tested += 1
