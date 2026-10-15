@@ -31,9 +31,11 @@ export function usePdfRender({ data, pageIndex, maxWidth, canvasRef }) {
   const [view, setView] = useState(null); // committed page: { index, uw, uh } (unscaled size in points)
   const [painted, setPainted] = useState(false);
   const [err, setErr] = useState(null);
+  const [shownData, setShownData] = useState(null); // the `data` whose page is actually on the canvas
   const s = useRef({
     doc: null, task: null, pages: new Map(), gen: 0, rt: null,
     backing: 0, off: null, pending: null, committedIndex: -1, committedVer: -1,
+    ver: 0, dataOf: new Map(),
   }).current;
 
   // 1. Open the document once per file.
@@ -51,7 +53,9 @@ export function usePdfRender({ data, pageIndex, maxWidth, canvasRef }) {
         const prev = s.doc;
         s.doc = doc; s.task = task; s.pages = new Map();
         if (prev) prev.destroy();
-        setDocVer((v) => v + 1);
+        s.ver += 1;
+        s.dataOf = new Map([...s.dataOf].filter(([v]) => v >= s.committedVer)).set(s.ver, data);
+        setDocVer(s.ver);
       },
       (e) => { if (!dead) setErr("Couldn't open this PDF."); }
     );
@@ -135,11 +139,12 @@ export function usePdfRender({ data, pageIndex, maxWidth, canvasRef }) {
     swap(p.canvas, p.k);
     s.committedIndex = p.index;
     s.committedVer = p.ver;
+    setShownData(s.dataOf.get(p.ver) ?? null);
   }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cssScale = view ? fitScale(maxWidth, view.uw) : 0;
   return {
-    view, cssScale, painted, err,
+    view, cssScale, painted, err, shownData,
     w: view ? view.uw * cssScale : 0,
     h: view ? view.uh * cssScale : 0,
   };
