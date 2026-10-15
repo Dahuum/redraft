@@ -991,7 +991,32 @@ def _font_digest(tt) -> str:
         buf = io.BytesIO()
         tt.save(buf)
         raw = buf.getvalue()
-    return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(_without_save_stamp(raw)).hexdigest()
+
+
+def _without_save_stamp(raw: bytes) -> bytes:
+    """*raw* with what fontTools rewrites on every save blanked: head.modified, head
+    checkSumAdjustment and the table-directory checksums. A subset extended by an earlier edit
+    is re-saved on every request, so its bytes differed by those twelve bytes alone and the
+    1.7s transform was learned again for every preview of the same document. Anything that is
+    not an sfnt is returned as it is."""
+    try:
+        import struct
+        if raw[:4] not in (b"\x00\x01\x00\x00", b"OTTO", b"true"):
+            return raw
+        out = bytearray(raw)
+        n = struct.unpack(">H", raw[4:6])[0]
+        for k in range(n):
+            rec = 12 + 16 * k
+            tag = bytes(out[rec:rec + 4])
+            out[rec + 4:rec + 8] = b"\0\0\0\0"                  # table checksum
+            if tag == b"head":
+                off = struct.unpack(">I", raw[rec + 8:rec + 12])[0]
+                out[off + 8:off + 12] = b"\0\0\0\0"             # checkSumAdjustment
+                out[off + 28:off + 36] = b"\0" * 8                 # modified
+        return bytes(out)
+    except Exception:  # noqa: BLE001 — an unreadable directory: hash it as it is
+        return raw
 
 
 def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTransform:
