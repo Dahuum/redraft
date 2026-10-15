@@ -3213,6 +3213,86 @@ def _would_tear_line(seen, lspans, old_x1, push, gap_keep, tol: float = 0.6):
     return flow_end + push > wall - min(gutter, gap_keep) + 0.05
 
 
+def _shrink_tears(seen, lspans, old_x1, push, gap_keep, tol: float = 0.6):
+    """Would SHRINKING the field by *push* (< 0) tear its line? (See _would_tear_line for growth.)
+
+    Text that rides the field's own text object slides back with it; text placed by its own
+    operator stays. When the first such operator after the field is close behind the riding
+    text — part of the same phrase, not a column across a gutter — the slide opens a hole in
+    the middle of the phrase: pdfTeX draws "in equation (" in the field's TJ and the "∗" by its
+    own Td, so "indices" -> "ind" printed "equation (   ∗)". Returns (wall, flow_end) when it
+    would tear, else None.
+    """
+    if not seen or push >= -0.05:
+        return None
+    walls = [x for x in seen if x > old_x1 + tol]
+    if not walls:
+        return None
+    wall = min(walls)
+    flowing = [sp_["bbox"][2] for sp_ in lspans if sp_["bbox"][0] < wall - tol]
+    if not flowing:
+        return None
+    flow_end = max(flowing)
+    if flow_end <= old_x1 + tol:
+        return None                        # nothing rides along after the field
+    # A tear is the riding text and the pinned run TOUCHING — "(" then "∗", -0.03pt apart. A
+    # wall the riding text runs past is not after it at all (an IRS line places words inside
+    # its own run, 8pt "before" its end), and a word space or more only widens: the gap a
+    # shortened value leaves before leader dots is not a tear.
+    size = gap_keep / 2.0
+    if not (-tol <= wall - flow_end <= 0.25 * size):
+        return None
+    return wall, flow_end
+
+
+def _respace_run(doc, page, run_idx: int, delta: float, tail: int, max_grow_em: float = 0.25) -> bool:
+    """Widen the word gaps of ONE TJ run so it still ends where it did after its text shrank by
+    -*delta* page points — re-justifying the segment of the line it draws, the way a typesetter
+    would, rather than letting the rest of the run slide away from what follows it.
+
+    The same arithmetic as _rejustify, on the TJ word gaps of a single run: pdfTeX draws a whole
+    paragraph as one text object, so _rejustify (one object per line) never applies to it.
+    Every word gap of the run takes an equal share, as a typesetter re-justifies the line: the
+    words keep their order and the line keeps both its edges. Widening only the gaps after the
+    field put 9pt between three words and the text layer read them as separate lines.
+    *tail* (the run's tokens after the field) must be non-zero: something has to follow it.
+    Returns True when written; declines (False) on anything it cannot do exactly."""
+    if delta >= -0.05 or tail <= 0:
+        return False
+    runs = _all_runs(_content_streams(doc, page))
+    if not (0 <= run_idx < len(runs)):
+        return False
+    run = runs[run_idx]
+    if run["op"] != "TJ":
+        return False
+    toks = run["str_toks"]
+    if tail >= len(toks):
+        return False
+    gaps = [t for t in toks[1:]
+            if t.get("gap_before") is not None and _PIN_GAP < t["gap_before"] <= _SPACE_GAP_THRESHOLD]
+    if not gaps:
+        return False
+    data = run["data"]
+    tfm = list(_TF_OP.finditer(data[:run["full_start"]]))
+    if not tfm:
+        return False
+    tfs = float(tfm[-1].group(1))
+    obj = next((o for o in _text_objects(data) if o["bt"] <= run["full_start"] < o["et"]), None)
+    if obj is None or not obj.get("x_scale") or tfs <= 0:
+        return False
+    step = delta * 1000.0 / (len(gaps) * tfs * obj["x_scale"])
+    if abs(step) > max_grow_em * 1000.0:
+        return False
+    out = bytearray(data)
+    for t in sorted(gaps, key=lambda t: t["start"], reverse=True):
+        m = re.search(rb"(-?\d*\.?\d+)\s*$", bytes(out[:t["start"]]))
+        if not m:
+            return False
+        out[m.start(1):m.end(1)] = f"{t['gap_before'] + step:.3f}".encode()
+    doc.update_stream(run["xref"], bytes(out))
+    return True
+
+
 def _positions_on_baseline(doc, page, base_ys, tol: float = 0.6):
     """Every x at which a positioning operator places text on this LINE.
 
@@ -5156,6 +5236,37 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     #
     # The reservation above had already granted room for the whole line to
     # slide right. That room is only real if reflow actually runs.
+    tear = (None if hold or reflowed or new_x1 is None
+            else _shrink_tears(seen, _lspans, old_x1, _push, _gap_keep))
+    if tear:
+        wall, flow_end = tear
+        fixed = False
+        last_tok = loc_result.get("tok_hi", loc_result.get("tok"))
+        orig_run = (prep["runs"][loc_result["run"]]
+                    if loc_result.get("run") is not None and prep.get("runs") else None)
+        tail_n = (len(orig_run["str_toks"]) - 1 - last_tok
+                  if orig_run is not None and isinstance(last_tok, int) else 0)
+        if (just_margin is not None or word_margin is not None) and tail_n > 0:
+            jd = fitz.open(stream=edited, filetype="pdf")
+            try:
+                if _respace_run(jd, jd[tpage], loc_result["run"], new_x1 - old_x1, tail_n):
+                    cand = _pdfsave.to_bytes(jd, garbage=1, deflate=True)
+                    cd = fitz.open(stream=cand, filetype="pdf")
+                    try:
+                        after = [sp_["bbox"][2] for sp_ in _line_spans(cd[tpage], target["bbox"])
+                                 if sp_["bbox"][0] < wall - 0.6]
+                    finally:
+                        cd.close()
+                    # Proven, not assumed: the text before the pinned run ends where it did.
+                    if after and abs(max(after) - flow_end) <= 0.5:
+                        edited, fixed, rejustified, words_respaced = cand, True, True, True
+                        new_x1 = old_x1
+            finally:
+                jd.close()
+        if not fixed:
+            return {"ok": False, "reason": "cannot_reflow",
+                    "message": _REASON_MSG["cannot_reflow"]}
+
     if (new_x1 is not None and abs(_push) > 0.05 and not reflowed
             and _would_tear_line(seen, _lspans, old_x1, _push, _gap_keep)):
         return {"ok": False, "reason": "cannot_reflow",

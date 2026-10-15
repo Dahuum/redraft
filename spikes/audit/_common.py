@@ -324,11 +324,29 @@ def moved_text(before_pdf: bytes, out_pdf: bytes, page: int, span: dict,
                 pool.pop(k)
         return [f"{w[4][:14]!r}@{w[0]:.0f},{w[1]:.0f} moved/lost (reflow)" for w in lost[:3]]
 
+    # A RE-JUSTIFIED line: the edited line's other words may take up the change in its word
+    # spacing, as a typesetter does — provided it is provably that: the words left and right of
+    # the edit keep their text and order, and the line keeps both its edges. Pinned text on the
+    # line (a column after a gutter) and every other line are still held exactly.
+    def _line(ws):
+        return sorted((w for w in ws if on_line(w)
+                       and (pinned_from is None or w[0] < pinned_from - tol)), key=lambda w: w[0])
+    lb_, la_ = _line(wb), _line(wa)
+    left = [w[4] for w in lb_ if w[2] <= x0 + tol]
+    right = [w[4] for w in lb_ if w[0] >= x1 - tol]
+    rejustified = (
+        len(la_) >= len(left) + len(right) and lb_ and la_
+        and [w[4] for w in la_[:len(left)]] == left
+        and (not right or [w[4] for w in la_[len(la_) - len(right):]] == right)
+        and abs(la_[0][0] - lb_[0][0]) <= tol and abs(la_[-1][2] - lb_[-1][2]) <= tol)
+
     must = []
     for w in wb:
         if on_line(w):
             if w[2] > x0 + tol and w[0] < x1 - tol:
                 continue                                   # the edit itself
+            if rejustified and (pinned_from is None or w[0] < pinned_from - tol):
+                continue                                   # re-justified with the line
             if w[0] >= x1 - tol and (pinned_from is None or w[0] < pinned_from - tol):
                 continue                                   # prose that may flow
         must.append(w)
