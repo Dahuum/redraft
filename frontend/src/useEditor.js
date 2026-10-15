@@ -17,6 +17,7 @@ export function useEditor() {
   const [selectedId, setSelectedId] = useState(null);
   const [edits, setEdits] = useState({}); // { id: newText }
   const [previewData, setPreviewData] = useState(null); // ArrayBuffer (edited)
+  const [previewFor, setPreviewFor] = useState(null); // the `edits` object previewData was rendered from
   const [previewUrl, setPreviewUrl] = useState(null);
   const [fontReport, setFontReport] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -32,16 +33,21 @@ export function useEditor() {
   const fonts = useMemo(() => [...new Set(spans.map((s) => s.font))].filter(Boolean), [spans]);
   const hasChanges = nEdits > 0 || overlays.length > 0 || nMoves > 0;
 
-  // Bumped on every change: a preview that comes back after a newer change is stale and dropped.
-  const generation = useRef(0);
+  // A text edit keeps the last render on screen (only fields changed since it are drawn live), and
+  // any render newer than the one shown replaces it. A change that the render cannot be patched
+  // for (added items, moves, a new file) bumps the epoch: renders from before it are dropped.
+  const epoch = useRef(0);
+  const requested = useRef(0);
+  const shown = useRef(0);
 
   const resetPreview = useCallback(() => {
-    generation.current += 1;
+    epoch.current += 1;
     setPreviewUrl((u) => {
       if (u) URL.revokeObjectURL(u);
       return null;
     });
     setPreviewData(null);
+    setPreviewFor(null);
     setFontReport(null);
   }, []);
 
@@ -87,9 +93,8 @@ export function useEditor() {
         else delete next[id];
         return next;
       });
-      resetPreview();
     },
-    [spans, resetPreview]
+    [spans]
   );
 
   const resetAll = useCallback(() => {
@@ -161,38 +166,50 @@ export function useEditor() {
     resetPreview();
   }, [resetPreview]);
 
+  const inFlight = useRef(0);
   const preview = useCallback(async ({ auto = false } = {}) => {
     if (!file || !hasChanges) return null;
-    const mine = generation.current;
+    const myEpoch = epoch.current;
+    const mine = ++requested.current;
+    const sentEdits = edits;
     setError(null);
+    inFlight.current += 1;
     setBusy(true);
     try {
       const { editArr, stamps } = buildPayload();
       const { blob, fontReport: fr } = await editPdf(file, editArr, stamps);
       const buf = await blob.arrayBuffer();
-      if (mine !== generation.current) return null;
+      if (myEpoch !== epoch.current || mine < shown.current) return null;
+      shown.current = mine;
       const url = URL.createObjectURL(blob);
       setPreviewUrl((u) => {
         if (u) URL.revokeObjectURL(u);
         return url;
       });
       setPreviewData(buf);
+      setPreviewFor(sentEdits);
       setFontReport(fr);
       if (!auto) window.rdTrack?.("edit_preview");
       return url;
     } catch (e) {
-      if (mine === generation.current) setError(e.message || "Couldn't apply edits.");
+      if (myEpoch === epoch.current && mine >= shown.current) setError(e.message || "Couldn't apply edits.");
       return null;
     } finally {
-      setBusy(false);
+      inFlight.current -= 1;
+      if (!inFlight.current) setBusy(false);
     }
-  }, [file, hasChanges, buildPayload]);
+  }, [file, hasChanges, edits, buildPayload]);
+
+  // Every edit undone: show the original again, not the last edited render.
+  useEffect(() => {
+    if (!hasChanges && previewData) resetPreview();
+  }, [hasChanges, previewData, resetPreview]);
 
   useEffect(() => {
-    if (!file || !hasChanges || previewData) return undefined;
+    if (!file || !hasChanges || (previewData && previewFor === edits)) return undefined;
     const t = setTimeout(() => preview({ auto: true }), AUTO_PREVIEW_MS);
     return () => clearTimeout(t);
-  }, [file, hasChanges, previewData, preview]);
+  }, [file, hasChanges, previewData, previewFor, edits, preview]);
 
   // Always bakes the current edits, overlays AND moves fresh (they're live on the
   // canvas, never in the text-only preview, so we can't reuse previewUrl here).
@@ -228,7 +245,7 @@ export function useEditor() {
   return {
     file, fileData, spans, pages, pageIndex, setPageIndex,
     selectedId, setSelectedId, edits, nEdits, editedIds,
-    previewData, previewUrl, fontReport, busy, error,
+    previewData, previewFor, previewUrl, fontReport, busy, error,
     zoom, setZoom,
     overlays, addOverlay, updateOverlay, removeOverlay, fonts, hasChanges,
     moves, movedIds, moveSpan, clearMove,

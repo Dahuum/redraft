@@ -42,7 +42,8 @@ export default function PdfCanvas({
   onSpanMoveClear = () => {},
   // ---- Inline editor: rendered next to the selected span (document-first editing) ----
   selectedPopover = null, // (span, below:boolean) => node
-  liveEdits = false, // draw edited text on the page as it is typed (until a real Preview replaces it)
+  liveEdits = false, // draw edited text on the page as it is typed (until a real render replaces it)
+  shownEdits = {}, // the edits the page image already contains; only fields that differ are drawn live
   onZoomFactor = null, // (factor) => void, Ctrl+wheel / pinch over the board
 }) {
   const canvasRef = useRef(null);
@@ -55,7 +56,12 @@ export default function PdfCanvas({
   // Rendering and zoom motion live in lib/pdfRender.js. `scale` (CSS px per PDF point) and `dims`
   // follow maxWidth immediately, so overlays are always in step with the page; the sharp bitmap
   // catches up a moment later without ever blanking the canvas.
-  const { view, cssScale, w: dimsW, h: dimsH, painted, err } = usePdfRender({ data, pageIndex, maxWidth, canvasRef });
+  const { view, cssScale, w: dimsW, h: dimsH, painted, err, shownData } = usePdfRender({ data, pageIndex, maxWidth, canvasRef });
+  // Which edits each image contains, so live text is judged against the image on screen — not the
+  // one still loading, which would briefly show a field's old value.
+  const editsIn = useRef(new WeakMap());
+  if (data && !editsIn.current.has(data)) editsIn.current.set(data, shownEdits);
+  const onScreen = (shownData && editsIn.current.get(shownData)) || {};
   const scale = cssScale;
   const dims = { w: dimsW, h: dimsH };
   const shownIndex = view ? view.index : pageIndex; // overlays follow the page that is actually on screen
@@ -217,8 +223,8 @@ export default function PdfCanvas({
           {/* Live text: the new value drawn over the original, so the change is
               visible on the page while you type. Approximate font; Preview is exact. */}
           {liveEdits && pageSpans.map((s) => {
-            const nt = edits[s.id];
-            if (nt === undefined || nt === s.text || moves[s.id] || s.invisible || s.rtl) return null;
+            const nt = edits[s.id] ?? s.text;
+            if (nt === (onScreen[s.id] ?? s.text) || moves[s.id] || s.invisible || s.rtl) return null;
             const [x0, y0, x1, y1] = s.bbox;
             const numeric = /\d/.test(s.text) && /^[\s\d.,%:+\-−–/()A-Za-z$€£¥]*$/.test(s.text) && s.text.replace(/[^\d]/g, "").length >= s.text.replace(/\s/g, "").length * 0.5;
             const h = (y1 - y0) * scale;
