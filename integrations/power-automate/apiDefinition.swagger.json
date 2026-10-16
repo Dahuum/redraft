@@ -1,0 +1,556 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Redraft",
+    "version": "1.0",
+    "description": "Replace text in a PDF in its original font and position, with paragraphs re-flowed, and get a receipt of every change.",
+    "contact": {
+      "name": "Redraft",
+      "url": "https://github.com/Dahuum/redraft"
+    }
+  },
+  "host": "redraft.example.com",
+  "basePath": "/",
+  "schemes": [
+    "https"
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/replace": {
+      "post": {
+        "operationId": "ReplaceText",
+        "summary": "Replace text in a PDF",
+        "description": "Finds each text in the PDF and replaces it in the same font and place. Returns the edited PDF only if at least one change was made, with a receipt saying what was done.",
+        "x-ms-visibility": "important",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "required": [
+                "pdf",
+                "changes"
+              ],
+              "properties": {
+                "pdf": {
+                  "type": "string",
+                  "format": "byte",
+                  "title": "PDF file content",
+                  "description": "The PDF to edit, for example File Content from OneDrive or SharePoint.",
+                  "x-ms-visibility": "important",
+                  "x-ms-summary": "PDF file content"
+                },
+                "filename": {
+                  "type": "string",
+                  "title": "File name",
+                  "description": "Optional name of the file, used in error messages.",
+                  "x-ms-visibility": "advanced",
+                  "x-ms-summary": "File name"
+                },
+                "changes": {
+                  "type": "array",
+                  "title": "Changes",
+                  "description": "The texts to find and what to replace each with.",
+                  "x-ms-visibility": "important",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "find",
+                      "replace"
+                    ],
+                    "properties": {
+                      "find": {
+                        "type": "string",
+                        "title": "Find",
+                        "description": "Text to find, exactly as it reads in the PDF.",
+                        "x-ms-visibility": "important",
+                        "x-ms-summary": "Find"
+                      },
+                      "replace": {
+                        "type": "string",
+                        "title": "Replace with",
+                        "description": "New text. Leave empty to delete.",
+                        "x-ms-visibility": "important",
+                        "x-ms-summary": "Replace with"
+                      },
+                      "page": {
+                        "type": "integer",
+                        "title": "Page",
+                        "description": "Only on this page (starting at 1).",
+                        "x-ms-visibility": "advanced",
+                        "x-ms-summary": "Page"
+                      },
+                      "first_only": {
+                        "type": "boolean",
+                        "title": "First occurrence only",
+                        "description": "Change only the first occurrence.",
+                        "default": false,
+                        "x-ms-visibility": "advanced",
+                        "x-ms-summary": "First occurrence only"
+                      },
+                      "whole_word": {
+                        "type": "boolean",
+                        "title": "Whole words only",
+                        "description": "Do not match inside longer words.",
+                        "default": true,
+                        "x-ms-visibility": "advanced",
+                        "x-ms-summary": "Whole words only"
+                      }
+                    }
+                  },
+                  "x-ms-summary": "Changes"
+                },
+                "strict": {
+                  "type": "boolean",
+                  "title": "Fail unless every change is made",
+                  "description": "If yes, the action fails when any change could not be made.",
+                  "default": false,
+                  "x-ms-visibility": "advanced",
+                  "x-ms-summary": "Fail unless every change is made"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The result.",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "pdf": {
+                  "type": "string",
+                  "format": "byte",
+                  "title": "Edited PDF",
+                  "description": "The edited PDF. Empty when nothing was changed.",
+                  "x-nullable": true,
+                  "x-ms-summary": "Edited PDF"
+                },
+                "receipt": {
+                  "type": "object",
+                  "title": "Receipt",
+                  "description": "What was done, change by change.",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "title": "All changes made",
+                      "description": "True when every change was found, made and read back.",
+                      "x-ms-summary": "All changes made"
+                    },
+                    "status": {
+                      "type": "string",
+                      "title": "Status",
+                      "description": "ok, partial or unchanged.",
+                      "enum": [
+                        "ok",
+                        "partial",
+                        "unchanged"
+                      ],
+                      "x-ms-summary": "Status"
+                    },
+                    "edited": {
+                      "type": "integer",
+                      "title": "Occurrences edited",
+                      "description": "Total number of occurrences changed.",
+                      "x-ms-summary": "Occurrences edited"
+                    },
+                    "pages": {
+                      "type": "integer",
+                      "title": "Pages",
+                      "description": "Number of pages in the document.",
+                      "x-ms-summary": "Pages"
+                    },
+                    "ms": {
+                      "type": "integer",
+                      "title": "Time (ms)",
+                      "description": "Processing time in milliseconds.",
+                      "x-ms-summary": "Time (ms)"
+                    },
+                    "changes": {
+                      "type": "array",
+                      "title": "Changes",
+                      "description": "One entry per requested change.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "find": {
+                            "type": "string",
+                            "title": "Find",
+                            "description": "The text that was searched for.",
+                            "x-ms-summary": "Find"
+                          },
+                          "replace": {
+                            "type": "string",
+                            "title": "Replace",
+                            "description": "The text it was replaced with.",
+                            "x-ms-summary": "Replace"
+                          },
+                          "found": {
+                            "type": "integer",
+                            "title": "Found",
+                            "description": "How many times the text was found.",
+                            "x-ms-summary": "Found"
+                          },
+                          "edited": {
+                            "type": "integer",
+                            "title": "Edited",
+                            "description": "How many of those were changed.",
+                            "x-ms-summary": "Edited"
+                          },
+                          "in_place": {
+                            "type": "integer",
+                            "title": "In place",
+                            "description": "Changed inside the original font.",
+                            "x-ms-summary": "In place"
+                          },
+                          "redrawn": {
+                            "type": "integer",
+                            "title": "Redrawn",
+                            "description": "Changed by redrawing the line.",
+                            "x-ms-summary": "Redrawn"
+                          },
+                          "verified": {
+                            "type": "boolean",
+                            "title": "Verified",
+                            "description": "The new text was read back from the edited page.",
+                            "x-ms-summary": "Verified"
+                          },
+                          "why_not_found": {
+                            "type": "string",
+                            "title": "Why not found",
+                            "description": "Set when the text was not found at all.",
+                            "x-ms-summary": "Why not found"
+                          },
+                          "problems": {
+                            "type": "array",
+                            "title": "Problems",
+                            "description": "Occurrences that were found but left unchanged.",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "page": {
+                                  "type": "integer",
+                                  "title": "Page",
+                                  "description": "Page number, starting at 1.",
+                                  "x-ms-summary": "Page"
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "title": "Reason",
+                                  "description": "Short code for why this occurrence was not changed.",
+                                  "x-ms-summary": "Reason"
+                                },
+                                "message": {
+                                  "type": "string",
+                                  "title": "Message",
+                                  "description": "Why this occurrence was not changed, in words.",
+                                  "x-ms-summary": "Message"
+                                }
+                              }
+                            },
+                            "x-ms-summary": "Problems"
+                          }
+                        }
+                      },
+                      "x-ms-summary": "Changes"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "title": "Warnings",
+                      "description": "Notes about the result.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "x-ms-summary": "Warnings"
+                    },
+                    "not_reflowed": {
+                      "type": "array",
+                      "title": "Not re-flowed",
+                      "description": "Paragraphs that could not be re-wrapped.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "page": {
+                            "type": "integer",
+                            "title": "Page",
+                            "description": "Page number.",
+                            "x-ms-summary": "Page"
+                          },
+                          "text": {
+                            "type": "string",
+                            "title": "Text",
+                            "description": "The paragraph text.",
+                            "x-ms-summary": "Text"
+                          },
+                          "message": {
+                            "type": "string",
+                            "title": "Message",
+                            "description": "Why it was not re-flowed.",
+                            "x-ms-summary": "Message"
+                          }
+                        }
+                      },
+                      "x-ms-summary": "Not re-flowed"
+                    },
+                    "sha256": {
+                      "type": "object",
+                      "title": "Checksums",
+                      "description": "SHA-256 of the input and output files.",
+                      "properties": {
+                        "before": {
+                          "type": "string",
+                          "title": "SHA-256 before",
+                          "description": "Checksum of the input PDF.",
+                          "x-ms-summary": "SHA-256 before"
+                        },
+                        "after": {
+                          "type": "string",
+                          "title": "SHA-256 after",
+                          "description": "Checksum of the edited PDF.",
+                          "x-ms-summary": "SHA-256 after"
+                        }
+                      },
+                      "x-ms-summary": "Checksums"
+                    }
+                  },
+                  "x-ms-summary": "Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be read."
+          },
+          "401": {
+            "description": "The API key is missing or wrong."
+          },
+          "413": {
+            "description": "The PDF is larger than 25 MB."
+          },
+          "422": {
+            "description": "Strict was set and not every change was made.",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": "string",
+                  "title": "Detail",
+                  "description": "What went wrong.",
+                  "x-ms-summary": "Detail"
+                },
+                "receipt": {
+                  "type": "object",
+                  "title": "Receipt",
+                  "description": "What was done, change by change.",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "title": "All changes made",
+                      "description": "True when every change was found, made and read back.",
+                      "x-ms-summary": "All changes made"
+                    },
+                    "status": {
+                      "type": "string",
+                      "title": "Status",
+                      "description": "ok, partial or unchanged.",
+                      "enum": [
+                        "ok",
+                        "partial",
+                        "unchanged"
+                      ],
+                      "x-ms-summary": "Status"
+                    },
+                    "edited": {
+                      "type": "integer",
+                      "title": "Occurrences edited",
+                      "description": "Total number of occurrences changed.",
+                      "x-ms-summary": "Occurrences edited"
+                    },
+                    "pages": {
+                      "type": "integer",
+                      "title": "Pages",
+                      "description": "Number of pages in the document.",
+                      "x-ms-summary": "Pages"
+                    },
+                    "ms": {
+                      "type": "integer",
+                      "title": "Time (ms)",
+                      "description": "Processing time in milliseconds.",
+                      "x-ms-summary": "Time (ms)"
+                    },
+                    "changes": {
+                      "type": "array",
+                      "title": "Changes",
+                      "description": "One entry per requested change.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "find": {
+                            "type": "string",
+                            "title": "Find",
+                            "description": "The text that was searched for.",
+                            "x-ms-summary": "Find"
+                          },
+                          "replace": {
+                            "type": "string",
+                            "title": "Replace",
+                            "description": "The text it was replaced with.",
+                            "x-ms-summary": "Replace"
+                          },
+                          "found": {
+                            "type": "integer",
+                            "title": "Found",
+                            "description": "How many times the text was found.",
+                            "x-ms-summary": "Found"
+                          },
+                          "edited": {
+                            "type": "integer",
+                            "title": "Edited",
+                            "description": "How many of those were changed.",
+                            "x-ms-summary": "Edited"
+                          },
+                          "in_place": {
+                            "type": "integer",
+                            "title": "In place",
+                            "description": "Changed inside the original font.",
+                            "x-ms-summary": "In place"
+                          },
+                          "redrawn": {
+                            "type": "integer",
+                            "title": "Redrawn",
+                            "description": "Changed by redrawing the line.",
+                            "x-ms-summary": "Redrawn"
+                          },
+                          "verified": {
+                            "type": "boolean",
+                            "title": "Verified",
+                            "description": "The new text was read back from the edited page.",
+                            "x-ms-summary": "Verified"
+                          },
+                          "why_not_found": {
+                            "type": "string",
+                            "title": "Why not found",
+                            "description": "Set when the text was not found at all.",
+                            "x-ms-summary": "Why not found"
+                          },
+                          "problems": {
+                            "type": "array",
+                            "title": "Problems",
+                            "description": "Occurrences that were found but left unchanged.",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "page": {
+                                  "type": "integer",
+                                  "title": "Page",
+                                  "description": "Page number, starting at 1.",
+                                  "x-ms-summary": "Page"
+                                },
+                                "reason": {
+                                  "type": "string",
+                                  "title": "Reason",
+                                  "description": "Short code for why this occurrence was not changed.",
+                                  "x-ms-summary": "Reason"
+                                },
+                                "message": {
+                                  "type": "string",
+                                  "title": "Message",
+                                  "description": "Why this occurrence was not changed, in words.",
+                                  "x-ms-summary": "Message"
+                                }
+                              }
+                            },
+                            "x-ms-summary": "Problems"
+                          }
+                        }
+                      },
+                      "x-ms-summary": "Changes"
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "title": "Warnings",
+                      "description": "Notes about the result.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "x-ms-summary": "Warnings"
+                    },
+                    "not_reflowed": {
+                      "type": "array",
+                      "title": "Not re-flowed",
+                      "description": "Paragraphs that could not be re-wrapped.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "page": {
+                            "type": "integer",
+                            "title": "Page",
+                            "description": "Page number.",
+                            "x-ms-summary": "Page"
+                          },
+                          "text": {
+                            "type": "string",
+                            "title": "Text",
+                            "description": "The paragraph text.",
+                            "x-ms-summary": "Text"
+                          },
+                          "message": {
+                            "type": "string",
+                            "title": "Message",
+                            "description": "Why it was not re-flowed.",
+                            "x-ms-summary": "Message"
+                          }
+                        }
+                      },
+                      "x-ms-summary": "Not re-flowed"
+                    },
+                    "sha256": {
+                      "type": "object",
+                      "title": "Checksums",
+                      "description": "SHA-256 of the input and output files.",
+                      "properties": {
+                        "before": {
+                          "type": "string",
+                          "title": "SHA-256 before",
+                          "description": "Checksum of the input PDF.",
+                          "x-ms-summary": "SHA-256 before"
+                        },
+                        "after": {
+                          "type": "string",
+                          "title": "SHA-256 after",
+                          "description": "Checksum of the edited PDF.",
+                          "x-ms-summary": "SHA-256 after"
+                        }
+                      },
+                      "x-ms-summary": "Checksums"
+                    }
+                  },
+                  "x-ms-summary": "Receipt"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "securityDefinitions": {
+    "api_key": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "X-API-Key"
+    }
+  },
+  "security": [
+    {
+      "api_key": []
+    }
+  ]
+}
