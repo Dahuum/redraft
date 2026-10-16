@@ -33,3 +33,10 @@ curl -s -X POST http://localhost:8000/edit \
   -F "stamps=[]" -F "final=true" \
   -o anonymized.pdf
 ```
+
+# examples/arabic-certificate.pdf
+
+A short Arabic school certificate printed by Chrome from `arabic-certificate.html` (Amiri, with a
+French line that carries the Arabic name in another font). Every value in it is fabricated. It is
+the fixture for `spikes/test_arabic.py`: edits inside right-to-left lines, in a paragraph that
+ends with a full stop, and through `/v1/replace`.
