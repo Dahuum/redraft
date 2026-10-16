@@ -1189,10 +1189,10 @@ _UNSHIPPABLE_MSG = {
         "would push the rest of the row out of line with the columns above "
         "and below it. The field was left as it was — shorten the value."),
     "runs_off_the_page": (
-        "This value is too long for the space it sits in: even shrunk as far "
-        "as is reasonable it would run past the edge of the paper, where the "
-        "text is simply cut off. The field was left as it was — shorten the "
-        "value, or give it a line of its own."),
+        "This value is too long for the space it sits in: at its own size it "
+        "would run past the edge of the paper, where the text is simply cut "
+        "off. The field was left as it was — shorten the value, or give it a "
+        "line of its own."),
 }
 
 
@@ -1357,6 +1357,14 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
             probe = _flat(_nt.strip())[:12]
             if probe and probe not in _flat(" ".join(on_line)):
                 bad[i] = "cannot_place"
+                continue
+            # Its END too. Glyphs past the paper's edge are not extracted at all, so a value drawn
+            # from x=524 to 647 on a 595pt page read back as "Zoé Ångström-Ñu": its beginning was
+            # there, the off-page check saw a span ending inside the page, and it shipped cut off.
+            # Compared without whitespace: the extractor may split the value into several spans.
+            tail = re.sub(r"\s+", "", _flat(_nt))[-10:]
+            if tail and tail not in re.sub(r"\s+", "", _flat("".join(on_line))):
+                bad[i] = "runs_off_the_page"
     finally:
         doc.close()
         if ref is not None:
@@ -1630,7 +1638,13 @@ def _apply_replacements(pdf_bytes: bytes, replacements: list,
                     _queue(normal)
                     ed.apply()
                 if overflowing:
-                    ed.shrink_to_fit = True
+                    # Never smaller than the document set it (the product decision, 2026-10):
+                    # a value that doesn't fit is drawn at its own size where there is room,
+                    # and _unshippable_fields below leaves it unchanged, with a message saying
+                    # to shorten it, where it would run off the page or into other text.
+                    # Shrinking used to be forced here, down to 70%: always placed, visibly
+                    # smaller than everything around it.
+                    ed.shrink_to_fit = not preserve_size
                     _queue(overflowing)
                     ed.apply()
 
@@ -1644,10 +1658,11 @@ def _apply_replacements(pdf_bytes: bytes, replacements: list,
             def _refusal_for(sd):
                 return next((r for r in inplace_refusals
                              if r.get("text") == sd["text"][:60]), {})
-            resized = [{"text": sd["text"][:60], "new_text": nt[:60],
-                        "reason": _refusal_for(sd).get("reason") or "too_long_for_line",
-                        "detail": _refusal_for(sd).get("message")}
-                       for sd, nt in overflowing]
+            resized = [] if preserve_size else [
+                {"text": sd["text"][:60], "new_text": nt[:60],
+                 "reason": _refusal_for(sd).get("reason") or "too_long_for_line",
+                 "detail": _refusal_for(sd).get("message")}
+                for sd, nt in overflowing]
             def _resize_warning(r):
                 # Overflow has a plain-words explanation a user can act on;
                 # the other reasons are structural and name themselves.

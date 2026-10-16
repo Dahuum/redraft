@@ -274,11 +274,15 @@ _cb = open(os.path.join(HERE, "..", "examples", "annex-cell.pdf"), "rb").read()
 _cells = [s for s in api.extract_spans(_cb) if s["text"] == "2,400.00"]
 _csd = max(_cells, key=lambda s: s["bbox"][0])          # the TOTAL column, QTY "1" to its left
 _long = "Zoé Ångström-Ñuñe 2,400.00"   # tuned to the true Lato Regular widths: crowds the QTY cell, no overlap
-_out, _rep = api.apply_replacements(_cb, [(_csd, _long)], try_inplace=True)
+# Run with shrinking allowed (preserve_size=False): the scenario this rule exists for is a value
+# fitted SMALLER into its cell. Since 2026-10 the product never shrinks by default, and at full size
+# this value simply overlaps (overlaps_neighbour refuses it); the crowding rule still guards any
+# caller that asks for shrink-to-fit, and fires elsewhere in the audit at full size.
+_out, _rep = api.apply_replacements(_cb, [(_csd, _long)], try_inplace=True, preserve_size=False)
 check("a value that would end up touching its neighbour is refused", _out == _cb)
 _saved = api._crowds_neighbour
 api._crowds_neighbour = lambda *a, **k: None            # calibration: the rule is what refuses
-_out2, _ = api.apply_replacements(_cb, [(_csd, _long)], try_inplace=True)
+_out2, _ = api.apply_replacements(_cb, [(_csd, _long)], try_inplace=True, preserve_size=False)
 api._crowds_neighbour = _saved
 check("(calibration) without the rule the same edit is applied", _out2 != _cb)
 _out, _rep = api.apply_replacements(_cb, [(_csd, "12,400.00")], try_inplace=True)

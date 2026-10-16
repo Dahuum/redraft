@@ -445,14 +445,18 @@ _long = ("Abdurrahamn Chahrour Al-Fassi Idrissi Benjelloun "
 _rep_big, _end_big, _size_big = _via_api(_long)
 # The failure this guards: before, a value this long was drawn at full size
 # straight past the paper edge (x=603 on a 595pt page) with nothing said.
-check("a value too long for any line still lands ON the page",
-      0 < _end_big <= _page_w, f"ends {_end_big:.1f} vs page {_page_w:.1f}")
+check("a value too long for any line never lands OFF the page (placed on it, or left unchanged)",
+      0 < _end_big <= _page_w or (_end_big < 0 and _rep_big["in_place"]["count"] == 0
+                                   and any("left unchanged" in w for w in _rep_big.get("warnings", []))),
+      f"ends {_end_big:.1f} vs page {_page_w:.1f}")
 check("it fell back rather than claiming an in-place edit",
       _rep_big["in_place"]["count"] == 0, f"{_rep_big['in_place']}")
-check("the response names it as resized to fit",
-      bool(_rep_big.get("resized_to_fit")), f"{_rep_big.get('resized_to_fit')}")
+# Never drawn smaller than the document set it (product decision, 2026-10): a value that
+# cannot fit at its own size is left unchanged, and the response says to shorten it.
+check("it is not shrunk: nothing is reported as resized",
+      not _rep_big.get("resized_to_fit"), f"{_rep_big.get('resized_to_fit')}")
 check("and warns in words a person can read",
-      any("too long for its line" in w for w in _rep_big.get("warnings", [])),
+      any("too long for the space" in w and "shorten" in w for w in _rep_big.get("warnings", [])),
       f"{_rep_big.get('warnings')}")
 check("the in-place refusal reason is carried through",
       any(r.get("reason") == "would_overflow"
