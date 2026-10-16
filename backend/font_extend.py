@@ -51,6 +51,7 @@ CFF/OpenType-CFF donors and subsets are skipped (refuse), and unitsPerEm
 must match between subset and donor (asserted, not silently rescaled).
 """
 import io
+import math
 import json
 import os
 import re
@@ -93,6 +94,7 @@ _DONOR_ONLY_SUBSTITUTES = {
 _DONOR_SUBSTITUTE_KEYS = {
     "helvetica": "Arimo",      # Arimo is metrically compatible with
     "helveticaneue": "Arimo",  # Arial/Helvetica and already proven here.
+    "itcfranklingothic": "Libre Franklin",
 }
 
 # Tags stripped, one at a time from the end, while looking for a key above.
@@ -420,6 +422,8 @@ _AGL_REV = None
 # wrong-sized letter was first noticed by eye in this codebase, and well above
 # the 1-2% that separates metrically compatible cuts of the same design.
 _CFF_MAX_LANDMARK_ERR = 0.06
+# Median advance of the letters a substitute shares with the subset, after its scale.
+_CFF_MAX_WIDTH_ERR = 0.10
 
 
 _CAP_REFS = ("H", "E", "T", "A", "I", "N")
@@ -484,7 +488,8 @@ def _tt_landmarks(donor, scale):
     return cap, xh
 
 
-def extend_cff_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dict:
+def extend_cff_font(subset_bytes: bytes, donor_bytes: bytes, chars: list,
+                    substitute: bool = False) -> dict:
     """Copy each char in `chars` from a TrueType donor into a COPY of a bare
     CFF (Type1C) subset. Returns:
       {"font_bytes": bytes, "names": {char: glyphname}, "width_1000": {char: w}}
@@ -535,6 +540,18 @@ def extend_cff_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dic
     # to be drawn with Poppins letterforms 33% too tall.
     sub_cap, sub_xh = _cff_landmarks(cs)
     don_cap, don_xh = _tt_landmarks(donor, scale)
+    if substitute:
+        # Another typeface is drawn at its own proportions: Libre Franklin standing in for ITC
+        # Franklin Gothic Demi on the IRS forms has caps 8% taller (742 against 686) and an
+        # x-height 2% taller, and was refused at the limit below. A uniform scale keeps every
+        # letter's shape; the factor splits the error between the two landmarks (the geometric
+        # mean of their ratios), and what is left is still held to the same limit. The same
+        # family is never rescaled: a real cut off by that much means the measurement is wrong.
+        ratios = [a / b for a, b in ((sub_cap, don_cap), (sub_xh, don_xh)) if a and b and a > 1]
+        if ratios:
+            fit = math.prod(ratios) ** (1.0 / len(ratios))
+            scale *= fit
+            don_cap, don_xh = (v * fit if v else v for v in (don_cap, don_xh))
     checked = []
     for a, b, label in ((sub_cap, don_cap, "cap height"), (sub_xh, don_xh, "x-height")):
         if a and b and a > 1:
@@ -546,6 +563,26 @@ def extend_cff_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dic
         raise ValueError(
             f"donor {worst_label} is off by {worst * 100:.0f}% "
             f"(limit {_CFF_MAX_LANDMARK_ERR * 100:.0f}%)")
+
+    if substitute:
+        # ...and its letters must be about as WIDE as the ones it sits among, or a word with one
+        # injected letter reads as two typefaces. Letters both fonts have, after the scale.
+        from fontTools.agl import toUnicode
+        donor_cmap = donor.getBestCmap()
+        wr = []
+        for g in cs.keys():
+            u = toUnicode(g)
+            if len(u) == 1 and u.isalpha() and ord(u) in donor_cmap:
+                own = _cff_advance(cs, g)
+                if own > 1:
+                    wr.append(donor["hmtx"][donor_cmap[ord(u)]][0] * scale / own)
+        if len(wr) < 5:
+            raise ValueError("cannot measure this subset's widths against the donor")
+        wr.sort()
+        med = wr[len(wr) // 2]
+        if abs(med - 1) > _CFF_MAX_WIDTH_ERR:
+            raise ValueError(f"donor widths are off by {abs(med - 1) * 100:.0f}% "
+                             f"(limit {_CFF_MAX_WIDTH_ERR * 100:.0f}%)")
 
     names, widths = {}, {}
     for ch in chars:
@@ -584,6 +621,118 @@ def extend_cff_font(subset_bytes: bytes, donor_bytes: bytes, chars: list) -> dic
     cff.compile(out, stub)
     return {"font_bytes": out.getvalue(), "names": names, "width_1000": widths,
             "landmark_error": worst, "landmark_checked": worst_label}
+
+
+_STEM_GLYPHS = ("l", "I", "i")
+
+# Condensed cuts (Adobe's "-Cn", "-BdCn", "-BlkCn" on the IRS forms) have no condensed relative
+# in the substitutes above: Arimo squeezed to the right widths has stems 13-19% too thin. Real
+# condensed families, measured against Helvetica Neue LT Std on the 1040 (stem, median width,
+# at the subset's cap height): Bold Condensed 138 -> Roboto Condensed 700 at 139 and +3%;
+# Condensed 84 -> Archivo Narrow 400 at 86 and +3%. Neither wins both, so both are measured.
+_CONDENSED_SUBSTITUTE_KEYS = {
+    "helvetica": ("Roboto Condensed", "Archivo Narrow"),
+    "helveticaneue": ("Roboto Condensed", "Archivo Narrow"),
+    "arial": ("Roboto Condensed", "Archivo Narrow"),
+}
+
+
+def condensed_substitutes(fontname: str) -> tuple:
+    """Condensed families that can stand in for *fontname*'s condensed cut, or ()."""
+    from pdf_editor import _parse_font_name, _split_width
+    base, condensed = _split_width(fontname.split("+")[-1])
+    if not condensed:
+        return ()
+    return _CONDENSED_SUBSTITUTE_KEYS.get(_donor_alias_key(_parse_font_name(base)[0]), ())
+
+
+def pick_substitute(subset_bytes: bytes, fontname: str, donor_bytes=None, families=()):
+    """The substitute whose letters fit this CFF subset best, or *donor_bytes*.
+
+    A weight name means different things in different families. ITC Franklin Gothic "Demi" is
+    resolved as 600, and Libre Franklin SemiBold stood in for it on the IRS W-4 with stems 18%
+    thinner (121 against 147, at the subset's cap height): an injected "Tax" in the form's title
+    read visibly lighter than the words around it. Its Bold measures 143.
+
+    Candidates: *donor_bytes* and the neighbouring weights of its family, then every weight
+    near the named one in each of *families*. Each is measured at the uniform scale
+    extend_cff_font applies, on a vertical stem ("l", "I" or "i") and on the median advance of
+    the letters both fonts have; the smaller worst-of-the-two error wins."""
+    from fontTools.cffLib import CFFFontSet
+    from fontTools.ttLib import TTFont
+    from fontTools.pens.boundsPen import BoundsPen
+    from fontTools.agl import toUnicode
+    from pdf_editor import _parse_font_name, _split_width, _weight_name
+
+    def width(gset, gname):
+        pen = BoundsPen(gset)
+        gset[gname].draw(pen)
+        return (pen.bounds[2] - pen.bounds[0]) if pen.bounds else None
+
+    try:
+        cff = CFFFontSet()
+        cff.decompile(io.BytesIO(subset_bytes), _cff_stub())
+        cs = cff[cff.fontNames[0]].CharStrings
+        sub_cap, sub_xh = _cff_landmarks(cs)
+        probe = next((g for g in _STEM_GLYPHS if g in cs), None)
+        own = width(cs, probe) if probe else None
+        own_adv = {}
+        for g in cs.keys():
+            u = toUnicode(g)
+            if len(u) == 1 and u.isalpha():
+                a = _cff_advance(cs, g)
+                if a > 1:
+                    own_adv[u] = a
+    except Exception:  # noqa: BLE001
+        return donor_bytes
+    if not own or not (sub_cap or sub_xh) or len(own_adv) < 5:
+        return donor_bytes
+
+    def error(raw):
+        try:
+            f = TTFont(io.BytesIO(raw))
+            scale = 1000.0 / f["head"].unitsPerEm
+            cap, xh = _tt_landmarks(f, scale)
+            ratios = [a / b for a, b in ((sub_cap, cap), (sub_xh, xh)) if a and b]
+            if not ratios:
+                return None
+            scale *= math.prod(ratios) ** (1.0 / len(ratios))
+            cmap = f.getBestCmap()
+            g = cmap.get(ord(probe))
+            w = width(f.getGlyphSet(), g) if g else None
+            wr = sorted(f["hmtx"][cmap[ord(u)]][0] * scale / a
+                        for u, a in own_adv.items() if ord(u) in cmap)
+            if not w or len(wr) < 5:
+                return None
+            return max(abs(w * scale - own) / own, abs(wr[len(wr) // 2] - 1))
+        except Exception:  # noqa: BLE001
+            return None
+
+    base, _condensed = _split_width(fontname.split("+")[-1])
+    family, weight, style = _parse_font_name(base)
+    near = [w for w in (weight, weight + 100, weight - 100, weight + 200) if 100 <= w <= 900]
+    candidates = [donor_bytes] if donor_bytes else []
+    if donor_bytes:
+        for w in near[1:]:
+            raw, kind = resolve_donor_detailed(
+                f"{family}-{_weight_name(w)}" + ("Italic" if style == "italic" else ""))
+            if raw and kind == "substitute":
+                candidates.append(raw)
+    for fam in families:
+        for w in near:
+            raw = _resolve_from_repo(fam, w, style, [])
+            if raw:
+                candidates.append(raw)
+    best, best_err = donor_bytes, None
+    seen = set()
+    for raw in candidates:
+        if id(raw) in seen:
+            continue
+        seen.add(id(raw))
+        err = error(raw)
+        if err is not None and (best_err is None or err < best_err):
+            best, best_err = raw, err
+    return best
 
 
 def _cff_advance(charstrings, name: str) -> float:

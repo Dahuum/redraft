@@ -8,6 +8,10 @@
 "ofl/allura": [
 "Allura-Regular.ttf"
 ],
+"ofl/archivonarrow": [
+"ArchivoNarrow-Italic[wght].ttf",
+"ArchivoNarrow[wght].ttf"
+],
 "ofl/arimo": [
 "Arimo-Italic[wght].ttf",
 "Arimo[wght].ttf"
@@ -135,6 +139,10 @@
 "LibreBaskerville-Italic[wght].ttf",
 "LibreBaskerville[wght].ttf"
 ],
+"ofl/librefranklin": [
+"LibreFranklin-Italic[wght].ttf",
+"LibreFranklin[wght].ttf"
+],
 "ofl/lora": [
 "Lora-Italic[wght].ttf",
 "Lora[wght].ttf"
@@ -219,6 +227,10 @@
 "ofl/roboto": [
 "Roboto-Italic[wdth,wght].ttf",
 "Roboto[wdth,wght].ttf"
+],
+"ofl/robotocondensed": [
+"RobotoCondensed-Italic[wght].ttf",
+"RobotoCondensed[wght].ttf"
 ],
 "ofl/robotomono": [
 "RobotoMono-Italic[wght].ttf",

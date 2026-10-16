@@ -63,6 +63,7 @@ def donor_families():
     fams = {v[0] for v in pe._FONT_SUBSTITUTES.values()}
     fams |= set(fe._DONOR_ONLY_SUBSTITUTES.values()) | set(fe._DONOR_SUBSTITUTE_KEYS.values())
     fams |= set(fe._KNOWN_RENAMES.values()) | set(COMMON)
+    fams |= {f for group in fe._CONDENSED_SUBSTITUTE_KEYS.values() for f in group}
     return sorted(fams)
 
 
