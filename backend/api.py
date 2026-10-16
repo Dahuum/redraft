@@ -1590,6 +1590,17 @@ def _id_case_like(src: bytes, out: bytes) -> bytes:
                       + case(k.group(4)) + k.group(5), out)
 
 
+def _engine_notes(caught) -> list:
+    """The redraw's own notes from *caught*, the warnings recorded while it ran.
+
+    Recording catches EVERYTHING raised meanwhile, and the garbage collector runs then too: a
+    file or a failed font download let go of anywhere in the process arrived as a ResourceWarning
+    and reached the user as "unclosed file <_io.BufferedReader name='/usr/share/fonts/...'>" or
+    "Implicitly cleaning up <HTTPError 404: 'Not Found'>" — in the editor and in /v1/replace
+    receipts. The engine's notes are plain UserWarnings (warnings.warn's default)."""
+    return [str(w.message) for w in caught if w.category is UserWarning]
+
+
 def _apply_replacements(pdf_bytes: bytes, replacements: list,
                         preserve_size: bool = True, try_inplace: bool = False,
                         _known_refusals: list = None) -> tuple:
@@ -1825,7 +1836,7 @@ def _apply_replacements(pdf_bytes: bytes, replacements: list,
                 return pdf_bytes, {
                     "fonts": report,
                     "warnings": [w for w in
-                                 [str(x.message) for x in caught] + extra_warnings
+                                 _engine_notes(caught) + extra_warnings
                                  if not any(t[:40] in w for t in dropped_texts)] + [
                         f"{sd['text'][:40]!r} was left unchanged: "
                         f"{_UNSHIPPABLE_MSG[why]}" for (sd, _), why in dropped],
@@ -1834,7 +1845,7 @@ def _apply_replacements(pdf_bytes: bytes, replacements: list,
                     "in_place": {"count": in_place_count, "total": total,
                                  "refusals": refusals}}
             return edited, {"fonts": report,
-                            "warnings": [str(w.message) for w in caught] + extra_warnings,
+                            "warnings": _engine_notes(caught) + extra_warnings,
                             "resized_to_fit": resized,
                             "in_place": {"count": in_place_count, "total": total,
                                          "refusals": inplace_refusals}}
