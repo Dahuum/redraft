@@ -1,0 +1,17 @@
+# Build context for the root Dockerfile. Only frontend/ and backend/ are needed.
+*
+!frontend
+!backend
+
+# a developer's own env file must never enter an image
+frontend/.env*
+frontend/node_modules
+frontend/dist
+
+backend/.venv
+backend/.font_cache
+backend/__pycache__
+backend/.env*
+backend/*.pdf
+**/__pycache__
+**/*.pyc

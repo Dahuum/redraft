@@ -65,6 +65,7 @@ from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pdf_editor as _pe  # noqa: E402
 from pdf_editor import _parse_font_name, _WEIGHT_MAP, _FONT_SUBSTITUTES  # noqa: E402
 
 _GH_API = "https://api.github.com/repos/google/fonts/contents"
@@ -137,6 +138,12 @@ _donor_retry_at: dict = {}  # same key -> monotonic time before which a transien
 _TRANSIENT_RETRY_S = 45.0
 
 
+# The catalogue listings of the families warm_fonts.py bundles (python warm_fonts.py --manifest
+# rewrites it). They stand in for GitHub's API, which allows 60 calls an hour: a build, and an
+# offline container, then need no listing for any of them.
+_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "donor_manifest.json")
+
+
 def _load_listing_cache():
     global _listing_cache
     try:
@@ -144,6 +151,13 @@ def _load_listing_cache():
             _listing_cache = json.load(f)
     except Exception:  # noqa: BLE001
         _listing_cache = {}
+    try:
+        with open(_MANIFEST, "r", encoding="utf-8") as f:
+            for key, files in json.load(f).items():
+                if not _listing_cache.get(key):
+                    _listing_cache[key] = files
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _save_listing_cache():
@@ -181,6 +195,8 @@ def _gh_list_dir(license_dir: str, folder: str):
     key = f"{license_dir}/{folder}"
     if key in _listing_cache:
         return _listing_cache[key]
+    if _pe.offline():
+        return None                  # not in the listing cache, and nothing may be asked for
     url = f"{_GH_API}/{key}"
     try:
         req = urllib.request.Request(url, headers=_gh_headers())
@@ -256,9 +272,7 @@ def _pick_donor_file(files, weight: int, style: str):
 
 
 def _download(url: str, timeout: int = 15) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "redraft-font-extend/0.2"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+    return _pe.fetch(url, timeout)
 
 
 def _resolve_from_repo(family: str, weight: int, style: str, transient: list | None = None):
@@ -270,7 +284,8 @@ def _resolve_from_repo(family: str, weight: int, style: str, transient: list | N
     for lic in _LICENSE_DIRS:
         files = _gh_list_dir(lic, folder)
         if not files:
-            if files is None and transient is not None and f"{lic}/{folder}" not in _listing_cache:
+            if (files is None and transient is not None and f"{lic}/{folder}" not in _listing_cache
+                    and not _pe.offline()):      # offline, a miss is final: waiting would not help
                 transient.append(lic)
             continue
         choice = _pick_donor_file(files, weight, style)

@@ -2,7 +2,18 @@
 // Override the target with VITE_API_BASE when needed (defaults to localhost:8000).
 import { supabase, hasSupabase } from "./lib/supabase.js";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+// `??`, not `||`: an empty VITE_API_BASE means "the server that served this page" (the one-container build).
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
+// Self-hosted container: the server may ask for an access key (REDRAFT_API_KEY). It is kept in this
+// browser only and sent as X-API-Key.
+const KEY_STORE = "redraft-api-key";
+function storedKey() {
+  try { return localStorage.getItem(KEY_STORE) || ""; } catch { return ""; }
+}
+export function saveApiKey(key) {
+  try { key ? localStorage.setItem(KEY_STORE, key.trim()) : localStorage.removeItem(KEY_STORE); } catch { /* private mode */ }
+}
 
 const SLOW_MS = 3000;
 let _slowCount = 0;
@@ -17,6 +28,11 @@ async function apiFetch(url, options) {
   try {
     const res = await fetch(url, options);
     window.dispatchEvent(new Event("rd:api-ok"));
+    if (res.status === 401 && res.headers.get("X-Redraft-Key") === "required") {
+      const rejected = Boolean(storedKey());
+      if (rejected) saveApiKey("");
+      window.dispatchEvent(new CustomEvent("rd:api-key", { detail: { rejected } }));
+    }
     return res;
   } catch (err) {
     window.dispatchEvent(new Event("rd:api-down"));
@@ -35,6 +51,8 @@ async function apiFetch(url, options) {
 // (getSession alone can hand back a stale one → 401 on every call). No session
 // (or Supabase not configured) → no header, and the backend runs open.
 async function authHeaders() {
+  const key = storedKey();
+  if (key) return { "X-API-Key": key };
   if (!hasSupabase) return {};
   try {
     let session = (await supabase.auth.getSession()).data?.session;
@@ -68,6 +86,10 @@ async function asError(res) {
 export async function ping() {
   try {
     const res = await apiFetch(`${API_BASE}/`, { method: "GET" });
+    if (res.ok) {
+      const info = await res.json().catch(() => ({}));
+      if (info.key && !storedKey()) window.dispatchEvent(new CustomEvent("rd:api-key", { detail: { rejected: false } }));
+    }
     return res.ok;
   } catch {
     return false;

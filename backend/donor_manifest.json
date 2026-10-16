@@ -1,0 +1,260 @@
+{
+"apache/robotoslab": [
+"RobotoSlab[wght].ttf"
+],
+"ofl/alexbrush": [
+"AlexBrush-Regular.ttf"
+],
+"ofl/allura": [
+"Allura-Regular.ttf"
+],
+"ofl/arimo": [
+"Arimo-Italic[wght].ttf",
+"Arimo[wght].ttf"
+],
+"ofl/barlow": [
+"Barlow-Black.ttf",
+"Barlow-BlackItalic.ttf",
+"Barlow-Bold.ttf",
+"Barlow-BoldItalic.ttf",
+"Barlow-ExtraBold.ttf",
+"Barlow-ExtraBoldItalic.ttf",
+"Barlow-ExtraLight.ttf",
+"Barlow-ExtraLightItalic.ttf",
+"Barlow-Italic.ttf",
+"Barlow-Light.ttf",
+"Barlow-LightItalic.ttf",
+"Barlow-Medium.ttf",
+"Barlow-MediumItalic.ttf",
+"Barlow-Regular.ttf",
+"Barlow-SemiBold.ttf",
+"Barlow-SemiBoldItalic.ttf",
+"Barlow-Thin.ttf",
+"Barlow-ThinItalic.ttf"
+],
+"ofl/caladea": [
+"Caladea-Bold.ttf",
+"Caladea-BoldItalic.ttf",
+"Caladea-Italic.ttf",
+"Caladea-Regular.ttf"
+],
+"ofl/carlito": [
+"Carlito-Bold.ttf",
+"Carlito-BoldItalic.ttf",
+"Carlito-Italic.ttf",
+"Carlito-Regular.ttf"
+],
+"ofl/cousine": [
+"Cousine-Bold.ttf",
+"Cousine-BoldItalic.ttf",
+"Cousine-Italic.ttf",
+"Cousine-Regular.ttf"
+],
+"ofl/dancingscript": [
+"DancingScript[wght].ttf"
+],
+"ofl/didactgothic": [
+"DidactGothic-Regular.ttf"
+],
+"ofl/dmsans": [
+"DMSans-Italic[opsz,wght].ttf",
+"DMSans[opsz,wght].ttf"
+],
+"ofl/dmserifdisplay": [
+"DMSerifDisplay-Italic.ttf",
+"DMSerifDisplay-Regular.ttf"
+],
+"ofl/ebgaramond": [
+"EBGaramond-Italic[wght].ttf",
+"EBGaramond[wght].ttf"
+],
+"ofl/firasans": [
+"FiraSans-Black.ttf",
+"FiraSans-BlackItalic.ttf",
+"FiraSans-Bold.ttf",
+"FiraSans-BoldItalic.ttf",
+"FiraSans-ExtraBold.ttf",
+"FiraSans-ExtraBoldItalic.ttf",
+"FiraSans-ExtraLight.ttf",
+"FiraSans-ExtraLightItalic.ttf",
+"FiraSans-Italic.ttf",
+"FiraSans-Light.ttf",
+"FiraSans-LightItalic.ttf",
+"FiraSans-Medium.ttf",
+"FiraSans-MediumItalic.ttf",
+"FiraSans-Regular.ttf",
+"FiraSans-SemiBold.ttf",
+"FiraSans-SemiBoldItalic.ttf",
+"FiraSans-Thin.ttf",
+"FiraSans-ThinItalic.ttf"
+],
+"ofl/fraunces": [
+"Fraunces-Italic[SOFT,WONK,opsz,wght].ttf",
+"Fraunces[SOFT,WONK,opsz,wght].ttf"
+],
+"ofl/greatvibes": [
+"GreatVibes-Regular.ttf"
+],
+"ofl/ibmplexsans": [
+"IBMPlexSans-Italic[wdth,wght].ttf",
+"IBMPlexSans[wdth,wght].ttf"
+],
+"ofl/inter": [
+"Inter-Italic[opsz,wght].ttf",
+"Inter[opsz,wght].ttf"
+],
+"ofl/jost": [
+"Jost-Italic[wght].ttf",
+"Jost[wght].ttf"
+],
+"ofl/karla": [
+"Karla-Italic[wght].ttf",
+"Karla[wght].ttf"
+],
+"ofl/lato": [
+"Lato-Black.ttf",
+"Lato-BlackItalic.ttf",
+"Lato-Bold.ttf",
+"Lato-BoldItalic.ttf",
+"Lato-ExtraBold.ttf",
+"Lato-ExtraBoldItalic.ttf",
+"Lato-ExtraLight.ttf",
+"Lato-ExtraLightItalic.ttf",
+"Lato-Italic.ttf",
+"Lato-Light.ttf",
+"Lato-LightItalic.ttf",
+"Lato-Medium.ttf",
+"Lato-MediumItalic.ttf",
+"Lato-Regular.ttf",
+"Lato-SemiBold.ttf",
+"Lato-SemiBoldItalic.ttf",
+"Lato-Thin.ttf",
+"Lato-ThinItalic.ttf"
+],
+"ofl/librebaskerville": [
+"LibreBaskerville-Italic[wght].ttf",
+"LibreBaskerville[wght].ttf"
+],
+"ofl/lora": [
+"Lora-Italic[wght].ttf",
+"Lora[wght].ttf"
+],
+"ofl/manrope": [
+"Manrope[wght].ttf"
+],
+"ofl/merriweather": [
+"Merriweather-Italic[opsz,wdth,wght].ttf",
+"Merriweather[opsz,wdth,wght].ttf"
+],
+"ofl/montserrat": [
+"Montserrat-Italic[wght].ttf",
+"Montserrat[wght].ttf"
+],
+"ofl/mulish": [
+"Mulish-Italic[wght].ttf",
+"Mulish[wght].ttf"
+],
+"ofl/notoserif": [
+"NotoSerif-Italic[wdth,wght].ttf",
+"NotoSerif[wdth,wght].ttf"
+],
+"ofl/nunito": [
+"Nunito-Italic[wght].ttf",
+"Nunito[wght].ttf"
+],
+"ofl/nunitosans": [
+"NunitoSans-Italic[YTLC,opsz,wdth,wght].ttf",
+"NunitoSans[YTLC,opsz,wdth,wght].ttf"
+],
+"ofl/opensans": [
+"OpenSans-Italic[wdth,wght].ttf",
+"OpenSans[wdth,wght].ttf"
+],
+"ofl/oswald": [
+"Oswald[wght].ttf"
+],
+"ofl/outfit": [
+"Outfit[wght].ttf"
+],
+"ofl/pacifico": [
+"Pacifico-Regular.ttf"
+],
+"ofl/playfairdisplay": [
+"PlayfairDisplay-Italic[wght].ttf",
+"PlayfairDisplay[wght].ttf"
+],
+"ofl/poppins": [
+"Poppins-Black.ttf",
+"Poppins-BlackItalic.ttf",
+"Poppins-Bold.ttf",
+"Poppins-BoldItalic.ttf",
+"Poppins-ExtraBold.ttf",
+"Poppins-ExtraBoldItalic.ttf",
+"Poppins-ExtraLight.ttf",
+"Poppins-ExtraLightItalic.ttf",
+"Poppins-Italic.ttf",
+"Poppins-Light.ttf",
+"Poppins-LightItalic.ttf",
+"Poppins-Medium.ttf",
+"Poppins-MediumItalic.ttf",
+"Poppins-Regular.ttf",
+"Poppins-SemiBold.ttf",
+"Poppins-SemiBoldItalic.ttf",
+"Poppins-Thin.ttf",
+"Poppins-ThinItalic.ttf"
+],
+"ofl/ptsans": [
+"PT_Sans-Web-Bold.ttf",
+"PT_Sans-Web-BoldItalic.ttf",
+"PT_Sans-Web-Italic.ttf",
+"PT_Sans-Web-Regular.ttf"
+],
+"ofl/questrial": [
+"Questrial-Regular.ttf"
+],
+"ofl/raleway": [
+"Raleway-Italic[wght].ttf",
+"Raleway[wght].ttf"
+],
+"ofl/roboto": [
+"Roboto-Italic[wdth,wght].ttf",
+"Roboto[wdth,wght].ttf"
+],
+"ofl/robotomono": [
+"RobotoMono-Italic[wght].ttf",
+"RobotoMono[wght].ttf"
+],
+"ofl/rubik": [
+"Rubik-Italic[wght].ttf",
+"Rubik[wght].ttf"
+],
+"ofl/sacramento": [
+"Sacramento-Regular.ttf"
+],
+"ofl/sourcecodepro": [
+"SourceCodePro-Italic[wght].ttf",
+"SourceCodePro[wght].ttf"
+],
+"ofl/sourcesans3": [
+"SourceSans3-Italic[wght].ttf",
+"SourceSans3[wght].ttf"
+],
+"ofl/sourceserif4": [
+"SourceSerif4-Italic[opsz,wght].ttf",
+"SourceSerif4[opsz,wght].ttf"
+],
+"ofl/tinos": [
+"Tinos-Bold.ttf",
+"Tinos-BoldItalic.ttf",
+"Tinos-Italic.ttf",
+"Tinos-Regular.ttf"
+],
+"ofl/urbanist": [
+"Urbanist-Italic[wght].ttf",
+"Urbanist[wght].ttf"
+],
+"ofl/worksans": [
+"WorkSans-Italic[wght].ttf",
+"WorkSans[wght].ttf"
+]
+}
