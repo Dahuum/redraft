@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "connectionParameters": {
+      "api_key": {
+        "type": "securestring",
+        "uiDefinition": {
+          "displayName": "API key",
+          "description": "The REDRAFT_API_KEY set on your Redraft server.",
+          "tooltip": "Sent as the X-API-Key header.",
+          "constraints": {
+            "tabIndex": 2,
+            "clearText": false,
+            "required": "true"
+          }
+        }
+      }
+    },
+    "iconBrandColor": "#1F2937",
+    "capabilities": [],
+    "publisher": "Redraft",
+    "stackOwner": "Redraft"
+  }
+}
