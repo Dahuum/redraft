@@ -343,6 +343,27 @@ def _weight_name(w: int) -> str:
     return _WEIGHT_NAME[closest]
 
 
+# Width words Adobe and others glue onto the style: "HelveticaNeueLTStd-BdCn", "-BlkCn", "-Cn".
+_WIDTH_TAIL = re.compile(r"(XCn|Cn|Cond|Condensed|Narrow|Compressed|Comp)(?=(It|Italic|O|Obl|Oblique)?$)")
+
+
+def _split_width(fontname: str) -> tuple:
+    """(*fontname* without its condensed-width word, True if it had one).
+
+    "HelveticaNeueLTStd-BdCn" -> ("HelveticaNeueLTStd-Bd", True); "-Cn" alone leaves the regular
+    cut. Only the part after the last hyphen is read: "RobotoCondensed-Bold" is a family name.
+    Kept out of _parse_font_name: the redraw would then draw a condensed field at the regular
+    width of whatever that family resolves to."""
+    head, sep, tail = fontname.rpartition("-")
+    if not sep:
+        return fontname, False
+    m = _WIDTH_TAIL.search(tail)
+    if not m:
+        return fontname, False
+    rest = tail[:m.start()] + tail[m.end():]
+    return (f"{head}-{rest}" if rest else head), True
+
+
 def _parse_font_name(fontname: str) -> tuple:
     """
     'Poppins-Bold'        → ('Poppins', 700, 'normal')

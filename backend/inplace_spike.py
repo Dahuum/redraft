@@ -2095,14 +2095,23 @@ def _try_extend_simple_cff(doc, font_display_name, missing_chars, code_for=None)
     if not subset_bytes:
         return None, "no_fontfile"
 
-    donor, _kind = font_extend.resolve_donor_detailed(font_display_name)
+    donor, kind = font_extend.resolve_donor_detailed(font_display_name)
+    condensed = font_extend.condensed_substitutes(font_display_name)
+    if condensed and kind != "family":
+        # a condensed cut: only condensed families are measured (the regular-width substitute
+        # its family resolves to is no candidate at any weight)
+        donor, kind = font_extend.pick_substitute(subset_bytes, font_display_name, None,
+                                                  condensed), "substitute"
+    elif kind == "substitute":
+        donor = font_extend.pick_substitute(subset_bytes, font_display_name, donor)
     if not donor:
         return None, "no_donor"
     try:
         # extend_cff_font measures the donor against landmarks read off this
         # subset's own glyphs and raises rather than inject something the
         # wrong size. Its refusal is this tier's refusal.
-        result = font_extend.extend_cff_font(subset_bytes, donor, missing_chars)
+        result = font_extend.extend_cff_font(subset_bytes, donor, missing_chars,
+                                             substitute=kind == "substitute")
     except ValueError as exc:
         msg = str(exc)
         if "off by" in msg:
