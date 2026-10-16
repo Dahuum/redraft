@@ -1198,6 +1198,78 @@ _CANONICAL_TEXT_CODE = {"00a0": "0020", "00ad": "002d"}
 _BFCHAR_DST = re.compile(rb"(<[0-9A-Fa-f]{4}>\s*)<([0-9A-Fa-f]{4})>")
 
 
+def _is_presentation_form(c: str) -> bool:
+    o = ord(c)
+    return 0xFB50 <= o <= 0xFDFF or 0xFE70 <= o <= 0xFEFF
+
+
+def _presentation_to_letters(dst_hex: bytes):
+    """A ToUnicode destination that is ONE Arabic presentation form, as the UTF-16BE hex of its
+    letters (NFKC); None for anything else, which is left exactly as it is."""
+    import unicodedata
+    try:
+        txt = bytes.fromhex(dst_hex.decode()).decode("utf-16-be")
+    except Exception:  # noqa: BLE001
+        return None
+    if len(txt) != 1 or not _is_presentation_form(txt):
+        return None
+    base = unicodedata.normalize("NFKC", txt).strip()
+    # One letter only. A lam-alef ligature written as its two letters is read back REVERSED
+    # inside the right-to-left run ("خلال" came back "خالل"): the extractor reorders the glyph's
+    # characters along with the glyphs. Its single presentation code reads back in place.
+    if len(base) != 1 or base == txt:
+        return None
+    return base.encode("utf-16-be").hex().encode()
+
+
+_BFRANGE_BLOCK = re.compile(rb"(\d+)\s+beginbfrange(.*?)endbfrange", re.S)
+_BFRANGE_LINE = re.compile(rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]{4})>")
+
+
+def _split_presentation_ranges(data: bytes) -> bytes:
+    """*data* (a ToUnicode CMap) with every bfrange that maps into Arabic presentation forms
+    rewritten as single bfchar entries naming the letters (see _presentation_to_letters).
+
+    A range maps consecutive glyphs to consecutive codes, so its destination cannot be changed
+    for some glyphs and not others; it is expanded instead. Only the plain <lo> <hi> <dst> form
+    is touched; an array-form range, or anything unparsed, stays exactly as it was."""
+    extra = []
+
+    def block(mm):
+        kept = []
+        for line in _BFRANGE_LINE.finditer(mm.group(2)):
+            lo_h, hi_h, dst_h = line.groups()
+            lo, hi, dst = int(lo_h, 16), int(hi_h, 16), int(dst_h, 16)
+            codes = [dst + k for k in range(hi - lo + 1)]
+            if hi < lo or hi - lo > 4096 or not any(
+                    0xFB50 <= c <= 0xFDFF or 0xFE70 <= c <= 0xFEFF for c in codes):
+                kept.append(line.group(0))
+                continue
+            width = len(lo_h)
+            for k, c in enumerate(codes):
+                dst_hex = f"{c:04x}".encode()
+                letters = _presentation_to_letters(dst_hex) or dst_hex
+                extra.append(b"<" + f"{lo + k:0{width}x}".encode() + b"> <" + letters + b">")
+        unparsed = _BFRANGE_LINE.sub(b"", mm.group(2)).strip()
+        if unparsed:
+            return mm.group(0)            # a form this does not read: leave the whole block alone
+        if not kept:
+            return b""
+        return (str(len(kept)).encode() + b" beginbfrange\n" + b"\n".join(kept)
+                + b"\nendbfrange")
+
+    out = _BFRANGE_BLOCK.sub(block, data)
+    if not extra:
+        return data
+    blocks = b""
+    for i in range(0, len(extra), 100):            # the CMap limit per block
+        chunk = extra[i:i + 100]
+        blocks += (str(len(chunk)).encode() + b" beginbfchar\n" + b"\n".join(chunk)
+                   + b"\nendbfchar\n")
+    k = out.rfind(b"endcmap")
+    return out[:k] + blocks + out[k:] if k >= 0 else data
+
+
 def _canonicalise_text_layer(pdf_bytes: bytes, drawn_texts) -> bytes:
     """Make the recorded characters agree with the ones we asked to draw.
 
@@ -1215,7 +1287,12 @@ def _canonicalise_text_layer(pdf_bytes: bytes, drawn_texts) -> bytes:
               if f"{ord(c):04x}" in _CANONICAL_TEXT_CODE}
     fix = {k.encode(): v.encode() for k, v in _CANONICAL_TEXT_CODE.items()
            if not any(f"{ord(c):04x}" == k for c in wanted)}
-    if not fix:
+    # Arabic the redraw draws shaped: its font maps each glyph to a presentation form (U+FExx,
+    # U+FBxx), so the edited word copied and searched as "ﻣﺮﺍﻛﺶ" — the same letters as "مراكش" to
+    # the eye, a different string to every viewer's search. Mapped to the letters themselves
+    # (NFKC; a lam-alef ligature is two), unless the user typed presentation forms on purpose.
+    arabic = bool(_is_rtl_text(joined)) and not any(_is_presentation_form(c) for c in joined)
+    if not fix and not arabic:
         return pdf_bytes
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -1243,15 +1320,24 @@ def _canonicalise_text_layer(pdf_bytes: bytes, drawn_texts) -> bytes:
                     body = part.group(1)
                     def _sub(mm):
                         dst = mm.group(2).lower()
-                        return (mm.group(1) + b"<" + fix[dst] + b">"
-                                if dst in fix else mm.group(0))
+                        if dst in fix:
+                            return mm.group(1) + b"<" + fix[dst] + b">"
+                        if arabic:
+                            letters = _presentation_to_letters(dst)
+                            if letters:
+                                return mm.group(1) + b"<" + letters + b">"
+                        return mm.group(0)
                     fixed = _BFCHAR_DST.sub(_sub, body)
                     if fixed != body:
                         out += data[last:part.start(1)] + fixed
                         last = part.end(1)
                 if last:
                     out += data[last:]
-                    doc.update_stream(tu, bytes(out))
+                new_data = bytes(out) if last else data
+                if arabic:
+                    new_data = _split_presentation_ranges(new_data)
+                if new_data != data:
+                    doc.update_stream(tu, new_data)
                     changed = True
         return doc.tobytes(garbage=4, deflate=True) if changed else pdf_bytes
     finally:
@@ -1447,6 +1533,23 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
             def _flat(t):
                 return (t.replace("\xa0", " ").replace("\xad", "-")
                          .replace("\u2010", "-").replace("\u2011", "-"))
+            if _is_rtl_text(_nt):
+                # Arabic is drawn shaped: it reads back as presentation forms (U+FExx), and in
+                # either order depending on how the line's direction is extracted. Compared as
+                # letters (NFKC) with spaces dropped, the WHOLE value must be on the line. As a
+                # plain substring test it never matched, and every Arabic edit was dropped —
+                # "المدينة : مراكش" drawn correctly in the document's own Amiri, then left out.
+                import unicodedata as _ud
+
+                def _letters(t):
+                    # letters and digits only: the extractor lists a line's closing stop first
+                    # (see pdf_editor._rtl_reading_order), so punctuation is not compared
+                    return "".join(c for c in _ud.normalize("NFKC", _flat(t))
+                                   if _ud.category(c)[0] in "LN")
+                want, line = _letters(_nt), _letters("".join(on_line))
+                if want and want not in line and want not in line[::-1]:
+                    bad[i] = "cannot_place"
+                continue
             probe = _flat(_nt.strip())[:12]
             if probe and probe not in _flat(" ".join(on_line)):
                 bad[i] = "cannot_place"
@@ -2582,10 +2685,18 @@ async def _replace_input(request: Request):
         raise HTTPException(400, str(exc))
 
 
+def _as_read(text: str) -> str:
+    """*text* as compared by the receipt's read-back: NFKC, whitespace collapsed. A drawn ligature
+    reads back as one compatibility character (an Arabic lam-alef as U+FEFB, "fi" as U+FB01)
+    where the requested text has its letters."""
+    import unicodedata
+    return " ".join(unicodedata.normalize("NFKC", text).split())
+
+
 def _page_texts(pdf: bytes) -> list:
     doc = fitz.open(stream=pdf, filetype="pdf")
     try:
-        return [" ".join(pg.get_text().split()) for pg in doc]
+        return [_as_read(pg.get_text()) for pg in doc]
     finally:
         doc.close()
 
@@ -2630,7 +2741,7 @@ async def v1_replace(request: Request, user: str = Depends(require_user)):
     texts = {False: _page_texts(edited) if did else [], True: _page_texts(data) if did else []}
 
     def readback(page: int, text: str, before: bool = False) -> int:
-        return texts[before][page - 1].count(" ".join(text.split()))
+        return texts[before][page - 1].count(_as_read(text))
 
     rc = find_replace.receipt(
         changes, p, report, readback if did else None,

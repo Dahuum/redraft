@@ -1110,6 +1110,27 @@ def _sample_bg(pix: fitz.Pixmap, rect: fitz.Rect) -> tuple:
 from spanmerge import merge_line_spans, show_groups  # noqa: E402
 
 
+_RTL_LEADING_STOP = re.compile(r"^([.,،؛:!?؟…]+)(\s*)(?=[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF])")
+
+
+def _rtl_reading_order(text: str) -> str:
+    """*text* with the full stop of a right-to-left line put back at its end.
+
+    The extractor hands an Arabic line over in reading order except for the punctuation that
+    closes it: "تشهد ... الحالية." came back as ".تشهد ... الحالية", the stop drawn at the LEFT
+    end (x=199 of a line running 537 -> 199) but listed first. Edited and redrawn as listed,
+    the stop jumped to the right-hand start of the sentence. Only closing punctuation directly
+    before the first right-to-left letter moves; nothing else is reordered."""
+    if not _RTL_RE.search(text):
+        return text
+    m = _RTL_LEADING_STOP.match(text)
+    if not m:
+        return text
+    rest = text[m.end():]
+    body = rest.rstrip()
+    return body + m.group(1) + rest[len(body):]
+
+
 def get_spans(doc: fitz.Document, page_num: int = 0) -> list:
     """Return all non-empty text spans on *page_num* as a list of dicts."""
     page   = doc[page_num]
@@ -1124,6 +1145,7 @@ def get_spans(doc: fitz.Document, page_num: int = 0) -> list:
                 text = span.get("text", "")
                 if not text.strip():
                     continue
+                text = _rtl_reading_order(text)
                 spans.append({
                     "text":   text,
                     "bbox":   fitz.Rect(span["bbox"]),
