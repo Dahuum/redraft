@@ -74,6 +74,7 @@ import io
 import re
 
 import fitz
+import pdfsave as _pdfsave
 
 import font_extend
 
@@ -2866,8 +2867,9 @@ _TRUNCATED = object()
 # Bounds on the search for the right (font object, encoding, occurrence).
 # The ordinary case resolves on the first attempt; these only stop a
 # pathological page from turning one edit into hundreds of parses.
-_MAX_OCCURRENCE_TRIES = 6
-_MAX_LOCATE_ATTEMPTS = 24
+_MAX_OCCURRENCE_TRIES = 16
+_OCCURRENCE_SPECIFIC = {"ragged_multirun_boundary", "kerning_split_within_run", "spans_multiple_streams"}
+_MAX_LOCATE_ATTEMPTS = 40
 
 # How informative each refusal is, highest first. The search tries several
 # (font object, encoding, occurrence) combinations, and most of them fail
@@ -3209,6 +3211,86 @@ def _would_tear_line(seen, lspans, old_x1, push, gap_keep, tol: float = 0.6):
     flow_end = max(flowing)
     gutter = wall - flow_end
     return flow_end + push > wall - min(gutter, gap_keep) + 0.05
+
+
+def _shrink_tears(seen, lspans, old_x1, push, gap_keep, tol: float = 0.6):
+    """Would SHRINKING the field by *push* (< 0) tear its line? (See _would_tear_line for growth.)
+
+    Text that rides the field's own text object slides back with it; text placed by its own
+    operator stays. When the first such operator after the field is close behind the riding
+    text — part of the same phrase, not a column across a gutter — the slide opens a hole in
+    the middle of the phrase: pdfTeX draws "in equation (" in the field's TJ and the "∗" by its
+    own Td, so "indices" -> "ind" printed "equation (   ∗)". Returns (wall, flow_end) when it
+    would tear, else None.
+    """
+    if not seen or push >= -0.05:
+        return None
+    walls = [x for x in seen if x > old_x1 + tol]
+    if not walls:
+        return None
+    wall = min(walls)
+    flowing = [sp_["bbox"][2] for sp_ in lspans if sp_["bbox"][0] < wall - tol]
+    if not flowing:
+        return None
+    flow_end = max(flowing)
+    if flow_end <= old_x1 + tol:
+        return None                        # nothing rides along after the field
+    # A tear is the riding text and the pinned run TOUCHING — "(" then "∗", -0.03pt apart. A
+    # wall the riding text runs past is not after it at all (an IRS line places words inside
+    # its own run, 8pt "before" its end), and a word space or more only widens: the gap a
+    # shortened value leaves before leader dots is not a tear.
+    size = gap_keep / 2.0
+    if not (-tol <= wall - flow_end <= 0.25 * size):
+        return None
+    return wall, flow_end
+
+
+def _respace_run(doc, page, run_idx: int, delta: float, tail: int, max_grow_em: float = 0.25) -> bool:
+    """Widen the word gaps of ONE TJ run so it still ends where it did after its text shrank by
+    -*delta* page points — re-justifying the segment of the line it draws, the way a typesetter
+    would, rather than letting the rest of the run slide away from what follows it.
+
+    The same arithmetic as _rejustify, on the TJ word gaps of a single run: pdfTeX draws a whole
+    paragraph as one text object, so _rejustify (one object per line) never applies to it.
+    Every word gap of the run takes an equal share, as a typesetter re-justifies the line: the
+    words keep their order and the line keeps both its edges. Widening only the gaps after the
+    field put 9pt between three words and the text layer read them as separate lines.
+    *tail* (the run's tokens after the field) must be non-zero: something has to follow it.
+    Returns True when written; declines (False) on anything it cannot do exactly."""
+    if delta >= -0.05 or tail <= 0:
+        return False
+    runs = _all_runs(_content_streams(doc, page))
+    if not (0 <= run_idx < len(runs)):
+        return False
+    run = runs[run_idx]
+    if run["op"] != "TJ":
+        return False
+    toks = run["str_toks"]
+    if tail >= len(toks):
+        return False
+    gaps = [t for t in toks[1:]
+            if t.get("gap_before") is not None and _PIN_GAP < t["gap_before"] <= _SPACE_GAP_THRESHOLD]
+    if not gaps:
+        return False
+    data = run["data"]
+    tfm = list(_TF_OP.finditer(data[:run["full_start"]]))
+    if not tfm:
+        return False
+    tfs = float(tfm[-1].group(1))
+    obj = next((o for o in _text_objects(data) if o["bt"] <= run["full_start"] < o["et"]), None)
+    if obj is None or not obj.get("x_scale") or tfs <= 0:
+        return False
+    step = delta * 1000.0 / (len(gaps) * tfs * obj["x_scale"])
+    if abs(step) > max_grow_em * 1000.0:
+        return False
+    out = bytearray(data)
+    for t in sorted(gaps, key=lambda t: t["start"], reverse=True):
+        m = re.search(rb"(-?\d*\.?\d+)\s*$", bytes(out[:t["start"]]))
+        if not m:
+            return False
+        out[m.start(1):m.end(1)] = f"{t['gap_before'] + step:.3f}".encode()
+    doc.update_stream(run["xref"], bytes(out))
+    return True
 
 
 def _positions_on_baseline(doc, page, base_ys, tol: float = 0.6):
@@ -3991,7 +4073,7 @@ def _edit_narrowed(pdf_bytes, old, new, page, bbox, verify):
 
 
 def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
-         verify: bool = True) -> dict:
+         verify: bool = True, hold: bool = False) -> dict:
     """In-place edit of `old` -> `new` (see _edit_core). When the whole span
     can't be spliced for a structural reason, the changed words alone are
     tried: a Word line whose apostrophes are drawn by a second font object
@@ -4003,8 +4085,8 @@ def edit(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
     that tightens the rest of the line and misjudges how far it extends, so the text after
     it is pulled onto it. When words follow the changed ones, the changed words alone are
     edited and the rest of the span is moved, not rewritten."""
-    r = _edit_core(pdf_bytes, old, new, page, bbox, verify)
-    if old == new:
+    r = _edit_core(pdf_bytes, old, new, page, bbox, verify, hold=hold)
+    if old == new or hold:
         return r
     if r.get("ok"):
         if r.get("case") == "multi_run":
@@ -4521,13 +4603,13 @@ def _recentre_line(pdf: bytes, tpage: int, target, base_ys, tol: float = 0.6):
                 a, b = obj["x_at"]
                 data = data[:a] + f"{float(data[a:b]) + dx / obj['x_scale']:.4f}".encode("latin-1") + data[b:]
             doc.update_stream(xref, data)
-        return doc.tobytes(garbage=4, deflate=True)
+        return _pdfsave.to_bytes(doc, garbage=1, deflate=True)
     finally:
         doc.close()
 
 
 def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None,
-               verify: bool = True, _target=None) -> dict:
+               verify: bool = True, _target=None, hold: bool = False) -> dict:
     """Attempt a true in-place swap of `old`->`new`. Returns a verdict and, when
     it succeeds, the edited PDF (base64) + a pixel-diff proof.
 
@@ -4635,6 +4717,18 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         except Exception:  # noqa: BLE001
             return False
         try:
+            if not _norm(new).strip():
+                # A DELETION has no replacement to find: it hit when the old text is gone from
+                # where the caller pointed. Looking for the replacement's beginning, as below,
+                # made every deletion fail verification — a comma Word had placed over the end
+                # of "Essaouira" could not be removed or moved at all.
+                gone = _norm(old_n).strip()
+                for s2 in _spans(probe[tpage], phrases=bool(target.get("merged"))):
+                    if abs(s2["origin"][1] - target["origin"][1]) > 1.0:
+                        continue
+                    if fitz.Rect(s2["bbox"]).intersects(target_rect) and gone in _norm(s2["text"]):
+                        return False
+                return True
             for s2 in _spans(probe[tpage], phrases=bool(target.get("merged"))):
                 if abs(s2["origin"][1] - target["origin"][1]) > 1.0:
                     continue
@@ -4712,6 +4806,12 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                         prep_error = _better_refusal(prep_error, res)
                     else:
                         prep_error_other = _better_refusal(prep_error_other, res)
+                    # A refusal about WHERE this occurrence sits says nothing about the next
+                    # one: ", " occurs ten times on the attestation, the third match was the
+                    # end of "2001" plus a space (ragged), and stopping there meant the comma
+                    # the user clicked — the fourth, cleanly its own run — was never tried.
+                    if res.get("reason") in _OCCURRENCE_SPECIFIC:
+                        continue
                     break
                 if which >= res["loc"].get("n_occurrences", 1):
                     adoc.close()
@@ -4789,7 +4889,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     old_x0 = target["origin"][0]
     page_h = doc[tpage].rect.height
     base_y_pdf = page_h - target["origin"][1]
-    edited = doc.tobytes(garbage=4, deflate=True)
+    edited = _pdfsave.to_bytes(doc, garbage=1, deflate=True)
     doc.close()
 
     # ── reflow: push whatever follows on this line so it keeps its place ──
@@ -4958,7 +5058,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     # spacing on it: nothing sets Tw for ragged text. Without the second
     # route a two-line fpdf2 paragraph was never re-justified, and the fit
     # logic squeezed its letters (Tc) instead — every word visibly tighter.
-    if not right_col and new_x1 not in (None, _TRUNCATED) \
+    if not hold and not right_col and new_x1 not in (None, _TRUNCATED) \
             and abs(new_x1 - old_x1) > 0.05:
         # A producer keeps a justified line flush to its margin by respacing
         # the words; a fixed-spacing edit left fpdf2 and ReportLab paragraphs
@@ -4971,7 +5071,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
             if _rejustify(jdoc, jdoc[tpage], base_y_pdf, old_x0, new_x1 - old_x1,
                           max_shrink_em=0.12, max_grow_em=0.6, size=target["size"],
                           need_spacing=just_margin is None):
-                edited = jdoc.tobytes(garbage=4, deflate=True)
+                edited = _pdfsave.to_bytes(jdoc, garbage=1, deflate=True)
                 rejustified = True
                 new_x1 = old_x1
             elif word_margin is not None:
@@ -4981,7 +5081,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                 try:
                     if _rejustify_words(mdoc[tpage], jdoc, jdoc[tpage], base_y_pdf, old_x0,
                                         new_x1 - old_x1, target["size"], word_margin):
-                        edited = jdoc.tobytes(garbage=4, deflate=True)
+                        edited = _pdfsave.to_bytes(jdoc, garbage=1, deflate=True)
                         rejustified = words_respaced = True
                         new_x1 = old_x1
                 finally:
@@ -5041,7 +5141,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                 applied = _apply_text_state(tdoc, tdoc[tpage], base_y_pdf, old_x0,
                                             plan["tc"], plan["tw"], plan["tz"])
                 if applied:
-                    edited = tdoc.tobytes(garbage=4, deflate=True)
+                    edited = _pdfsave.to_bytes(tdoc, garbage=1, deflate=True)
                     tracking = plan["tc"]
                     wordspace = plan["tw"]
                     glyph_scale = plan["tz"]
@@ -5068,12 +5168,12 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                             f"text or its size.")}
 
     right_shifted = False
-    if right_col and new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
+    if not hold and right_col and new_x1 is not None and abs(new_x1 - old_x1) > 0.05:
         sdoc = fitz.open(stream=edited, filetype="pdf")
         try:
             if _shift_field_object(sdoc, sdoc[tpage], line_ys, old_x0, old_x1,
                                    -(new_x1 - old_x1)):
-                edited = sdoc.tobytes(garbage=4, deflate=True)
+                edited = _pdfsave.to_bytes(sdoc, garbage=1, deflate=True)
                 right_shifted = True
         finally:
             sdoc.close()
@@ -5102,14 +5202,19 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
         # Called even when nothing is pushed: the field's own underline still
         # has to take its new width (a link shortened in front of a column
         # kept a 34pt rule trailing into empty space).
-        if new_x1 is not None and (abs(_push) > 0.05 or abs(_dx) > 0.05):
+        if hold:
+            # An erase for a MOVE: the field leaves, everything else on the line stays exactly
+            # where it was. Closing up behind it pulled a comma Word had drawn over the end of
+            # "Essaouira" 56pt left, in front of the "à" before it.
+            _push = 0.0
+        elif new_x1 is not None and (abs(_push) > 0.05 or abs(_dx) > 0.05):
             n = _reflow_same_line(rdoc, rdoc[tpage], line_ys,
                                   reflow_from, push_plan if chain and not next_cell else _push,
                                   slots=line_slots, rule_h=line_rule_h,
                                   field=(old_x0, old_x1, target["size"], new_x1))
             if n:
                 reflowed = n
-                edited = rdoc.tobytes(garbage=4, deflate=True)
+                edited = _pdfsave.to_bytes(rdoc, garbage=1, deflate=True)
     except Exception:  # noqa: BLE001 — reflow is an improvement, never a
         reflowed = 0   # reason to lose an otherwise-good edit
     finally:
@@ -5131,6 +5236,37 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
     #
     # The reservation above had already granted room for the whole line to
     # slide right. That room is only real if reflow actually runs.
+    tear = (None if hold or reflowed or new_x1 is None
+            else _shrink_tears(seen, _lspans, old_x1, _push, _gap_keep))
+    if tear:
+        wall, flow_end = tear
+        fixed = False
+        last_tok = loc_result.get("tok_hi", loc_result.get("tok"))
+        orig_run = (prep["runs"][loc_result["run"]]
+                    if loc_result.get("run") is not None and prep.get("runs") else None)
+        tail_n = (len(orig_run["str_toks"]) - 1 - last_tok
+                  if orig_run is not None and isinstance(last_tok, int) else 0)
+        if (just_margin is not None or word_margin is not None) and tail_n > 0:
+            jd = fitz.open(stream=edited, filetype="pdf")
+            try:
+                if _respace_run(jd, jd[tpage], loc_result["run"], new_x1 - old_x1, tail_n):
+                    cand = _pdfsave.to_bytes(jd, garbage=1, deflate=True)
+                    cd = fitz.open(stream=cand, filetype="pdf")
+                    try:
+                        after = [sp_["bbox"][2] for sp_ in _line_spans(cd[tpage], target["bbox"])
+                                 if sp_["bbox"][0] < wall - 0.6]
+                    finally:
+                        cd.close()
+                    # Proven, not assumed: the text before the pinned run ends where it did.
+                    if after and abs(max(after) - flow_end) <= 0.5:
+                        edited, fixed, rejustified, words_respaced = cand, True, True, True
+                        new_x1 = old_x1
+            finally:
+                jd.close()
+        if not fixed:
+            return {"ok": False, "reason": "cannot_reflow",
+                    "message": _REASON_MSG["cannot_reflow"]}
+
     if (new_x1 is not None and abs(_push) > 0.05 and not reflowed
             and _would_tear_line(seen, _lspans, old_x1, _push, _gap_keep)):
         return {"ok": False, "reason": "cannot_reflow",

@@ -398,11 +398,14 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
               placement={placement}
               onPlace={handlePlace}
               moves={previewData ? {} : moves}
+              movedTo={moves}
               edits={edits}
               onSpanMove={moveSpan}
               onSpanMoveClear={clearMove}
               selectedPopover={renderPopover}
-              liveEdits={!previewData}
+              liveEdits
+              webFonts={ed.webFonts}
+              shownEdits={previewData ? ed.previewFor || {} : {}}
               onZoomFactor={(f) => setZoom((z) => Math.min(2.5, Math.max(0.4, +(z * f).toFixed(3))))}
             />
           ) : (

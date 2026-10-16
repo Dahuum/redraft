@@ -37,12 +37,15 @@ export default function PdfCanvas({
   onPlace = () => {},
   // ---- Move existing text spans to a new position ----
   moves = {}, // { spanId: {x,y} } new top-left in PDF points
+  movedTo = {}, // the same, kept while a render shows them baked in: the outline follows the field
   edits = {}, // { spanId: newText } — so a moved+edited span shows the new text
   onSpanMove = () => {},
   onSpanMoveClear = () => {},
   // ---- Inline editor: rendered next to the selected span (document-first editing) ----
   selectedPopover = null, // (span, below:boolean) => node
-  liveEdits = false, // draw edited text on the page as it is typed (until a real Preview replaces it)
+  liveEdits = false, // draw edited text on the page as it is typed (until a real render replaces it)
+  shownEdits = {}, // the edits the page image already contains; only fields that differ are drawn live
+  webFonts = {}, // { spanFontName: cssFamily } — the document's own fonts, loaded into the page
   onZoomFactor = null, // (factor) => void, Ctrl+wheel / pinch over the board
 }) {
   const canvasRef = useRef(null);
@@ -55,7 +58,12 @@ export default function PdfCanvas({
   // Rendering and zoom motion live in lib/pdfRender.js. `scale` (CSS px per PDF point) and `dims`
   // follow maxWidth immediately, so overlays are always in step with the page; the sharp bitmap
   // catches up a moment later without ever blanking the canvas.
-  const { view, cssScale, w: dimsW, h: dimsH, painted, err } = usePdfRender({ data, pageIndex, maxWidth, canvasRef });
+  const { view, cssScale, w: dimsW, h: dimsH, painted, err, shownData } = usePdfRender({ data, pageIndex, maxWidth, canvasRef });
+  // Which edits each image contains, so live text is judged against the image on screen — not the
+  // one still loading, which would briefly show a field's old value.
+  const editsIn = useRef(new WeakMap());
+  if (data && !editsIn.current.has(data)) editsIn.current.set(data, shownEdits);
+  const onScreen = (shownData && editsIn.current.get(shownData)) || {};
   const scale = cssScale;
   const dims = { w: dimsW, h: dimsH };
   const shownIndex = view ? view.index : pageIndex; // overlays follow the page that is actually on screen
@@ -127,7 +135,7 @@ export default function PdfCanvas({
   };
   const startSpanMove = (e, s) => {
     e.stopPropagation();
-    const cur = moves[s.id];
+    const cur = moves[s.id] || movedTo[s.id];
     const [x0, y0] = s.bbox;
     spanDrag.current = {
       id: s.id, sx: e.clientX, sy: e.clientY,
@@ -135,15 +143,34 @@ export default function PdfCanvas({
     };
     onSelect(s.id);
   };
+  // Text drawn on the page before the exact render arrives: in the document's own font when the
+  // server could hand it over (that face already is the right weight and slant, so the browser
+  // must not embolden or slant it again); otherwise in the nearest generic style.
   const spanStyle = (s) => {
     const fl = s.flags || 0;
     const fn = (s.font || "").toLowerCase();
     const c = Array.isArray(s.color) ? s.color : [0.1, 0.1, 0.1];
-    return {
-      fontWeight: (fl & 16) !== 0 || /bold|black|heavy|semibold/.test(fn) ? 700 : 400,
-      fontStyle: (fl & 2) !== 0 || /italic|oblique/.test(fn) ? "italic" : "normal",
-      color: `rgb(${c.slice(0, 3).map((v) => Math.round(v * 255)).join(",")})`,
-    };
+    const color = `rgb(${c.slice(0, 3).map((v) => Math.round(v * 255)).join(",")})`;
+    const generic = /script|hand|brush|muellerhoff|allura|pinyon|signature|dafoe|yellowtail/.test(fn) ? "cursive"
+      : /mono|courier|consol|sftt|cmtt/.test(fn) ? "ui-monospace, monospace"
+      : /serif(?!.*sans)|times|roman|georgia|garamond|minion|cambria|book|cm[rbm]|nimbusrom|caslon|baskerville|palatino/.test(fn) ? "Georgia, 'Times New Roman', serif"
+      : "Inter, system-ui, sans-serif";
+    const weight = (fl & 16) !== 0 || /bold|black|heavy|semibold/.test(fn) ? 700 : 400;
+    const style = (fl & 2) !== 0 || /italic|oblique/.test(fn) ? "italic" : "normal";
+    const own = webFonts[s.font];
+    // A letter the document's font lacks falls back to the same kind of face, not to a serif.
+    if (own) return { fontFamily: `"${own}", ${generic}`, fontWeight: 400, fontStyle: "normal", fontSynthesis: "none", color };
+    return { fontFamily: generic, fontWeight: weight, fontStyle: style, color };
+  };
+
+  // Width in CSS px of `text` as the live layer draws it for span `s`.
+  const measureCtx = useRef(null);
+  const textWidth = (s, text) => {
+    if (!text) return 0;
+    const st = spanStyle(s);
+    const ctx = measureCtx.current || (measureCtx.current = document.createElement("canvas").getContext("2d"));
+    ctx.font = `${st.fontStyle} ${st.fontWeight} ${Math.max(6, s.size * scale)}px ${st.fontFamily}`;
+    return ctx.measureText(text).width;
   };
 
   function handleClick(e) {
@@ -217,18 +244,22 @@ export default function PdfCanvas({
           {/* Live text: the new value drawn over the original, so the change is
               visible on the page while you type. Approximate font; Preview is exact. */}
           {liveEdits && pageSpans.map((s) => {
-            const nt = edits[s.id];
-            if (nt === undefined || nt === s.text || moves[s.id] || s.invisible || s.rtl) return null;
+            const nt = edits[s.id] ?? s.text;
+            if (nt === (onScreen[s.id] ?? s.text) || moves[s.id] || s.invisible || s.rtl) return null;
             const [x0, y0, x1, y1] = s.bbox;
             const numeric = /\d/.test(s.text) && /^[\s\d.,%:+\-−–/()A-Za-z$€£¥]*$/.test(s.text) && s.text.replace(/[^\d]/g, "").length >= s.text.replace(/\s/g, "").length * 0.5;
             const h = (y1 - y0) * scale;
+            // Hide what the page image shows for this field: the original word, or a previous
+            // render's longer value ("Casablanca" left "ca" showing when the field was shortened).
+            const shownW = Math.max((x1 - x0) * scale, textWidth(s, onScreen[s.id] ?? s.text));
             return (
               <div key={`live-${s.id}`}>
                 <div
                   className="absolute"
                   style={{
-                    left: (x0 - 1.5) * scale, top: (y0 - 1) * scale,
-                    width: (x1 - x0 + 3) * scale, height: (y1 - y0 + 2) * scale,
+                    ...(numeric ? { left: x1 * scale - shownW - 1.5 * scale } : { left: (x0 - 1.5) * scale }),
+                    top: (y0 - 1) * scale,
+                    width: shownW + 3 * scale, height: (y1 - y0 + 2) * scale,
                     background: sampleBg(x0 + 0.5, y0 + 0.5),
                   }}
                 />
@@ -255,6 +286,10 @@ export default function PdfCanvas({
             const isEdited = editedIds.has(s.id);
             if (moves[s.id]) return null; // moved spans are drawn in the moves layer
             if (!isSel && !isEdited) return null;
+            // The box follows the new text: an edited name twice as long was outlined only over
+            // its first half.
+            const boxW = Math.max((x1 - x0) * scale, textWidth(s, edits[s.id] ?? s.text));
+            const at = movedTo[s.id];   // already moved and rendered there
             return (
               <div
                 key={s.id}
@@ -262,9 +297,9 @@ export default function PdfCanvas({
                 title={isSel ? "Drag to move this text" : undefined}
                 className="absolute rounded-[2px] animate-pop"
                 style={{
-                  left: x0 * scale,
-                  top: y0 * scale,
-                  width: (x1 - x0) * scale,
+                  left: (at ? at.x : x0) * scale,
+                  top: (at ? at.y : y0) * scale,
+                  width: boxW,
                   height: (y1 - y0) * scale,
                   outline: "2px solid #4f75fe",
                   background: isSel ? "rgba(79,117,254,.12)" : "rgba(79,117,254,.05)",
@@ -289,9 +324,11 @@ export default function PdfCanvas({
               const text = edits[s.id] ?? s.text;
               return (
                 <div key={`mv-${s.id}`}>
-                  {/* erase preview over the original location */}
+                  {/* erase preview over the original location. Text the patch also covers —
+                      Word drew this comma over the end of "Essaouira" — is drawn back on top,
+                      clipped to the patch, so only the moved field disappears. */}
                   <div
-                    className="absolute"
+                    className="absolute overflow-hidden"
                     style={{
                       left: (x0 - 1) * scale,
                       top: (y0 - 1) * scale,
@@ -299,7 +336,29 @@ export default function PdfCanvas({
                       height: (y1 - y0 + 2) * scale,
                       background: sampleBg(x0 + 0.5, y0 + 0.5),
                     }}
-                  />
+                  >
+                    {pageSpans
+                      .filter((o) => o.id !== s.id && !moves[o.id] && !o.invisible
+                        && o.bbox[0] < x1 + 1 && o.bbox[2] > x0 - 1 && o.bbox[1] < y1 + 1 && o.bbox[3] > y0 - 1)
+                      .map((o) => {
+                        const oh = (o.bbox[3] - o.bbox[1]) * scale;
+                        return (
+                          <div
+                            key={`under-${o.id}`}
+                            className="absolute whitespace-pre"
+                            style={{
+                              left: (o.bbox[0] - x0 + 1) * scale,
+                              top: (o.bbox[1] - y0 + 1) * scale,
+                              height: oh, lineHeight: `${oh}px`,
+                              fontSize: Math.max(6, o.size * scale),
+                              ...spanStyle(o),
+                            }}
+                          >
+                            {edits[o.id] ?? o.text}
+                          </div>
+                        );
+                      })}
+                  </div>
                   {/* the text at its new position */}
                   <div
                     onPointerDown={(e) => startSpanMove(e, s)}

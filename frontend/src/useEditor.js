@@ -1,5 +1,27 @@
-import { useCallback, useMemo, useState } from "react";
-import { extractSpans, editPdf } from "./api.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+// The live text drawn while typing is only an approximation in the app's own font; the real
+// result, in the document's own font, is the server's render. It is fetched on its own once the
+// user pauses, so what they look at is what they will download.
+const AUTO_PREVIEW_MS = 900;
+import { extractSpans, editPdf, fetchWebFonts } from "./api.js";
+
+// Loads the document's own fonts into the page so text being typed is drawn in them.
+// Resolves to { spanFontName: cssFamily } for every font the browser accepted.
+async function loadDocFonts(file) {
+  const { fonts = [] } = await fetchWebFonts(file);
+  const map = {};
+  await Promise.all(fonts.map(async (f) => {
+    try {
+      const bytes = Uint8Array.from(atob(f.woff), (c) => c.charCodeAt(0));
+      const face = new FontFace(f.family, bytes);
+      await face.load();
+      document.fonts.add(face);
+      map[f.font] = f.family;
+    } catch { /* that font is drawn in a generic face */ }
+  }));
+  return map;
+}
 
 // Holds the loaded document + edit state and the actions the UI calls.
 // Shared by the Editor (edits/preview/download) and the Bulk template.
@@ -12,6 +34,7 @@ export function useEditor() {
   const [selectedId, setSelectedId] = useState(null);
   const [edits, setEdits] = useState({}); // { id: newText }
   const [previewData, setPreviewData] = useState(null); // ArrayBuffer (edited)
+  const [previewFor, setPreviewFor] = useState(null); // the `edits` object previewData was rendered from
   const [previewUrl, setPreviewUrl] = useState(null);
   const [fontReport, setFontReport] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -19,6 +42,8 @@ export function useEditor() {
   const [zoom, setZoom] = useState(1);
   const [overlays, setOverlays] = useState([]); // added text + signature stamps
   const [moves, setMoves] = useState({}); // { spanId: {x,y} } — repositioned spans (new top-left, PDF pts)
+  const [webFonts, setWebFonts] = useState({}); // { spanFontName: cssFamily } — the document's fonts, loaded
+  const loadingFile = useRef(null);
 
   const nEdits = Object.keys(edits).length;
   const nMoves = Object.keys(moves).length;
@@ -27,12 +52,21 @@ export function useEditor() {
   const fonts = useMemo(() => [...new Set(spans.map((s) => s.font))].filter(Boolean), [spans]);
   const hasChanges = nEdits > 0 || overlays.length > 0 || nMoves > 0;
 
+  // A text edit keeps the last render on screen (only fields changed since it are drawn live), and
+  // any render newer than the one shown replaces it. A change that the render cannot be patched
+  // for (added items, moves, a new file) bumps the epoch: renders from before it are dropped.
+  const epoch = useRef(0);
+  const requested = useRef(0);
+  const shown = useRef(0);
+
   const resetPreview = useCallback(() => {
+    epoch.current += 1;
     setPreviewUrl((u) => {
       if (u) URL.revokeObjectURL(u);
       return null;
     });
     setPreviewData(null);
+    setPreviewFor(null);
     setFontReport(null);
   }, []);
 
@@ -54,6 +88,11 @@ export function useEditor() {
         setMoves({});
         resetPreview();
         setSelectedId(null); // document-first: nothing is open until you click text
+        setWebFonts({});
+        loadingFile.current = f;
+        loadDocFonts(f)
+          .then((map) => loadingFile.current === f && setWebFonts(map))
+          .catch(() => { /* typed text falls back to a generic face */ });
         window.rdTrack?.("doc_opened", { pages: res.pages.length, fields: res.spans.length });
         return res;
       } catch (e) {
@@ -78,9 +117,8 @@ export function useEditor() {
         else delete next[id];
         return next;
       });
-      resetPreview();
     },
-    [spans, resetPreview]
+    [spans]
   );
 
   const resetAll = useCallback(() => {
@@ -123,7 +161,7 @@ export function useEditor() {
     for (const [id, pos] of Object.entries(moves)) {
       const sp = spanById.get(Number(id));
       if (!sp) continue;
-      editArr.push({ index: Number(id), new_text: "" }); // erase original
+      editArr.push({ index: Number(id), new_text: "", erase: true }); // erase where it stands; nothing else moves
       const fl = sp.flags || 0;
       moveStamps.push({
         kind: "text", page: sp.page, x: pos.x, y: pos.y,
@@ -152,30 +190,53 @@ export function useEditor() {
     resetPreview();
   }, [resetPreview]);
 
-  const preview = useCallback(async () => {
+  const inFlight = useRef(0);
+  const preview = useCallback(async ({ auto = false } = {}) => {
     if (!file || !hasChanges) return null;
+    const myEpoch = epoch.current;
+    const mine = ++requested.current;
+    const sentEdits = edits;
     setError(null);
+    inFlight.current += 1;
     setBusy(true);
     try {
       const { editArr, stamps } = buildPayload();
       const { blob, fontReport: fr } = await editPdf(file, editArr, stamps);
       const buf = await blob.arrayBuffer();
+      if (myEpoch !== epoch.current || mine < shown.current) return null;
+      shown.current = mine;
       const url = URL.createObjectURL(blob);
       setPreviewUrl((u) => {
         if (u) URL.revokeObjectURL(u);
         return url;
       });
       setPreviewData(buf);
+      setPreviewFor(sentEdits);
       setFontReport(fr);
-      window.rdTrack?.("edit_preview");
+      if (!auto) window.rdTrack?.("edit_preview");
       return url;
     } catch (e) {
-      setError(e.message || "Couldn't apply edits.");
+      if (myEpoch === epoch.current && mine >= shown.current) setError(e.message || "Couldn't apply edits.");
       return null;
     } finally {
-      setBusy(false);
+      inFlight.current -= 1;
+      if (!inFlight.current) setBusy(false);
     }
-  }, [file, edits]);
+  }, [file, hasChanges, edits, buildPayload]);
+
+  // Every edit undone: show the original again, not the last edited render.
+  useEffect(() => {
+    if (!hasChanges && previewData) resetPreview();
+  }, [hasChanges, previewData, resetPreview]);
+
+  useEffect(() => {
+    // One render at a time: the server works through requests in order, so a second one sent while
+    // the first runs only waits behind it. When the running one returns, this runs again with the
+    // latest text.
+    if (!file || !hasChanges || busy || (previewData && previewFor === edits)) return undefined;
+    const t = setTimeout(() => preview({ auto: true }), AUTO_PREVIEW_MS);
+    return () => clearTimeout(t);
+  }, [file, hasChanges, busy, previewData, previewFor, edits, preview]);
 
   // Always bakes the current edits, overlays AND moves fresh (they're live on the
   // canvas, never in the text-only preview, so we can't reuse previewUrl here).
@@ -211,7 +272,7 @@ export function useEditor() {
   return {
     file, fileData, spans, pages, pageIndex, setPageIndex,
     selectedId, setSelectedId, edits, nEdits, editedIds,
-    previewData, previewUrl, fontReport, busy, error,
+    previewData, previewFor, previewUrl, fontReport, busy, error, webFonts,
     zoom, setZoom,
     overlays, addOverlay, updateOverlay, removeOverlay, fonts, hasChanges,
     moves, movedIds, moveSpan, clearMove,

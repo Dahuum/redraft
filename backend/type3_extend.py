@@ -297,6 +297,42 @@ def _save(tt):
     b = io.BytesIO(); tt.save(b); return b.getvalue()
 
 
+_DONOR_BYTES: dict = {}
+
+
+def _freeze(x):
+    if isinstance(x, dict):
+        return tuple(sorted(x.items()))
+    if isinstance(x, (list, tuple)):
+        return tuple(_freeze(v) for v in x)
+    return x
+
+
+def _donor_bytes(fd, ref_widths, upem):
+    """(serialised donor, why) — get_donor then _save, remembered by everything get_donor depends
+    on (family/weight/style from the descriptor, the document's reference widths, units per em).
+
+    One edit tries the font under several names, encodings and occurrences, and every attempt
+    re-serialised the same donor: 15 fontTools saves at ~0.26s each on a Type3 contract, 3.9s of a
+    4.5s edit. Only successes are kept; a miss (no donor yet, a download that failed) is retried."""
+    try:
+        key = (_family_and_style(fd), _freeze(ref_widths), upem)
+        hash(key)
+    except Exception:  # noqa: BLE001 — unkeyable inputs: just compute it
+        key = None
+    if key is not None and key in _DONOR_BYTES:
+        return _DONOR_BYTES[key]
+    donor, why = get_donor(fd, ref_widths, upem)
+    if donor is None:
+        return None, why
+    out = (_save(donor), why)
+    if key is not None:
+        if len(_DONOR_BYTES) > 64:
+            _DONOR_BYTES.clear()
+        _DONOR_BYTES[key] = out
+    return out
+
+
 def get_donor(fd, ref_widths, upem):
     """(donor TTFont, report) — the genuine family, pinned to this document's weight — or (None, reason)."""
     import font_extend
@@ -382,11 +418,11 @@ def extend(doc, display_name: str, missing_chars, code_for: dict):
     if not sub:
         return None, "unsupported_structure"
     subset_bytes, ref_widths = sub
-    donor, why = get_donor(info["fd"], ref_widths, info["upem"])
-    if donor is None:
+    donor_raw, why = _donor_bytes(info["fd"], ref_widths, info["upem"])
+    if donor_raw is None:
         return None, why
     try:
-        res = font_extend.extend_font(subset_bytes, _save(donor), list(missing_chars))
+        res = font_extend.extend_font(subset_bytes, donor_raw, list(missing_chars))
     except Exception:  # noqa: BLE001
         return None, "no_donor"
     ext = TTFont(io.BytesIO(res["font_bytes"]))
@@ -470,7 +506,7 @@ def donor_bytes(pdf_bytes: bytes, xref: int):
             doc.close()
         if not sub:
             return None
-        donor, why = get_donor(info["fd"], sub[1], info["upem"])
-        return _save(donor) if donor is not None else None
+        donor_raw, _why = _donor_bytes(info["fd"], sub[1], info["upem"])
+        return donor_raw
     except Exception:  # noqa: BLE001
         return None

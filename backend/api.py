@@ -44,6 +44,9 @@ from pathlib import Path
 from typing import List
 
 import fitz
+import pdfsave as _pdfsave  # noqa: E402
+import textcache as _textcache  # noqa: E402
+_textcache.install()
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -521,7 +524,7 @@ def _apply_stamps(pdf_bytes: bytes, stamps: list) -> bytes:
                 size = float(st.get("size") or 14)
                 color = _hex_to_rgb(st.get("color"))
                 x = float(st.get("x") or 0)
-                y = float(st.get("y") or 0) + size * 0.82   # box-top → baseline
+                top = float(st.get("y") or 0)
                 bold = bool(st.get("bold"))
                 italic = bool(st.get("italic"))
                 font_name = str(st.get("font") or "")
@@ -542,16 +545,26 @@ def _apply_stamps(pdf_bytes: bytes, stamps: list) -> bytes:
                             raw = None
                 builtin = {(False, False): "helv", (True, False): "hebo",
                            (False, True): "heit", (True, True): "hebi"}[(bold, italic)]
-                try:
-                    if raw:
-                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
-                                         color=color, fontname=f"inj{i}", fontbuffer=raw)
-                    else:
-                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
-                                         color=color, fontname=builtin)
-                except Exception:  # noqa: BLE001 — safe builtin fallback
+                # The document's own font, registered on the page first: insert_text has no
+                # fontbuffer argument, so passing one raised and every stamp — every MOVED field —
+                # fell back to Helvetica, larger and in the wrong typeface. Only a font that lacks
+                # one of the characters falls back, rather than printing boxes.
+                ascender = 0.82
+                drawn = False
+                if raw:
                     try:
-                        page.insert_text(fitz.Point(x, y), text, fontsize=size,
+                        fobj = fitz.Font(fontbuffer=raw)
+                        if all(fobj.has_glyph(ord(ch)) for ch in text if not ch.isspace()):
+                            ascender = fobj.ascender or ascender
+                            page.insert_font(fontname=f"inj{i}", fontbuffer=raw)
+                            page.insert_text(fitz.Point(x, top + size * ascender), text, fontsize=size,
+                                             color=color, fontname=f"inj{i}")
+                            drawn = True
+                    except Exception:  # noqa: BLE001 — fall back to the builtin below
+                        drawn = False
+                if not drawn:
+                    try:
+                        page.insert_text(fitz.Point(x, top + size * 0.82), text, fontsize=size,
                                          color=color, fontname=builtin)
                     except Exception:  # noqa: BLE001
                         continue
@@ -836,8 +849,14 @@ def _crowds_neighbour(before: bytes, after: bytes, sd: dict, other_boxes=()) -> 
     def same(a, b):
         return a[0] == b[0] and all(abs(p - q) <= tol for p, q in zip(a[1], b[1]))
 
-    fresh = [a for a in sa if not any(same(a, b) for b in sb)]
-    stayed = [a for a in sa if any(same(a, b) for b in sb)]
+    # same() needs equal text, so only spans with the same text are compared — and each span is
+    # judged once, not twice. An IRS page was 895k comparisons for one edit.
+    by_text: dict = {}
+    for b in sb:
+        by_text.setdefault(b[0], []).append(b)
+    kept = [any(same(a, b) for b in by_text.get(a[0], ())) for a in sa]
+    fresh = [a for a, k in zip(sa, kept) if not k]
+    stayed = [a for a, k in zip(sa, kept) if k]
 
     def line_overlap(a, b):
         ov = min(a[3], b[3]) - max(a[1], b[1])
@@ -916,7 +935,8 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             continue
         done.add(id(sd))
         before_this = current
-        rr = _joint_rewrap(current, replacements, sd, new_text, done, reflowed, pdf_bytes)
+        hold = bool(sd.get("_erase"))
+        rr = None if hold else _joint_rewrap(current, replacements, sd, new_text, done, reflowed, pdf_bytes)
         if rr and not _shift_ok(rr, sd):
             rr = None
         if rr:
@@ -929,7 +949,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             continue
         try:
             r = _spike.edit(current, sd["text"], new_text,
-                            page=sd["page"], bbox=sd["bbox"], verify=False)
+                            page=sd["page"], bbox=sd["bbox"], verify=False, hold=hold)
         except Exception:  # noqa: BLE001
             r = {"ok": False, "reason": "engine_error"}
         if r.get("ok"):
@@ -949,6 +969,8 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                 # sat under "o" and blank paper.
                 try:
                     pg = sd.get("page", 0)
+                    if hold:
+                        raise StopIteration   # nothing on the line moved: no underline follows
                     cand = _reflow.carry_underlines(current, cand, pg,
                                                     (sd["bbox"][1] - 1, sd["bbox"][3] + 3),
                                                     field=sd["bbox"],
@@ -957,7 +979,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
                     pass
                 current = cand
                 in_place_count += 1
-        if r.get("ok") and _may_rewrap(_pending(sd) + [(sd, new_text)], sd):
+        if r.get("ok") and not hold and _may_rewrap(_pending(sd) + [(sd, new_text)], sd):
             # In place succeeded — but if re-wrapping the paragraph would
             # change its line breaks, the producer's own re-print has the
             # re-wrapped layout, not the in-place one (a shorter name leaves a
@@ -1005,7 +1027,7 @@ def _try_inplace_batch(pdf_bytes: bytes, replacements: list) -> tuple:
             # then be stale. (Taken bottom-up, one rarely does.)
             later = any(o.get("page", 0) == sd.get("page", 0)
                         and o["bbox"][1] >= sd["bbox"][1] - 0.5 for o, _ in _pending(sd))
-            if not later:
+            if not later and not hold:
                 try:
                     rr = _reflow.reflow(current, sd, new_text,
                                         multiline_only=r.get("reason") not in _REFLOW_REASONS,
@@ -1118,7 +1140,23 @@ def _layout_gap(before: bytes, after: bytes, sd: dict):
 
     def vis(l):
         return [c for c in l["chars"] if c["c"].strip()]
+
+    def first_word(l):
+        word = []
+        for c in l["chars"]:
+            if not c["c"].strip():
+                break
+            word.append(c)
+        return word
     R = max(vis(l)[-1]["x1"] for l in para if vis(l))
+    # Only lines the author's software WRAPPED can look wrong after an edit: in a wrapped
+    # paragraph the next line's first word never fits at the end of the line above. Lines
+    # broken by hand — a form's "M /Mme <name> ," over "Né le ... à <city>" — leave room
+    # for it, and their longest line is not a margin anything can overrun.
+    for i in range(len(para) - 1):
+        a, w = vis(para[i]), first_word(para[i + 1])
+        if a and w and a[-1]["x1"] + 0.28 * w[0]["size"] + (w[-1]["x1"] - w[0]["x0"]) <= R - 0.5:
+            return None
     k = next((i for i, l in enumerate(para) if abs(l["y"] - sd["origin"][1]) <= 0.6), None)
     if k is None:
         return None
@@ -1130,13 +1168,6 @@ def _layout_gap(before: bytes, after: bytes, sd: dict):
     if end_a > R + 1.0 and end_b <= R + 0.5:
         return "overrun"
     if k + 1 < len(para):
-        def first_word(l):
-            word = []
-            for c in l["chars"]:
-                if not c["c"].strip():
-                    break
-                word.append(c)
-            return word
         nxt_a = next((l for l in la if abs(l["y"] - para[k + 1]["y"]) <= 0.6
                       and abs(l["x0"] - para[k + 1]["x0"]) <= 1.0), None)
         wb, wa = first_word(para[k + 1]), first_word(nxt_a) if nxt_a else []
@@ -1251,10 +1282,10 @@ _UNSHIPPABLE_MSG = {
         "would push the rest of the row out of line with the columns above "
         "and below it. The field was left as it was — shorten the value."),
     "runs_off_the_page": (
-        "This value is too long for the space it sits in: even shrunk as far "
-        "as is reasonable it would run past the edge of the paper, where the "
-        "text is simply cut off. The field was left as it was — shorten the "
-        "value, or give it a line of its own."),
+        "This value is too long for the space it sits in: at its own size it "
+        "would run past the edge of the paper, where the text is simply cut "
+        "off. The field was left as it was — shorten the value, or give it a "
+        "line of its own."),
 }
 
 
@@ -1419,6 +1450,14 @@ def _unshippable_fields(edited: bytes, items: list, before: bytes = None) -> dic
             probe = _flat(_nt.strip())[:12]
             if probe and probe not in _flat(" ".join(on_line)):
                 bad[i] = "cannot_place"
+                continue
+            # Its END too. Glyphs past the paper's edge are not extracted at all, so a value drawn
+            # from x=524 to 647 on a 595pt page read back as "Zoé Ångström-Ñu": its beginning was
+            # there, the off-page check saw a span ending inside the page, and it shipped cut off.
+            # Compared without whitespace: the extractor may split the value into several spans.
+            tail = re.sub(r"\s+", "", _flat(_nt))[-10:]
+            if tail and tail not in re.sub(r"\s+", "", _flat("".join(on_line))):
+                bad[i] = "runs_off_the_page"
     finally:
         doc.close()
         if ref is not None:
@@ -1483,7 +1522,7 @@ def _like_input(src: bytes, out: bytes) -> bytes:
             kw = {"garbage": 1, "deflate": True}
             if objstm:
                 kw["use_objstms"] = 1
-            res = d.tobytes(**kw)
+            res = _pdfsave.to_bytes(d, **kw)
         finally:
             d.close()
         if linear:
@@ -1526,7 +1565,7 @@ def _drop_id(out: bytes) -> bytes:
         d = fitz.open(stream=out, filetype="pdf")
         try:
             d.xref_set_key(-1, "ID", "null")
-            res = d.tobytes(garbage=1, deflate=True, no_new_id=1,
+            res = _pdfsave.to_bytes(d, garbage=1, deflate=True, no_new_id=1,
                             **({"use_objstms": 1} if b"/ObjStm" in out else {}))
         finally:
             d.close()
@@ -1692,35 +1731,31 @@ def _apply_replacements(pdf_bytes: bytes, replacements: list,
                     _queue(normal)
                     ed.apply()
                 if overflowing:
-                    ed.shrink_to_fit = True
+                    # Never smaller than the document set it (the product decision, 2026-10):
+                    # a value that doesn't fit is drawn at its own size where there is room,
+                    # and _unshippable_fields below leaves it unchanged, with a message saying
+                    # to shorten it, where it would run off the page or into other text.
+                    # Shrinking used to be forced here, down to 70%: always placed, visibly
+                    # smaller than everything around it.
+                    ed.shrink_to_fit = not preserve_size
                     _queue(overflowing)
                     ed.apply()
 
                 ed.save(out_path)
 
             fonts_used = {sd["font"] for sd, _ in replacements}
-            report = []
-            for fn in sorted(fonts_used):
-                src = font_source(fn)
-                if (src.startswith("system:") or src.startswith("google")
-                        or src.startswith("builtin:")):
-                    status = "match"
-                elif src.startswith("substitute") or src.startswith("script-fallback"):
-                    status = "substitute"
-                elif src.startswith("BUILTIN") or src.startswith("SUBSET"):
-                    status = "fallback"
-                else:
-                    status = "unknown"
-                report.append({"font": fn.split("+")[-1], "status": status,
-                               "source": src})
+            embedded = _embedded_font_names(pdf_bytes)
+            report = [{"font": fn.split("+")[-1], "status": _status_of(fn, font_source(fn) or "", embedded),
+                       "source": font_source(fn)} for fn in sorted(fonts_used)]
 
             def _refusal_for(sd):
                 return next((r for r in inplace_refusals
                              if r.get("text") == sd["text"][:60]), {})
-            resized = [{"text": sd["text"][:60], "new_text": nt[:60],
-                        "reason": _refusal_for(sd).get("reason") or "too_long_for_line",
-                        "detail": _refusal_for(sd).get("message")}
-                       for sd, nt in overflowing]
+            resized = [] if preserve_size else [
+                {"text": sd["text"][:60], "new_text": nt[:60],
+                 "reason": _refusal_for(sd).get("reason") or "too_long_for_line",
+                 "detail": _refusal_for(sd).get("message")}
+                for sd, nt in overflowing]
             def _resize_warning(r):
                 # Overflow has a plain-words explanation a user can act on;
                 # the other reasons are structural and name themselves.
@@ -1854,18 +1889,46 @@ def _font_cache_name(fontname: str) -> str:
     return _pe.font_cache_key(fontname)
 
 
-def _font_status(fontname: str) -> dict:
+def _embedded_font_names(pdf_bytes: bytes) -> set:
+    """Base names (subset prefix dropped) of the fonts the PDF carries inside it."""
+    names = set()
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                for f in page.get_fonts(full=False):
+                    if f[1] and f[1] != "n/a":
+                        names.add(f[3].split("+")[-1])
+    except Exception:  # noqa: BLE001
+        pass
+    return names
+
+
+def _status_of(fontname: str, src: str, embedded: set) -> str:
+    """builtin | match | embedded | substitute | fallback, as the edit will actually come out.
+
+    `embedded`: the document's own font is drawn, and the edit engines add any letter its
+    subset lacks from a donor — so it is not a font the user has to supply. A subset with no
+    full copy found used to be reported "missing glyphs render as boxes", which the engines
+    have not done since glyph injection; boxed fields are refused, never shipped."""
+    if src.startswith("builtin:"):
+        return "builtin"
+    if src.startswith(("system:", "google", "document:")):
+        return "match"
+    if src.startswith(("substitute", "script-fallback")):
+        return "substitute"
+    base = fontname.split("+")[-1]
+    # Span font names can be cut short ("HerrVonMuellerhoff-Regul"), so a prefix of an embedded name counts.
+    inside = base in embedded or (len(base) >= 8 and any(e.startswith(base) for e in embedded))
+    if src == "type3-family-donor" or (src.startswith("SUBSET") and inside):
+        return "embedded"
+    return "fallback"
+
+
+def _font_status(fontname: str, embedded: set = frozenset()) -> dict:
     """Resolve *fontname* and describe how well it matched (for the UI)."""
     resolve_full_font(fontname)          # populates font_source; result is memoised
     src = font_source(fontname) or ""
-    if src.startswith("builtin:"):
-        status = "builtin"
-    elif src.startswith("system:") or src.startswith("google"):
-        status = "match"
-    elif src.startswith("substitute"):
-        status = "substitute"
-    else:
-        status = "fallback"
+    status = _status_of(fontname, src, embedded)
     fam, weight, style = _pe._parse_font_name(fontname)
     return {
         "font":       fontname.split("+")[-1],
@@ -1873,7 +1936,7 @@ def _font_status(fontname: str) -> dict:
         "family":     fam,
         "weight":     weight,
         "style":      style,
-        "status":     status,            # builtin | match | substitute | fallback
+        "status":     status,            # builtin | match | embedded | substitute | fallback
         "source":     src,
         "cache_name": _font_cache_name(fontname),
     }
@@ -1988,10 +2051,17 @@ def _ingest_embedded_fonts(pdf_bytes: bytes, user: str = None) -> list:
     # _DOC_FONTS): the signed-in user's own fonts, then this document's.
     overlay: dict = dict(_user_fonts(user))
     _pe._DOC_FONTS.set(overlay)
+    _pe._DOC_FULLNAMES.set(None)
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception:  # noqa: BLE001
         return installed
+    try:
+        _pe._DOC_FULLNAMES.set(frozenset(
+            fo[3].split("+")[-1] for pno in range(doc.page_count)
+            for fo in doc[pno].get_fonts(full=False) if fo[3]))
+    except Exception:  # noqa: BLE001 — names are a refinement, never a reason to fail
+        pass
     seen = set()
     try:
         t3 = {}
@@ -2126,13 +2196,24 @@ def parse_table(filename: str, data: bytes) -> tuple:
 # Routes
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _deployed_commit() -> str:
+    """The GitHub commit this server was deployed from (written by the deploy workflow)."""
+    try:
+        return Path(__file__).with_name("DEPLOY_SHA").read_text().strip()
+    except OSError:
+        return ""
+
+
+_COMMIT = _deployed_commit()
+
+
 @app.get("/")
 def root(request: Request):
     if UI_ON and "text/html" in (request.headers.get("accept") or ""):
         return RedirectResponse("/app")          # a browser, not a client: show the editor
     return {"app": "Redraft API", "version": "1.0",
             "endpoints": ["/extract", "/edit", "/bulk", "/v1/replace"], "auth": AUTH_ON,
-            "key": bool(API_KEYS)}
+            "key": bool(API_KEYS), "commit": _COMMIT}
 
 
 @app.get("/health")
@@ -2284,6 +2365,19 @@ async def extract(file: UploadFile = File(...), user: str = Depends(optional_use
             "span_count": len(spans), "spans": spans}
 
 
+_EDIT_RESULTS: dict = {}       # request key -> (edited bytes, report json); insertion-ordered
+_EDIT_RESULTS_MAX = 24
+
+
+def _remember_edit(key: str, edited: bytes, report: dict) -> None:
+    try:
+        _EDIT_RESULTS[key] = (edited, json.dumps(report))
+    except (TypeError, ValueError):
+        return
+    while len(_EDIT_RESULTS) > _EDIT_RESULTS_MAX:
+        _EDIT_RESULTS.pop(next(iter(_EDIT_RESULTS)))
+
+
 @app.post("/edit")
 async def edit(request: Request, file: UploadFile = File(...), edits: str = Form(...),
                stamps: str = Form("[]"), final: str = Form(""),
@@ -2328,7 +2422,10 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
             raise HTTPException(400, "Each edit needs an integer `index` and "
                                      "a `new_text` string.")
         if 0 <= i < len(spans):
-            replacements.append((spans[i], nt))
+            # `erase`: the field is being MOVED (the editor stamps it elsewhere), so it is removed
+            # where it stands and nothing else on the line closes up, re-spaces or re-wraps.
+            sd = dict(spans[i], _erase=True) if (e.get("erase") and not nt.strip()) else spans[i]
+            replacements.append((sd, nt))
 
     if not replacements and not stamp_list:
         raise HTTPException(400, "Nothing to apply — no edits or added items.")
@@ -2340,12 +2437,20 @@ async def edit(request: Request, file: UploadFile = File(...), edits: str = Form
         elif AUTH_ON:  # guest download → per-IP daily cap
             _guest_meter_check(ip, 1)
 
+    # The editor previews and then downloads the same edits: the second request is answered from
+    # the first instead of running every edit again.
+    rkey = hashlib.sha1(b"\0".join([data, edits.encode(), stamps.encode(), (user or "").encode()])).hexdigest()
     try:
-        if replacements:
-            edited, report = apply_replacements(data, replacements, try_inplace=True)
+        hit = _EDIT_RESULTS.get(rkey)
+        if hit is not None:
+            edited, report = hit[0], json.loads(hit[1])
         else:
-            edited, report = data, {"fonts": [], "warnings": []}
-        edited = _apply_stamps(edited, stamp_list)
+            if replacements:
+                edited, report = apply_replacements(data, replacements, try_inplace=True)
+            else:
+                edited, report = data, {"fonts": [], "warnings": []}
+            edited = _apply_stamps(edited, stamp_list)
+            _remember_edit(rkey, edited, report)
         if final and _wants_attribution(user):     # Loop A — free/guest footer
             edited = _add_attribution(edited)
     except Exception as exc:  # noqa: BLE001
@@ -2670,8 +2775,199 @@ async def fonts(file: UploadFile = File(...), user: str = Depends(require_user))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
     distinct = sorted({s["font"] for s in spans})
-    report = [_font_status(f) for f in distinct]
+    embedded = _embedded_font_names(data)
+    report = [_font_status(f, embedded) for f in distinct]
     return {"count": len(report), "fonts": report, "auto_installed": auto}
+
+
+_WEBFONT_CACHE: dict = {}
+_WEBFONT_BASE = "".join(map(chr, list(range(0x20, 0x7F)) + list(range(0xA0, 0x180))
+                         + list(range(0x2010, 0x2027)) + [0x2030, 0x2039, 0x203A, 0x20AC, 0x2122]))
+_SFNT = (b"\x00\x01\x00\x00", b"OTTO", b"true")
+
+
+def _web_font(raw: bytes, chars: str):
+    """*raw* (TrueType/OpenType) cut down to *chars* plus common Latin, as WOFF; None if it can't be."""
+    key = hashlib.sha1(raw + chars.encode("utf-8", "surrogatepass")).hexdigest()
+    if key in _WEBFONT_CACHE:
+        return _WEBFONT_CACHE[key]
+    out = None
+    try:
+        from fontTools import subset
+        from fontTools.ttLib import TTFont
+        font = TTFont(io.BytesIO(raw), lazy=False)
+        opts = subset.Options()
+        opts.flavor = "woff"
+        opts.layout_features = ["*"]
+        opts.name_IDs = ["*"]
+        opts.notdef_outline = True
+        opts.ignore_missing_unicodes = True
+        opts.drop_tables += ["FFTM"]
+        sub = subset.Subsetter(opts)
+        sub.populate(text=chars + _WEBFONT_BASE)
+        sub.subset(font)
+        buf = io.BytesIO()
+        font.flavor = "woff"
+        font.save(buf)
+        out = buf.getvalue()
+    except Exception:  # noqa: BLE001 — a font the browser can't get is drawn in a generic face instead
+        out = None
+    if len(_WEBFONT_CACHE) > 256:
+        _WEBFONT_CACHE.clear()
+    _WEBFONT_CACHE[key] = out
+    return out
+
+
+def _embedded_sfnt(pdf_bytes: bytes) -> dict:
+    """Base font name → the PDF's own TrueType/OpenType program, for fonts nothing else resolves."""
+    found = {}
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                for f in page.get_fonts(full=False):
+                    name = f[3].split("+")[-1]
+                    if name in found:
+                        continue
+                    try:
+                        buf = doc.extract_font(f[0])[3]
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if buf and buf[:4] in _SFNT:
+                        found[name] = buf
+    except Exception:  # noqa: BLE001
+        pass
+    return found
+
+
+_COMPLETE_CHARS = "".join(map(chr, list(range(0x21, 0x7F)) + list(range(0xC0, 0x100))))
+_COMPLETE_CACHE: dict = {}
+
+
+def _complete_font(doc, name: str, raw: bytes):
+    """(*raw* with the common Latin letters an embedded subset lacks added, note).
+
+    The letters come from the same donors, in the same order, as the edit engines use (the genuine
+    family, another cut in this document, a measured substitute), so text typed into the editor is
+    drawn as the edit will come out. *note* says what happened ("complete", "added 121 from
+    substitute", or why nothing could be added) and is returned to the client, because a font that
+    silently stayed a bare subset showed as letters in the wrong typeface with nothing to say why.
+    Only successes are cached: a failure is retried on the next request."""
+    try:
+        from fontTools.ttLib import TTFont
+        import font_extend
+        if "glyf" not in TTFont(io.BytesIO(raw), lazy=True):
+            return raw, "not a TrueType outline font; served as embedded"
+        have = TTFont(io.BytesIO(raw), lazy=True).getBestCmap() or {}
+    except Exception as exc:  # noqa: BLE001
+        return raw, f"unreadable: {type(exc).__name__}: {exc}"[:200]
+    missing = [c for c in _COMPLETE_CHARS if ord(c) not in have]
+    if not missing:
+        return raw, "complete"
+    key = hashlib.sha1(raw).hexdigest()
+    if key in _COMPLETE_CACHE:
+        return _COMPLETE_CACHE[key]
+    display = name.split("+")[-1]
+
+    def donor_has(donor: bytes):
+        try:
+            cmap = TTFont(io.BytesIO(donor), lazy=True).getBestCmap() or {}
+        except Exception:  # noqa: BLE001
+            return []
+        return [c for c in missing if ord(c) in cmap]
+
+    steps = []
+    try:
+        donor, kind = font_extend.resolve_donor_detailed(display)
+        steps.append(f"donor={kind or 'none'}")
+    except Exception as exc:  # noqa: BLE001
+        donor, kind = None, None
+        steps.append(f"donor lookup failed: {type(exc).__name__}: {exc}")
+    out = None
+    try:
+        if donor and kind == "family" and donor_has(donor):
+            out = font_extend.extend_font(raw, donor, donor_has(donor))["font_bytes"]
+            steps.append("family extend")
+        else:
+            import font_donors
+            import glyph_synth
+            in_doc = None
+            try:
+                in_doc = font_donors.find_in_document_donor(doc, display, missing)
+            except Exception as exc:  # noqa: BLE001
+                steps.append(f"in-document donor failed: {type(exc).__name__}: {exc}")
+            if in_doc and in_doc.get("glyphs"):
+                out = glyph_synth.inject_into_font(raw, in_doc["glyphs"])["font_bytes"]
+                steps.append("in-document cut")
+            elif donor and donor_has(donor):
+                corrected = font_donors.correct_external_donor(raw, donor, donor_has(donor))
+                if corrected:
+                    out = glyph_synth.inject_into_font(raw, corrected["glyphs"])["font_bytes"]
+                    steps.append("measured substitute")
+                else:
+                    out = font_extend.extend_font(raw, donor, donor_has(donor))["font_bytes"]
+                    steps.append("substitute, unmeasured")
+            else:
+                steps.append("no donor has these letters")
+    except Exception as exc:  # noqa: BLE001
+        steps.append(f"failed: {type(exc).__name__}: {exc}")
+        out = None
+    if out is None:
+        return raw, ("; ".join(steps))[:300]
+    try:
+        added = len(TTFont(io.BytesIO(out), lazy=True).getBestCmap() or {}) - len(have)
+    except Exception:  # noqa: BLE001
+        added = -1
+    result = (out, f"added {added} ({'; '.join(steps)})"[:300])
+    if len(_COMPLETE_CACHE) > 64:
+        _COMPLETE_CACHE.clear()
+    _COMPLETE_CACHE[key] = result
+    return result
+
+
+def _web_fonts_for(data: bytes, user: str) -> dict:
+    _ingest_embedded_fonts(data, user)
+    spans = extract_spans(data)
+    used: dict = {}
+    for s in spans:
+        used.setdefault(s["font"], set()).update(s["text"])
+    embedded = None
+    fonts, missing, notes = [], [], {}
+    for name in sorted(used):
+        raw = resolve_full_font(name)
+        if not raw or raw[:4] not in _SFNT:
+            if embedded is None:
+                embedded = _embedded_sfnt(data)
+            base = name.split("+")[-1]
+            raw = embedded.get(base) or next((v for k, v in embedded.items()
+                                              if len(base) >= 8 and k.startswith(base)), None)
+        if raw:
+            with fitz.open(stream=data, filetype="pdf") as doc:
+                raw, notes[name] = _complete_font(doc, name, raw)
+        woff = _web_font(raw, "".join(sorted(used[name]))) if raw else None
+        if woff:
+            fonts.append({"font": name, "family": "rd-" + hashlib.sha1(woff).hexdigest()[:12],
+                          "woff": base64.b64encode(woff).decode()})
+        else:
+            missing.append(name)
+    return {"fonts": fonts, "missing": missing, "notes": notes}
+
+
+@app.post("/webfonts")
+async def webfonts(file: UploadFile = File(...), user: str = Depends(optional_user)):
+    """Upload a PDF → its fonts as small WOFF files, so the editor can draw text being typed in the
+    document's own typeface before the exact render comes back. Fonts the browser cannot be given
+    (bare CFF, Type1) are listed in `missing`; the editor draws those in a generic face."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    _check_size("The PDF", data, MAX_PDF_BYTES)
+    _check_readable("The PDF", data, getattr(file, "filename", ""))
+    try:
+        # In the request loop like every other engine call: PyMuPDF is not safe to use from two
+        # threads at once, and this runs while the editor is loading the same document.
+        return _web_fonts_for(data, user)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
 
 
 @app.post("/font")
@@ -2699,6 +2995,7 @@ async def upload_font(fontname: str = Form(...), file: UploadFile = File(...),
     path = os.path.abspath(os.path.join(udir, name))
     if os.path.dirname(path) != udir:
         raise HTTPException(400, "Invalid font name.")
+    _EDIT_RESULTS.clear()   # an installed font changes how the same edits come out
     try:
         with open(path, "wb") as f:
             f.write(raw)

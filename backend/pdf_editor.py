@@ -57,6 +57,24 @@ _DOC_FONTS: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_fonts
 # Type3 fonts of THIS request's document: {display name: callable -> donor font bytes or None}.
 # Lazy — resolving a donor can download and instance a variable font, and most edits never redraw.
 _DOC_TYPE3: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_type3", default=None)
+# Full font names of THIS request's document. The text extractor cuts a span's font name at 24
+# characters, and the end is where the style is: "ITCFranklinGothicStd-Dem" is really "-Demi"
+# (SemiBold), "LiberationSans-BoldItali" is really "-BoldItalic". Read as given, the weight or
+# the slant is lost and the wrong font — or none — is found for it.
+_DOC_FULLNAMES: _contextvars.ContextVar = _contextvars.ContextVar("redraft_doc_fullnames", default=None)
+_EXTRACTOR_NAME_LIMIT = 24
+
+
+def _full_font_name(bare: str) -> str:
+    """*bare* as the document names it in full, when the extractor cut it short; else *bare*.
+
+    Only a name exactly at the extractor's limit is a candidate, and only a single full name
+    in this document that starts with it is taken — an ambiguous cut stays as it is."""
+    names = _DOC_FULLNAMES.get()
+    if not names or len(bare) != _EXTRACTOR_NAME_LIMIT or bare in names:
+        return bare
+    hits = [n for n in names if n.startswith(bare)]
+    return hits[0] if len(hits) == 1 else bare
 
 
 def font_cache_key(fontname: str) -> str:
@@ -332,7 +350,7 @@ def _parse_font_name(fontname: str) -> tuple:
     'Inter18pt-Bold'      → ('Inter', 700, 'normal')   ← alias applied
     'ariitaft'            → ('Arial', 400, 'normal')   ← truncated alias
     """
-    bare = fontname.split("+")[-1]
+    bare = _full_font_name(fontname.split("+")[-1])
     # Foundry suffixes carry no style: "Arial-BoldMT", "TimesNewRomanPSMT".
     bare = re.sub(r"(?<=[a-z])(PSMT|MT)$", "", bare) if bare not in _WEIGHT_OVERRIDES else bare
     if "-" in bare:
@@ -1121,7 +1139,7 @@ def get_spans(doc: fitz.Document, page_num: int = 0) -> list:
 
 # ── Alignment detection ───────────────────────────────────────────────────────
 
-def _detect_alignments(spans: list) -> dict:
+def _detect_alignments(spans: list, wanted=None) -> dict:
     """
     Return a dict mapping each span's origin key ``(round(ox,1), round(oy,1))``
     to ``'left'``, ``'right'``, or ``'center'``.
@@ -1181,6 +1199,11 @@ def _detect_alignments(spans: list) -> dict:
 
     for i, s in enumerate(spans):
         key    = (round(s["origin"][0], 1), round(s["origin"][1], 1))
+        # *wanted*: the only keys the caller will look up. Every span is still compared against
+        # all others, so each answer is unchanged; the others are simply not computed — on an
+        # IRS page that was 900 x 900 comparisons for the 1-3 fields being redrawn.
+        if wanted is not None and key not in wanted:
+            continue
         x0_i   = x0s[i]
         x1_i   = x1s[i]
         cx_i   = cxs[i]
@@ -1412,7 +1435,9 @@ class PDFEditor:
 
             # Build alignment map from ALL spans on this page (column context)
             all_spans  = get_spans(self.doc, page_num)
-            align_map  = _detect_alignments(all_spans)
+            align_map  = _detect_alignments(
+                all_spans, wanted={(round(sp["origin"][0], 1), round(sp["origin"][1], 1))
+                                   for sp, _ in items})
 
             # Build stamp (created now, not after redaction, because the
             # measure pass below needs it to register fonts for width

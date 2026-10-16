@@ -6,12 +6,14 @@ import Icon from "./Icon.jsx";
 const CHIP = {
   match: "bg-[rgb(var(--c-tint-mint))] text-on-surface",
   builtin: "bg-[rgb(var(--c-tint-mint))] text-on-surface",
+  embedded: "bg-[rgb(var(--c-tint-mint))] text-on-surface",
   substitute: "bg-[rgb(var(--c-tint-yellow))] text-on-surface",
   fallback: "bg-error-container text-on-error-container",
 };
 const LABEL = {
   match: "exact",
   builtin: "built-in",
+  embedded: "from the PDF",
   substitute: "lookalike",
   fallback: "missing",
 };
