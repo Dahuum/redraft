@@ -804,7 +804,84 @@ def _layout_violation(before: bytes, after: bytes, sd: dict,
             if any(in_box(u, b) for b in other_boxes):
                 continue
             return "overlaps_neighbour"
-    return _crowds_neighbour(before, after, sd, other_boxes)
+    return (_crowds_neighbour(before, after, sd, other_boxes)
+            or _crosses_drawing(before, fresh, sd))
+
+
+def _vertical_edges(page) -> list:
+    """(x, y_top, y_bottom, stroked) of every visible vertical edge drawn on *page*: box sides,
+    column rules, the borders of shaded areas. Paths painted only in white (fill and stroke)
+    are left out — crossing one shows nothing."""
+    edges = []
+    for d in page.get_drawings():
+        stroke, fill = d.get("color"), d.get("fill")
+        # white on white is invisible either way: the attestation's anonymised fields sit in
+        # boxes filled AND stroked in white, and a date edit was refused for crossing one
+        stroked = (stroke is not None and "s" in (d.get("type") or "")
+                   and not all(c > 0.98 for c in stroke))
+        if not stroked and (fill is None or all(c > 0.98 for c in fill)):
+            continue
+        for it in d["items"]:
+            if it[0] in ("re", "qu"):
+                r = it[1] if it[0] == "re" else it[1].rect
+                edges += [(r.x0, r.y0, r.y1, stroked), (r.x1, r.y0, r.y1, stroked)]
+            elif it[0] == "l" and abs(it[1].x - it[2].x) < 0.5:
+                edges.append((it[1].x, min(it[1].y, it[2].y), max(it[1].y, it[2].y), stroked))
+    return edges
+
+
+# How far ink may run past a drawn edge before it shows. Over a stroked line or box side it
+# is on the line at once; past the border of a tint it shows only once clearly inside it —
+# "Marital Status" on the 1040 ends 0.5pt into the shaded entry column, which nobody sees.
+_EDGE_TOL_STROKE = 0.3
+_EDGE_TOL_FILL = 1.5
+
+
+def _crosses_drawing(before: bytes, fresh, sd: dict) -> str | None:
+    """Did the new text run across a drawn edge its field did not cross?
+
+    The word checks see text only. On the IRS 1040 "Filing Status" made "Filing Category"
+    and the heading ran 4pt into the shaded entry column beside it, ending 2pt from a
+    checkbox: nothing printed over a word, so every check passed. *fresh* are the words that
+    are new or moved after the edit (see _layout_violation); an edge counts when one of them
+    straddles it, past the tolerances above, over most of its height, and the original
+    field's box did not already straddle it."""
+    x0, y0, x1, y1 = sd["bbox"]
+    line = [w for w in fresh
+            if min(w[3], y1) - max(w[1], y0) > 0.5 * min(w[3] - w[1], y1 - y0)]
+    if not line:
+        return None
+    try:
+        db = fitz.open(stream=before, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        edges = _vertical_edges(db[sd.get("page", 0)])
+    finally:
+        db.close()
+    for ex, ey0, ey1, stroked in edges:
+        tol = _EDGE_TOL_STROKE if stroked else _EDGE_TOL_FILL
+        if x0 + tol < ex < x1 - tol:
+            continue                                    # the field already crossed it
+        for w in line:
+            if w[0] + tol < ex < w[2] - tol and (min(w[3], ey1) - max(w[1], ey0)) > 0.5 * (w[3] - w[1]):
+                return "runs_into_drawing"
+    return None
+    try:
+        db = fitz.open(stream=before, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        edges = _vertical_edges(db[sd.get("page", 0)])
+    finally:
+        db.close()
+    for ex, ey0, ey1 in edges:
+        if x0 + tol < ex < x1 - tol:
+            continue                                    # the field already crossed it
+        for w in line:
+            if w[0] + tol < ex < w[2] - tol and (min(w[3], ey1) - max(w[1], ey0)) > 0.5 * (w[3] - w[1]):
+                return "runs_into_drawing"
+    return None
 
 
 def _crowds_neighbour(before: bytes, after: bytes, sd: dict, other_boxes=()) -> str | None:
@@ -1363,6 +1440,10 @@ _UNSHIPPABLE_MSG = {
         "This value is longer than the space it sits in, and fitting it would leave it "
         "touching the text beside it, which had clear space before. The field was left as "
         "it was — shorten the value, or give it a line of its own."),
+    "runs_into_drawing": (
+        "This value is longer than the space it sits in, and at its own size it would run "
+        "across a line, box or shaded area drawn beside it. The field was left as it was — "
+        "shorten the value, or give it a line of its own."),
     "moves_column": (
         "This value is longer than its table cell, and making room for it "
         "would push the rest of the row out of line with the columns above "
