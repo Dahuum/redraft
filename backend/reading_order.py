@@ -20,6 +20,8 @@ import re
 
 import fitz
 
+import pdfsave
+
 _WS = b" \t\r\n\x0c\x00"
 _DELIM = b"()<>[]{}/%"
 _STUB = re.compile(rb"^\s*(?:q\s+(?:[-+.\d]+\s+){6}cm\s+)?q?\s*/([^\s/\[\]<>()]+)\s+Do\s+Q?\s*(?:Q\s*)?$")
@@ -381,7 +383,7 @@ def _restore(before, after, pno):
         if tr is None or sorted(tr) != sorted(full) or tr.index(first) != tr.index(pred) + 1:
             doc.update_stream(body_x, body)
             doc.update_stream(sx, stub)
-    out = doc.tobytes(garbage=1, deflate=True)
+    out = pdfsave.to_bytes(doc, garbage=1, deflate=True)
     doc.close()
     # Moving where text is drawn must not change a pixel of the page.
     a_, b_ = fitz.open(stream=after, filetype="pdf"), fitz.open(stream=out, filetype="pdf")

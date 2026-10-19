@@ -1416,7 +1416,7 @@ def _canonicalise_text_layer(pdf_bytes: bytes, drawn_texts) -> bytes:
                 if new_data != data:
                     doc.update_stream(tu, new_data)
                     changed = True
-        return doc.tobytes(garbage=4, deflate=True) if changed else pdf_bytes
+        return _pdfsave.to_bytes(doc, garbage=4, deflate=True) if changed else pdf_bytes
     finally:
         doc.close()
 

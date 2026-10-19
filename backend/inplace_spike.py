@@ -4842,7 +4842,7 @@ def _edit_core(pdf_bytes: bytes, old: str, new: str, page: int = None, bbox=None
                         pass
                 _apply(adoc, res["runs"], res["loc"], res["new_codes"], cand_cid,
                        kern=res["kern"], actual=_actual_codes(doc, cand_nm, cand_cid))
-                cand_bytes = adoc.tobytes(garbage=0)
+                cand_bytes = _pdfsave.to_bytes(adoc, garbage=0)
                 adoc.close()
                 if _hits_target(cand_bytes):
                     prep, chosen_bytes = res, cand_bytes
