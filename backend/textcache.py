@@ -12,6 +12,10 @@ Safe by construction:
   * every hit returns a fresh copy, so a caller that mutates the result cannot affect the next one;
   * a call with its own TextPage, or with an argument the key can't represent, is not cached.
 
+Page.get_fonts is reused the same way. It walks the page's resources recursively, and one
+3-edit request on a 15-page arXiv paper listed fonts 865 times (1.1 s of 5.2 s), almost all on
+documents not yet changed: the in-place engine looks fonts up page by page from a dozen places.
+
 install() is idempotent.
 """
 import hashlib
@@ -24,9 +28,10 @@ import fitz
 _LOCK = threading.Lock()
 _ENTRIES: "OrderedDict[tuple, bytes]" = OrderedDict()
 _SIZE = [0]
+_FONTS: "OrderedDict[tuple, tuple]" = OrderedDict()
 _MAX_BYTES = 64 * 1024 * 1024
 _HASHES: "OrderedDict[int, tuple]" = OrderedDict()   # id(source bytes) -> (source bytes, digest)
-_STATS = {"hit": 0, "miss": 0, "skip": 0}
+_STATS = {"hit": 0, "miss": 0, "skip": 0, "font_hit": 0, "font_miss": 0, "font_skip": 0}
 _installed = [False]
 
 
@@ -58,6 +63,7 @@ def install() -> None:
     _installed[0] = True
     orig_init = fitz.Document.__init__
     orig_get_text = fitz.Page.get_text
+    orig_get_fonts = fitz.Page.get_fonts
 
     def init(self, filename=None, stream=None, *args, **kwargs):
         orig_init(self, filename, stream, *args, **kwargs)
@@ -104,8 +110,31 @@ def install() -> None:
                     _SIZE[0] -= len(old)
         return pickle.loads(blob)
 
+    def get_fonts(self, full=False):
+        doc = self.parent
+        src = getattr(doc, "_rd_src", None)
+        if src is None or doc.is_dirty:
+            _STATS["font_skip"] += 1
+            return orig_get_fonts(self, full=full)
+        key = (_digest(src), self.number, "__fonts__", bool(full))
+        with _LOCK:
+            got = _FONTS.get(key)
+            if got is not None:
+                _FONTS.move_to_end(key)
+        if got is not None:
+            _STATS["font_hit"] += 1
+            return list(got)              # a fresh list; its entries are tuples of str/int
+        _STATS["font_miss"] += 1
+        out = orig_get_fonts(self, full=full)
+        with _LOCK:
+            _FONTS[key] = tuple(tuple(f) for f in out)
+            while len(_FONTS) > 4096:
+                _FONTS.popitem(last=False)
+        return out
+
     fitz.Document.__init__ = init
     fitz.Page.get_text = get_text
+    fitz.Page.get_fonts = get_fonts
 
 
 def stats() -> dict:
