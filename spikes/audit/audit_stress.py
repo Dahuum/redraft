@@ -107,6 +107,14 @@ if sd is not None:
 # ── successive edits to the same field ──────────────────────────────────────
 print("=== successive edits ===")
 VALUES = ["Alpha One", "Beta Two", "Gamma Three", "Delta Four"]
+TOO_LONG = "Wxqzkj " * 60
+refusals_mid, refusals_honest = [0], [0]
+
+
+def refused(rep):
+    """Did the engine refuse this edit, leaving the field as it was?"""
+    hard = [r for r in (rep["in_place"].get("refusals") or []) if r.get("reason") in _common.HARD]
+    return bool(hard) or any("left unchanged" in w for w in rep.get("warnings") or [])
 docs = corpus_docs()
 bad_docs = []
 tested = 0
@@ -132,18 +140,39 @@ for label, path in docs[:14]:
     if sd is None:
         continue
     tested += 1
-    cur, problems = data, []
+    cur, problems, last = data, [], sd["text"].strip()
     for i, v in enumerate(VALUES):
         # Track the field by CONTENT. A centred field legitimately moves when
         # its text shortens — 58pt on a LibreOffice table — so matching on
         # geometry calls a working edit "field vanished".
-        want = VALUES[i - 1] if i else sd["text"].strip()
         match = [s for s in extract_spans(cur)
-                 if s.get("page") == sd.get("page") and want[:12] in s["text"]]
+                 if s.get("page") == sd.get("page") and last[:12] in s["text"]]
         if not match:
             problems.append("round %d: field vanished" % i)
             break
-        cur, _rep = apply_replacements(cur, [(match[0], v)], preserve_size=True, try_inplace=True)
+        if i == 2:
+            # A REFUSAL in the middle of the run. A value far too long for the field is refused
+            # (or, in a paragraph, re-flowed); refused, the document must come back exactly as it
+            # was and the next round must edit it as if nothing had happened.
+            out, rep = apply_replacements(cur, [(match[0], TOO_LONG)], preserve_size=True,
+                                          try_inplace=True)
+            if refused(rep):
+                refusals_mid[0] += 1
+                if out != cur:
+                    problems.append("round %d: a refused edit changed the document" % i)
+        out, rep = apply_replacements(cur, [(match[0], v)], preserve_size=True, try_inplace=True)
+        if refused(rep):
+            # An honest refusal is not a failure of this test — unless it changed the file or
+            # took the previous value with it. The run goes on from the value that is there.
+            refusals_honest[0] += 1
+            if out != cur:
+                problems.append("round %d: a refused edit changed the document" % i)
+            d = fitz.open(stream=cur, filetype="pdf")
+            if last not in " ".join(d[sd.get("page", 0)].get_text().split()):
+                problems.append("round %d: refused, and the previous value is gone" % i)
+            d.close()
+            continue
+        cur, last = out, v
         d = fitz.open(stream=cur, filetype="pdf")
         txt = d[sd.get("page", 0)].get_text()
         nd = notdef_glyphs(d, sd.get("page", 0), v[:5])
@@ -158,7 +187,10 @@ for label, path in docs[:14]:
     if problems:
         bad_docs.append((label, problems[:2]))
 check("four successive edits leave only the final value", not bad_docs, str(bad_docs[:3]))
-print("  documents exercised: %d" % tested)
+print("  documents exercised: %d; honest refusals along the way: %d; mid-run refusals: %d"
+      % (tested, refusals_honest[0], refusals_mid[0]))
+check("a refusal in the middle of a run was exercised", refusals_mid[0] > 0,
+      "no document refused the over-long value")
 
 # ── scale ───────────────────────────────────────────────────────────────────
 print("=== scale ===")
