@@ -89,14 +89,9 @@ export default function SplitField({
     );
   }
 
-  // Right-to-left text arrives from extraction in DRAWING order, which for
-  // Arabic or Hebrew is the reverse of reading order — the editor would be
-  // showing the user their own document backwards. Placing it again would
-  // need shaping the engine does not do, so the field is shown as read-only
-  // with the reason rather than as an input that cannot work.
   // Invisible text is the OCR layer a scanner lays over a PICTURE of the page.
   // Editing it would change nothing anyone can see — only what search and copy
-  // return — so it is shown, like right-to-left text, as read-only with why.
+  // return — so it is shown as read-only with why.
   if (span.invisible) {
     return (
       <div className="space-y-1.5">
@@ -118,27 +113,11 @@ export default function SplitField({
     );
   }
 
-  if (span.rtl) {
-    return (
-      <div className="space-y-1.5">
-        <div className="flex justify-between items-center text-label-md text-[13px] text-on-surface-variant">
-          <span className="truncate">{label}</span>
-          <span className="shrink-0" title="Right-to-left text"><Icon name="lock" size={16} /></span>
-        </div>
-        <div className="rounded-2xl bg-black/20 px-4 py-3">
-          <p dir="rtl" className="text-sm text-on-surface-variant/70 truncate" title={span.text}>
-            {span.text}
-          </p>
-          <p className="mt-1 text-caption text-on-surface-variant">
-            Right-to-left text can't be edited yet — Arabic and Hebrew need letter
-            shaping Redraft doesn't do, and this document stores the text reversed.
-            You can still add new text on top of it.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
+  // Arabic and Hebrew are edited like any other text: extraction gives them in reading order and
+  // the engine shapes them in the document's own font. They were shown read-only, from before it
+  // could ("this document stores the text reversed"), so an Arabic field could not be changed at
+  // all. The box runs the way the text does: a locked label ("المدينة :") sits where the line
+  // starts, on the right, and the value after it, as the page reads.
   return (
     <div className="space-y-1.5 group">
       <div className="flex justify-between items-center text-[13px] px-1 text-on-surface-variant group-focus-within:text-on-surface transition-colors">
@@ -154,6 +133,7 @@ export default function SplitField({
         </button>
       </div>
       <div
+        dir={span.rtl ? "rtl" : undefined}
         className={`flex items-stretch rounded-2xl bg-[rgb(var(--c-field))] overflow-hidden transition-all ${
           selected ? "ring-2 ring-secondary-container" : "hover:bg-[rgb(var(--c-field-hover))]"
         }`}
@@ -162,7 +142,7 @@ export default function SplitField({
           <span
             title={labelPart}
             style={valueStyle}
-            className="shrink-0 max-w-[46%] truncate pl-4 pr-2 py-2.5 text-[15px] text-on-surface-variant/70 select-none flex items-center"
+            className="shrink-0 max-w-[46%] truncate ps-4 pe-2 py-2.5 text-[15px] text-on-surface-variant/70 select-none flex items-center"
           >
             {labelPart}
           </span>
@@ -170,6 +150,7 @@ export default function SplitField({
         <input
           id={fid}
           type="text"
+          dir="auto"
           value={valuePart}
           onFocus={onFocus}
           onChange={(e) => onChange(split != null ? labelPart + e.target.value : e.target.value)}
