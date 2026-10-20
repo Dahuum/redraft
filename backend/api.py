@@ -3021,8 +3021,10 @@ def _web_font(raw: bytes, chars: str):
     return out
 
 
-def _embedded_sfnt(pdf_bytes: bytes) -> dict:
-    """Base font name → the PDF's own TrueType/OpenType program, for fonts nothing else resolves."""
+def _embedded_programs(pdf_bytes: bytes) -> dict:
+    """Base font name → (font program, its format) for every font the PDF draws with. A standard-14
+    font the PDF leaves out is the face MuPDF draws it with (bare CFF), so text being typed in it
+    matches the page around it. Nothing is converted here: see _embedded_web_font."""
     found = {}
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -3032,14 +3034,35 @@ def _embedded_sfnt(pdf_bytes: bytes) -> dict:
                     if name in found:
                         continue
                     try:
-                        buf = doc.extract_font(f[0])[3]
+                        _n, ext, _t, buf = doc.extract_font(f[0])
                     except Exception:  # noqa: BLE001
                         continue
-                    if buf and buf[:4] in _SFNT:
-                        found[name] = buf
+                    if not buf and ext == "n/a":
+                        code = _pe._base14_builtin(name)
+                        if code:
+                            try:
+                                buf, ext = fitz.Font(code).buffer, "cff"
+                            except Exception:  # noqa: BLE001
+                                buf = None
+                    if buf:
+                        found[name] = (buf, ext)
     except Exception:  # noqa: BLE001
         pass
     return found
+
+
+def _embedded_web_font(programs: dict, base: str):
+    """The PDF's own program for *base* as TrueType/OpenType a browser loads, for fonts nothing
+    else resolves; None if there is none. Bare CFF and Type 1 programs are rebuilt as OpenType
+    (webfont_convert) — only the ones a field is drawn in: an arXiv paper embeds 26."""
+    import webfont_convert
+    names = [base] + [k for k in programs if len(base) >= 8 and k != base and k.startswith(base)]
+    for k in names:
+        if k in programs:
+            web = webfont_convert.web_ready(*programs[k], k)
+            if web:
+                return web
+    return None
 
 
 _COMPLETE_CHARS = "".join(map(chr, list(range(0x21, 0x7F)) + list(range(0xC0, 0x100))))
@@ -3133,16 +3156,14 @@ def _web_fonts_for(data: bytes, user: str, complete: bool = True) -> dict:
     used: dict = {}
     for s in spans:
         used.setdefault(s["font"], set()).update(s["text"])
-    embedded = None
+    programs = None
     fonts, missing, notes = [], [], {}
     for name in sorted(used):
         raw = resolve_full_font(name)
         if not raw or raw[:4] not in _SFNT:
-            if embedded is None:
-                embedded = _embedded_sfnt(data)
-            base = name.split("+")[-1]
-            raw = embedded.get(base) or next((v for k, v in embedded.items()
-                                              if len(base) >= 8 and k.startswith(base)), None)
+            if programs is None:
+                programs = _embedded_programs(data)
+            raw = _embedded_web_font(programs, name.split("+")[-1])
         if raw and complete:
             with fitz.open(stream=data, filetype="pdf") as doc:
                 raw, notes[name] = _complete_font(doc, name, raw)

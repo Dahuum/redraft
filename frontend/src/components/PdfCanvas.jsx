@@ -151,9 +151,12 @@ export default function PdfCanvas({
     const fn = (s.font || "").toLowerCase();
     const c = Array.isArray(s.color) ? s.color : [0.1, 0.1, 0.1];
     const color = `rgb(${c.slice(0, 3).map((v) => Math.round(v * 255)).join(",")})`;
+    // "Roman" is also a sans face's regular cut: HelveticaNeueLTStd-Roman (every IRS form) was
+    // typed in Georgia. A name that says sans is never a serif.
+    const sans = /sans|helvetica|arial|grotesk|gothic|frutiger|univers|futura|avenir|avant|myriad|verdana|tahoma|segoe|calibri/.test(fn);
     const generic = /script|hand|brush|muellerhoff|allura|pinyon|signature|dafoe|yellowtail/.test(fn) ? "cursive"
       : /mono|courier|consol|sftt|cmtt/.test(fn) ? "ui-monospace, monospace"
-      : /serif(?!.*sans)|times|roman|georgia|garamond|minion|cambria|book|cm[rbm]|nimbusrom|caslon|baskerville|palatino/.test(fn) ? "Georgia, 'Times New Roman', serif"
+      : !sans && /serif|times|roman|georgia|garamond|minion|cambria|book|cm[rbm]|nimbusrom|caslon|baskerville|palatino/.test(fn) ? "Georgia, 'Times New Roman', serif"
       : "Inter, system-ui, sans-serif";
     const weight = (fl & 16) !== 0 || /bold|black|heavy|semibold/.test(fn) ? 700 : 400;
     const style = (fl & 2) !== 0 || /italic|oblique/.test(fn) ? "italic" : "normal";
