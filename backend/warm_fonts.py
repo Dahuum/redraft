@@ -8,6 +8,7 @@ Failures are non-fatal (the Dockerfile runs this with `|| true`).
   python warm_fonts.py             warm everything
   python warm_fonts.py --manifest  rewrite donor_manifest.json from the catalogue (needs the
                                    network; set GITHUB_TOKEN, the unauthenticated API allows 60/hr)
+  python warm_fonts.py --families  rewrite gf_families.json, the catalogue's family folders
 
 WARM_SET=full also fetches the CJK and emoji fallbacks (about 60 MB); the default leaves them out.
 """
@@ -113,9 +114,33 @@ def warm_donors():
     return len(urls) - got
 
 
+def write_families():
+    """Rewrite gf_families.json: every family folder in the Google Fonts repository (two API calls)."""
+    import urllib.request
+    h = {"User-Agent": "redraft-fonts/1.0", "Accept": "application/vnd.github+json"}
+
+    def get(url):
+        with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=30) as r:
+            return json.loads(r.read())
+    top = get("https://api.github.com/repos/google/fonts/git/trees/main")
+    out = {}
+    for e in top["tree"]:
+        if e["path"] in ("ofl", "apache", "ufl") and e["type"] == "tree":
+            t = get(f"https://api.github.com/repos/google/fonts/git/trees/{e['sha']}")
+            if t.get("truncated"):
+                raise SystemExit(f"families: the {e['path']} listing came back truncated")
+            out[e["path"]] = sorted(x["path"] for x in t["tree"] if x["type"] == "tree")
+    with open(pe._GF_FAMILIES_FILE, "w", encoding="utf-8") as f:
+        f.write(json.dumps(out, indent=0, sort_keys=True) + "\n")
+    print(f"families: {sum(len(v) for v in out.values())} folders")
+
+
 def main():
     if "--manifest" in sys.argv:
         write_manifest()
+        return
+    if "--families" in sys.argv:
+        write_families()
         return
     cached = 0
     for name in NAMES:

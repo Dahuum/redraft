@@ -752,6 +752,30 @@ def _download_and_cache(url: str, cache_path: str, weight: int) -> bytes | None:
     return data
 
 
+# The family folders that exist in the Google Fonts repository ({license: [folder, ...]}), so a name
+# that is not one is not looked for there. Step 4 below guessed fifteen file URLs per name: on the
+# IRS 1040 that was 135 requests and 31 s for names like "HelveticaNeueLTStd-Roman", on an arXiv
+# paper 300 requests and 76 s for "CMR10", "CMMI7"... all in the server's one request loop, so
+# every other request waited. Regenerate with `python warm_fonts.py --families`.
+_GF_FAMILIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gf_families.json")
+_GF_FAMILIES: dict | None = None
+
+
+def _gf_licenses_with(folder: str):
+    """The license directories whose catalogue has *folder*: [] when none does, None when there is
+    no catalogue to ask (then every directory is tried, as before)."""
+    global _GF_FAMILIES
+    if _GF_FAMILIES is None:
+        try:
+            with open(_GF_FAMILIES_FILE, encoding="utf-8") as f:
+                _GF_FAMILIES = {lic: set(v) for lic, v in json.load(f).items()}
+        except Exception:  # noqa: BLE001
+            _GF_FAMILIES = {}
+    if not _GF_FAMILIES:
+        return None
+    return [lic for lic in ("ofl", "apache", "ufl") if folder in _GF_FAMILIES.get(lic, ())]
+
+
 def _fetch_google_font(family: str, weight: int, style: str) -> bytes | None:
     """
     Download the full font for *family* from Google Fonts GitHub.
@@ -817,8 +841,12 @@ def _fetch_google_font(family: str, weight: int, style: str) -> bytes | None:
             _LAST_PATH["value"] = f"substitute({family}→{sub_family}) {prev}"
         return data
 
-    # 4. Generic fallback patterns
-    for sub in ("ofl", "apache", "ufl"):
+    # 4. Generic fallback patterns — only where the catalogue has this family
+    licenses = _gf_licenses_with(folder)
+    if licenses == []:
+        _dbg(f"not in the Google Fonts catalogue: {folder!r}")
+        return None
+    for sub in licenses or ("ofl", "apache", "ufl"):
         # Static
         for fname in [f"{fam_nospace}-{suffix}.ttf",
                       f"{family}-{suffix}.ttf"]:
