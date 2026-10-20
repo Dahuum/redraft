@@ -6,10 +6,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 const AUTO_PREVIEW_MS = 900;
 import { extractSpans, editPdf, fetchWebFonts } from "./api.js";
 
-// Loads the document's own fonts into the page so text being typed is drawn in them.
-// Resolves to { spanFontName: cssFamily } for every font the browser accepted.
-async function loadDocFonts(file) {
-  const { fonts = [] } = await fetchWebFonts(file);
+// Loads fonts from a /webfonts answer into the page. Resolves to { spanFontName: cssFamily } for
+// every font the browser accepted.
+async function loadFaces({ fonts = [] }) {
   const map = {};
   await Promise.all(fonts.map(async (f) => {
     try {
@@ -21,6 +20,20 @@ async function loadDocFonts(file) {
     } catch { /* that font is drawn in a generic face */ }
   }));
   return map;
+}
+
+// The document's own fonts, so text being typed is drawn in them. In two steps: the fonts as the
+// document embeds them come back at once, and typing is drawn in the document's typeface from the
+// first keystroke; the completed fonts (letters an embedded subset lacks, synthesized on the
+// server, ~3 s for a document it has not seen) replace them when they arrive. Asking only for the
+// completed ones drew everything typed in the first seconds in the app's own font.
+function loadDocFonts(file, onFonts) {
+  const quick = fetchWebFonts(file, { complete: false }).then(loadFaces)
+    .then((map) => onFonts(map, false)).catch(() => { /* the completed fonts may still come */ });
+  // After the quick answer: the server works through requests in order, so asking for both at once
+  // would only queue the quick one behind the slow one.
+  quick.then(() => fetchWebFonts(file, { complete: true })).then(loadFaces)
+    .then((map) => onFonts(map, true)).catch(() => { /* typed text keeps the embedded fonts */ });
 }
 
 // Holds the loaded document + edit state and the actions the UI calls.
@@ -90,9 +103,9 @@ export function useEditor() {
         setSelectedId(null); // document-first: nothing is open until you click text
         setWebFonts({});
         loadingFile.current = f;
-        loadDocFonts(f)
-          .then((map) => loadingFile.current === f && setWebFonts(map))
-          .catch(() => { /* typed text falls back to a generic face */ });
+        loadDocFonts(f, (map) => {
+          if (loadingFile.current === f) setWebFonts((prev) => ({ ...prev, ...map }));
+        });
         window.rdTrack?.("doc_opened", { pages: res.pages.length, fields: res.spans.length });
         return res;
       } catch (e) {

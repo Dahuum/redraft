@@ -3127,7 +3127,7 @@ def _complete_font(doc, name: str, raw: bytes):
     return result
 
 
-def _web_fonts_for(data: bytes, user: str) -> dict:
+def _web_fonts_for(data: bytes, user: str, complete: bool = True) -> dict:
     _ingest_embedded_fonts(data, user)
     spans = extract_spans(data)
     used: dict = {}
@@ -3143,23 +3143,32 @@ def _web_fonts_for(data: bytes, user: str) -> dict:
             base = name.split("+")[-1]
             raw = embedded.get(base) or next((v for k, v in embedded.items()
                                               if len(base) >= 8 and k.startswith(base)), None)
-        if raw:
+        if raw and complete:
             with fitz.open(stream=data, filetype="pdf") as doc:
                 raw, notes[name] = _complete_font(doc, name, raw)
+        elif raw:
+            notes[name] = "as embedded"
         woff = _web_font(raw, "".join(sorted(used[name]))) if raw else None
         if woff:
             fonts.append({"font": name, "family": "rd-" + hashlib.sha1(woff).hexdigest()[:12],
                           "woff": base64.b64encode(woff).decode()})
         else:
             missing.append(name)
-    return {"fonts": fonts, "missing": missing, "notes": notes}
+    return {"fonts": fonts, "missing": missing, "notes": notes, "complete": complete}
 
 
 @app.post("/webfonts")
-async def webfonts(file: UploadFile = File(...), user: str = Depends(optional_user)):
+async def webfonts(file: UploadFile = File(...), complete: str = Form("1"),
+                   user: str = Depends(optional_user)):
     """Upload a PDF → its fonts as small WOFF files, so the editor can draw text being typed in the
     document's own typeface before the exact render comes back. Fonts the browser cannot be given
-    (bare CFF, Type1) are listed in `missing`; the editor draws those in a generic face."""
+    (bare CFF, Type1) are listed in `missing`; the editor draws those in a generic face.
+
+    `complete=0` returns the fonts as the document embeds them, at once (0.02 s on the
+    attestation). Completing a subset with the letters it lacks means synthesizing them (3 s on a
+    document the server has not seen, most of it learning the letter transform), and the editor
+    drew everything typed in its own UI font until then. It asks for both: the embedded fonts
+    first, so the first keystroke is already in the document's typeface, then the completed ones."""
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty upload.")
@@ -3168,7 +3177,7 @@ async def webfonts(file: UploadFile = File(...), user: str = Depends(optional_us
     try:
         # In the request loop like every other engine call: PyMuPDF is not safe to use from two
         # threads at once, and this runs while the editor is loading the same document.
-        return _web_fonts_for(data, user)
+        return _web_fonts_for(data, user, complete=str(complete).strip().lower() not in ("0", "false", "no"))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"Couldn't read the PDF ({type(exc).__name__}).")
 

@@ -158,8 +158,12 @@ export default function PdfCanvas({
     const weight = (fl & 16) !== 0 || /bold|black|heavy|semibold/.test(fn) ? 700 : 400;
     const style = (fl & 2) !== 0 || /italic|oblique/.test(fn) ? "italic" : "normal";
     const own = webFonts[s.font];
-    // A letter the document's font lacks falls back to the same kind of face, not to a serif.
-    if (own) return { fontFamily: `"${own}", ${generic}`, fontWeight: 400, fontStyle: "normal", fontSynthesis: "none", color };
+    // A letter the document's font lacks falls back to the same kind of face, not to a serif — and
+    // at the field's weight and slant: asking for 400 drew "Marra" in the bold document font and
+    // the "kech" its embedded subset lacks in a light generic face. The document's own face is used
+    // whatever weight is asked for (it is the only face of its family), and font-synthesis: none
+    // keeps the browser from emboldening or slanting it a second time.
+    if (own) return { fontFamily: `"${own}", ${generic}`, fontWeight: weight, fontStyle: style, fontSynthesis: "none", color };
     return { fontFamily: generic, fontWeight: weight, fontStyle: style, color };
   };
 
