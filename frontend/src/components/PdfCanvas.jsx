@@ -252,9 +252,12 @@ export default function PdfCanvas({
               visible on the page while you type. Approximate font; Preview is exact. */}
           {liveEdits && pageSpans.map((s) => {
             const nt = edits[s.id] ?? s.text;
-            if (nt === (onScreen[s.id] ?? s.text) || moves[s.id] || s.invisible || s.rtl) return null;
+            if (nt === (onScreen[s.id] ?? s.text) || moves[s.id] || s.invisible) return null;
             const [x0, y0, x1, y1] = s.bbox;
-            const numeric = /\d/.test(s.text) && /^[\s\d.,%:+\-−–/()A-Za-z$€£¥]*$/.test(s.text) && s.text.replace(/[^\d]/g, "").length >= s.text.replace(/\s/g, "").length * 0.5;
+            // Right-to-left text runs from the field's right edge, as numbers do; the browser shapes
+            // it (in the document's own font when /webfonts gave it).
+            const rtl = !!s.rtl;
+            const numeric = rtl || (/\d/.test(s.text) && /^[\s\d.,%:+\-−–/()A-Za-z$€£¥]*$/.test(s.text) && s.text.replace(/[^\d]/g, "").length >= s.text.replace(/\s/g, "").length * 0.5);
             const h = (y1 - y0) * scale;
             // Hide what the page image shows for this field: the original word, or a previous
             // render's longer value ("Casablanca" left "ca" showing when the field was shortened).
@@ -272,6 +275,7 @@ export default function PdfCanvas({
                 />
                 <div
                   className="absolute whitespace-pre"
+                  dir={rtl ? "rtl" : undefined}
                   style={{
                     ...(numeric ? { right: dims.w - x1 * scale } : { left: x0 * scale }),
                     top: y0 * scale,
@@ -297,6 +301,8 @@ export default function PdfCanvas({
             // its first half.
             const boxW = Math.max((x1 - x0) * scale, textWidth(s, edits[s.id] ?? s.text));
             const at = movedTo[s.id];   // already moved and rendered there
+            // Right-to-left text grows leftward from its right edge, and so does its outline.
+            const left = at ? at.x * scale : s.rtl ? x1 * scale - boxW : x0 * scale;
             return (
               <div
                 key={s.id}
@@ -304,7 +310,7 @@ export default function PdfCanvas({
                 title={isSel ? "Drag to move this text" : undefined}
                 className="absolute rounded-[2px] animate-pop"
                 style={{
-                  left: (at ? at.x : x0) * scale,
+                  left,
                   top: (at ? at.y : y0) * scale,
                   width: boxW,
                   height: (y1 - y0) * scale,

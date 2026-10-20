@@ -165,7 +165,7 @@ export default function EditorWorkspace({ ed, onDownload, guest = false }) {
 
   // ---- Document-first editing: the box next to the selected text ----
   const [allOpen, setAllOpen] = useState(false); // the full field list, collapsed by default
-  const editable = (x) => !x.invisible && !x.rtl;
+  const editable = (x) => !x.invisible;
 
   const changed = spans.filter((x) => edits[x.id] !== undefined && edits[x.id] !== x.text);
 

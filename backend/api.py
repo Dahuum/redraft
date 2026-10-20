@@ -624,13 +624,10 @@ _RTL_RANGES = (
 def _is_rtl_text(text: str) -> bool:
     """Is this span predominantly right-to-left script?
 
-    It matters twice over. PyMuPDF returns characters in the order they are
-    DRAWN, which for a right-to-left run is the reverse of reading order — so
-    "شهادة عمل" comes back as "لمع ةداهش" and the editor would show the user
-    their own document backwards. And the engine cannot edit such a run
-    anyway: placing it needs shaping (contextual forms and ligatures) that
-    nothing here does. Marking it lets the interface say so instead of
-    presenting reversed text as if it were editable.
+    The flag tells the editor which way the field runs: its box and the text drawn while typing
+    are anchored at the right edge. Extraction gives such a run in reading order (closing
+    punctuation put back by pdf_editor._rtl_reading_order) and the redraw shapes it
+    (pdf_editor._shape_text), so it is edited like any other field.
     """
     letters = [c for c in text if c.isalpha()]
     if not letters:
