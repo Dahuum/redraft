@@ -39,8 +39,27 @@ def web(data):
 
 
 att = open(os.path.join(HERE, "..", "examples", "attestation-demo.pdf"), "rb").read()
+
+# complete=0 first, while nothing is cached: the fonts as the document embeds them, at once. The
+# editor asks for these before the completed ones, which took 3 s on a document the server had not
+# seen; until they came, everything typed was drawn in the app's own font.
+import time  # noqa: E402
+t = time.perf_counter()
+r = c.post("/webfonts", files={"file": ("x.pdf", att, "application/pdf")}, data={"complete": "0"})
+quick_s = time.perf_counter() - t
+q = r.json() if r.status_code == 200 else {}
+qf = {f["font"].split("+")[-1]: f for f in q.get("fonts", [])}
+check("quick: both Tw Cen MT faces, as embedded", set(qf) == {"TwCenMT-Bold", "TwCenMT-Regular"}
+      and all(v == "as embedded" for v in (q.get("notes") or {}).values()) and q.get("complete") is False, q.get("notes"))
+check("quick: answered in under a second on a document not seen before", quick_s < 1.0, round(quick_s, 2))
+for name, f in qf.items():
+    tt = TTFont(io.BytesIO(base64.b64decode(f["woff"])))
+    check(f"quick {name}: a WOFF the browser can load, with the letters the PDF drew in it",
+          tt.flavor == "woff" and all(ord(ch) in tt.getBestCmap() for ch in "Sa"), tt.flavor)
+
 s, j = web(att)
 check("attestation: answered for a guest", s == 200, s)
+check("the default is the completed fonts", j.get("complete") is True, j.get("complete"))
 fonts = {f["font"].split("+")[-1]: f for f in j.get("fonts", [])}
 check("attestation: both Tw Cen MT faces are returned", set(fonts) == {"TwCenMT-Bold", "TwCenMT-Regular"}, list(fonts))
 for name, f in fonts.items():

@@ -156,9 +156,11 @@ export async function checkFonts(file) {
 }
 
 // POST /webfonts → the document's own fonts as small WOFF files → { fonts: [{font, family, woff}], missing }
-export async function fetchWebFonts(file) {
+// complete=false: as embedded, at once; complete=true: with the letters a subset lacks added (slower).
+export async function fetchWebFonts(file, { complete = true } = {}) {
   const fd = new FormData();
   fd.append("file", file);
+  fd.append("complete", complete ? "1" : "0");
   const res = await fetch(`${API_BASE}/webfonts`, { method: "POST", body: fd, headers: await authHeaders() });
   if (!res.ok) throw await asError(res);
   return res.json();
