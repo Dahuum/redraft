@@ -68,5 +68,38 @@ c = io.BytesIO(); src3.save(c)
 check("a font with different glyph data -> different cache key",
       gs._font_digest(TTFont(io.BytesIO(a.getvalue()))) != gs._font_digest(TTFont(io.BytesIO(c.getvalue()))))
 
+# Learned from the document's OWN glyphs. Within one request a later edit's subset may carry
+# glyphs an earlier edit synthesized; on the attestation the second learn included the 'Q' the
+# first had made, so the transform was fitted (and its held-out accuracy measured) partly
+# against its own output.
+injected, polluted = {}, []
+_inj = gs.inject_into_font
+
+
+def inj_spy(subset_bytes, glyphs):
+    r = _inj(subset_bytes, glyphs)
+    parent = injected.get(gs._bytes_digest(subset_bytes) if hasattr(gs, "_bytes_digest") else None, set())
+    key = gs._font_digest(TTFont(io.BytesIO(r["font_bytes"])))
+    injected[key] = set(parent) | set(glyphs)
+    if hasattr(gs, "_bytes_digest"):
+        injected[gs._bytes_digest(r["font_bytes"])] = injected[key]
+    return r
+
+
+def learn_spy(src, dst, raster_size=96):
+    made = injected.get(gs._font_digest(dst), set()) | injected.get(gs._font_digest(src), set())
+    bad = sorted(set(gs.shared_chars(src, dst)) & made)
+    if bad:
+        polluted.append(bad)
+    return _orig(src, dst, raster_size)
+
+
+gs.inject_into_font = inj_spy
+gs._learn_weight_transform = learn_spy
+gs._XF_CACHE.clear()
+api.apply_replacements(pdf, reps, try_inplace=True)
+check("no transform is learned from glyphs this request synthesized", not polluted, polluted)
+gs.inject_into_font = _inj
+
 print("\nRESULT:", "FAIL " + str(FAIL) if FAIL else "all passed")
 sys.exit(1 if FAIL else 0)
