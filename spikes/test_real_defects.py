@@ -465,6 +465,14 @@ def _fake_urlopen(req, timeout=0):
 _real = (_ureq.urlopen, fe._save_listing_cache, dict(fe._listing_cache))
 _ureq.urlopen = _fake_urlopen
 fe._save_listing_cache = lambda: None
+# The invented family stands for a real one: it is in the catalogue of family folders, so the
+# lookup goes to the (faked) network. The absent one is not, as a family really missing isn't.
+import pdf_editor as _pe_cat
+_pe_cat._gf_licenses_with("x")
+_real_families = _pe_cat._GF_FAMILIES
+if _real_families:
+    _pe_cat._GF_FAMILIES = {lic: set(v) | ({"zzquuxfont"} if lic == "ofl" else set())
+                            for lic, v in _real_families.items()}
 try:
     key = ("zzquuxfont", 400, "normal")
     fe._listing_cache.clear(); fe._donor_cache.pop(key, None); fe._donor_retry_at.pop(key, None)
@@ -487,6 +495,7 @@ try:
     check("donor lookup: a family the catalogue really lacks is remembered as absent",
           got == (None, None) and key2 in fe._donor_cache and len(_calls) == n, str(got) + " " + str(len(_calls) - n))
 finally:
+    _pe_cat._GF_FAMILIES = _real_families
     _ureq.urlopen, fe._save_listing_cache = _real[0], _real[1]
     fe._listing_cache.clear(); fe._listing_cache.update(_real[2])
     for k in (("zzquuxfont", 400, "normal"), ("zzabsentfont", 400, "normal")):

@@ -197,6 +197,11 @@ def _gh_list_dir(license_dir: str, folder: str):
     key = f"{license_dir}/{folder}"
     if key in _listing_cache:
         return _listing_cache[key]
+    known = _pe._gf_licenses_with(folder)
+    if known is not None and license_dir not in known:
+        # Not a folder in the catalogue (gf_families.json): as permanent as a 404, without asking.
+        _listing_cache[key] = None
+        return None
     if _pe.offline():
         return None                  # not in the listing cache, and nothing may be asked for
     url = f"{_GH_API}/{key}"
