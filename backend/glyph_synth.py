@@ -1019,6 +1019,49 @@ def _without_save_stamp(raw: bytes) -> bytes:
         return raw
 
 
+# A font inject_into_font produced -> the font as the document had it before ANY synthesized
+# glyph went in (followed through chains: a subset extended twice maps to the first). Keyed by
+# content (_bytes_digest), bounded.
+_ORIGIN: "dict[str, bytes]" = {}
+_ORIGIN_MAX = 256
+
+
+def _bytes_digest(raw: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(_without_save_stamp(raw)).hexdigest()
+
+
+def _remember_origin(subset_bytes: bytes, extended: bytes) -> None:
+    try:
+        origin = _ORIGIN.get(_bytes_digest(subset_bytes), subset_bytes)
+        _ORIGIN[_bytes_digest(extended)] = origin
+        while len(_ORIGIN) > _ORIGIN_MAX:
+            _ORIGIN.pop(next(iter(_ORIGIN)))
+    except Exception:  # noqa: BLE001 — not remembering only costs the old behaviour
+        pass
+
+
+def _as_found(tt):
+    """*tt* as the document had it, if it is a font this module extended; else *tt*.
+
+    One request edits field after field, and a field's subset may already carry glyphs an
+    earlier edit synthesized. Learning from it put those glyphs in the transform's own training
+    AND held-out pool: on the attestation the second learn of a request included the 'Q' the
+    first had made, so the transform was fitted partly to its own output and its held-out
+    accuracy was measured partly against itself."""
+    try:
+        raw = _ORIGIN.get(_font_digest(tt))
+    except Exception:  # noqa: BLE001
+        return tt
+    if raw is None:
+        return tt
+    try:
+        from fontTools.ttLib import TTFont   # local: keeps module import cheap
+        return TTFont(io.BytesIO(raw))
+    except Exception:  # noqa: BLE001
+        return tt
+
+
 def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTransform:
     """Cached by the two programs' content (see _learn_weight_transform).
 
@@ -1026,6 +1069,7 @@ def learn_weight_transform(src_tt, dst_tt, raster_size: int = 96) -> WeightTrans
     transform up to 32 times — once for every font/encoding/occurrence
     combination the engine tried — so a single edit on a Word attestation
     took 22-36 seconds."""
+    src_tt, dst_tt = _as_found(src_tt), _as_found(dst_tt)
     try:
         key = (_font_digest(src_tt), _font_digest(dst_tt), raster_size)
     except Exception:  # noqa: BLE001 — uncacheable is merely slow
@@ -1407,4 +1451,6 @@ def inject_into_font(subset_bytes: bytes, glyphs: dict) -> dict:
 
     buf = io.BytesIO()
     tt.save(buf)
-    return {"font_bytes": buf.getvalue(), "gid": gid_out, "width_1000": width_out}
+    out = buf.getvalue()
+    _remember_origin(subset_bytes, out)
+    return {"font_bytes": out, "gid": gid_out, "width_1000": width_out}
